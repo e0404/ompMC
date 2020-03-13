@@ -801,7 +801,7 @@ void ausgab(double edep) {
     return;
 }
 
-void accumEndep() {
+void accumEndep(int nperbatch) {
     
     int gridsize = geometry.isize*geometry.jsize*geometry.ksize;
     
@@ -813,9 +813,9 @@ void accumEndep() {
     #pragma omp parallel for firstprivate(edep)
     for (irl=0; irl<gridsize + 1; irl++) {
         edep = score.endep[irl];
-        
+        edep /= (double) nperbatch;
         score.accum_endep[irl] += edep;
-        score.accum_endep2[irl] += pow(edep, 2.0);
+        score.accum_endep2[irl] += edep*edep;
     }
     
     /* Clean scoring array */
@@ -832,9 +832,10 @@ void accumulateResults(int iout, int nhist, int nbatch)
     double endep, endep2, unc_endep;
 
     /* Calculate incident fluence */
-    double inc_fluence = (double)nhist;
+    //double inc_fluence = ;    
     double mass;
     int iz;
+
 
     #pragma omp parallel for private(irl,endep,endep2,unc_endep,mass)
     for (iz=0; iz<geometry.ksize; iz++) {
@@ -844,28 +845,8 @@ void accumulateResults(int iout, int nhist, int nbatch)
                 endep = score.accum_endep[irl];
                 endep2 = score.accum_endep2[irl];
                 
-                /* First calculate mean deposited energy across batches and its
-                 uncertainty */
-                endep /= (double)nbatch;
-                endep2 /= (double)nbatch;
-                
-                /* Batch approach uncertainty calculation */
-                if (endep != 0.0) {
-                    unc_endep = endep2 - pow(endep, 2.0);
-                    unc_endep /= (double)(nbatch - 1);
-                    
-                    /* Relative uncertainty */
-                    unc_endep = sqrt(unc_endep)/endep;
-                }
-                else {
-                    endep = 0.0;
-                    unc_endep = 0.9999999;
-                }
-                
-                /* We separate de calculation of dose, to give the user the
-                 option to output mean energy (iout=0) or deposited dose
-                 (iout=1) per incident fluence */
-                
+
+                double factor;
                 if (iout) {
                     
                     /* Convert deposited energy to dose */
@@ -875,11 +856,42 @@ void accumulateResults(int iout, int nhist, int nbatch)
                     
                     /* Transform deposited energy to Gy */
                     mass *= geometry.med_densities[irl-1];
-                    endep *= 1.602E-10/(mass*inc_fluence);
+                    
+                    factor = 1.602E-10/(mass);                                      
                     
                 } else {    /* Output mean deposited energy */
-                    endep /= inc_fluence;
+                    factor = 1.0;
                 }
+
+                endep *= factor;
+                endep2 *= factor*factor;
+
+
+                /* First calculate mean deposited energy across batches and its
+                 uncertainty */
+                endep /= (double) nbatch;
+                endep2 /= (double) (nbatch - 1);
+                
+                /* Batch approach uncertainty calculation */
+                if (endep != 0.0) {
+                    unc_endep = endep2 - endep * endep;
+                    //unc_endep /= (double)(nbatch - 1);
+                    
+                    //Variance of the mean
+                    unc_endep /= nbatch;
+                    
+                    /* Relative uncertainty */
+                    //unc_endep = sqrt(unc_endep)/endep;
+                }
+                else {
+                    endep = 0.0;
+                    unc_endep = 0.0;
+                }
+
+
+                /* We separate de calculation of dose, to give the user the
+                 option to output mean energy (iout=0) or deposited dose
+                 (iout=1) per incident fluence */
                 
                 /* Store output quantities */
                 score.accum_endep[irl] = endep;
@@ -897,7 +909,7 @@ void accumulateResults(int iout, int nhist, int nbatch)
                 
                 if(geometry.med_densities[irl-1] < 0.044) {
                     score.accum_endep[irl] = 0.0;
-                    score.accum_endep2[irl] = 0.9999999;
+                    score.accum_endep2[irl] = 0.0;
                 }
             }
         }
@@ -1258,7 +1270,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
         mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:invalidNumInputs",
                 "Two or three input arguments required.");
     }
-    if(nlhs > 1){
+    if(nlhs > 2){
         mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:invalidNumOutputs",
                 "Too many output arguments.");
     }
@@ -1365,6 +1377,20 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     mwIndex *jcs = mxGetJc(plhs[0]);
     mwIndex linIx = 0;
     jcs[0] = 0;
+
+    bool outputVariance = (nlhs >= 2);
+
+    double *sr_var;
+    mwIndex *irs_var;
+    mwIndex *jcs_var;
+    if (outputVariance)
+    {
+        plhs[1] = mxCreateSparse(nCubeElements,source.nbeamlets,nzmax,mxREAL);
+        sr_var  = mxGetPr(plhs[1]);
+        irs_var = mxGetIr(plhs[1]);
+        jcs_var = mxGetJc(plhs[1]);
+        jcs_var[0] = 0;
+    }    
     
     double progress = 0.0;
 
@@ -1386,7 +1412,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
             }
             
             /* Accumulate results of current batch for statistical analysis */
-            accumEndep();
+            accumEndep(nperbatch);
 
             progress = ((double)ibeamlet + (double)(ibatch+1)/nbatch)/source.nbeamlets;
             (*mxGetPr(waitbarProgress)) = progress;
@@ -1452,17 +1478,36 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
             /* Use the new pointers */
             sr  = mxGetPr(plhs[0]);
             irs = mxGetIr(plhs[0]);
+
+            if (outputVariance) {
+                /* Set new nzmax and reallocate more memory */
+                mxSetNzmax(plhs[1], nzmax);
+                mxSetPr(plhs[1], (double *) mxRealloc(sr, nzmax*sizeof(double)));
+                mxSetIr(plhs[1], (mwIndex *)  mxRealloc(irs, nzmax*sizeof(mwIndex)));
+            
+                /* Use the new pointers */
+                sr_var  = mxGetPr(plhs[1]);
+                irs_var = mxGetIr(plhs[1]);
+            }
         }
         
         for (int irl=1; irl < gridsize+1; irl++) {        
             if (score.accum_endep[irl] > thresh) {            
                 sr[linIx] = score.accum_endep[irl];
                 irs[linIx] = irl-1;
+                
+                if (outputVariance) {
+                    sr_var[linIx] = score.accum_endep2[irl];
+                    irs_var[linIx] = irl-1;
+                }
                 linIx++;
             }
         }
         
         jcs[ibeamlet+1] = linIx;
+        if (outputVariance) {
+            jcs_var[ibeamlet+1] = linIx;
+        }
         
         /* Reset accum_endep for following beamlet */
         memset(score.accum_endep, 0.0, (gridsize + 1)*sizeof(double));                
@@ -1495,7 +1540,32 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     mxSetIr(plhs[0], mxRealloc(irs, linIx*sizeof(int)));
     
     sr  = mxGetPr(plhs[0]);
-    irs = mxGetIr(plhs[0]);    
+    irs = mxGetIr(plhs[0]);
+
+    //int irl;
+    //#pragma omp parallel for
+    //for (irl = 0; irl < linIx; ++irl)
+    //{
+    //    sr[irl] = sr[irl] / ((double) nHist);
+    //}
+
+    if (outputVariance) {
+        /* Truncate the matrix to the exact size by reallocation */
+        mxSetNzmax(plhs[1], linIx);
+        mxSetPr(plhs[1], mxRealloc(sr_var, linIx*sizeof(double)));
+        mxSetIr(plhs[1], mxRealloc(irs_var, linIx*sizeof(int)));
+        sr_var  = mxGetPr(plhs[1]);
+        irs_var = mxGetIr(plhs[1]);
+        
+        //#pragma omp parallel for
+        //for (irl = 0; irl < linIx; ++irl)
+        //{
+        //    sr_var[irl] = (sr_var[irl] - sr[irl]*sr[irl])/((double)(nHist-1));
+        //}                
+    }
+
+    
+        
     
     /* Print some output and execution time up to this point */
     mexPrintf("Simulation finished\n");
