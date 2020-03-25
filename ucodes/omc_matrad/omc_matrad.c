@@ -1462,7 +1462,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
 
         /* Check if we need to reallocate for sparse matrix */
         if ((linIx + nnz) > nzmax) {
-            int oldnzmax = nzmax;
+            mwSize oldnzmax = nzmax;
             percent_sparse += percentage_steps;
             nzmax = (mwSize) ceil((double)nCubeElements*(double)source.nbeamlets*percent_sparse);
             
@@ -1551,7 +1551,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     /* Truncate the matrix to the exact size by reallocation */
     mxSetNzmax(plhs[0], linIx);
     mxSetPr(plhs[0], mxRealloc(sr, linIx*sizeof(double)));
-    mxSetIr(plhs[0], mxRealloc(irs, linIx*sizeof(int)));
+    mxSetIr(plhs[0], mxRealloc(irs, linIx*sizeof(mwIndex)));
     
     sr  = mxGetPr(plhs[0]);
     irs = mxGetIr(plhs[0]);
@@ -1567,7 +1567,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
         /* Truncate the matrix to the exact size by reallocation */
         mxSetNzmax(plhs[1], linIx);
         mxSetPr(plhs[1], mxRealloc(sr_var, linIx*sizeof(double)));
-        mxSetIr(plhs[1], mxRealloc(irs_var, linIx*sizeof(int)));
+        mxSetIr(plhs[1], mxRealloc(irs_var, linIx*sizeof(mwIndex)));
         sr_var  = mxGetPr(plhs[1]);
         irs_var = mxGetIr(plhs[1]);
         
