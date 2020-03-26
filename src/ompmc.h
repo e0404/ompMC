@@ -23,7 +23,9 @@
 
 #if defined(_WIN32) || defined(_WIN64)
     /* We are on Windows */
-    # define strtok_r strtok_s
+    #define strtok_r strtok_s
+#else
+    extern char *strtok_r(char *, const char *, char **);
 #endif
 
 #ifndef M_PI
