@@ -33,6 +33,7 @@
 
 #include "omc_random.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 
 /* Common functions and definitions */
