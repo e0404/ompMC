@@ -31,6 +31,7 @@
 #include <mex.h>
 
 /* Redefine printf() function due to conflicts with mex and OpenMP */
+#include <stdio.h>
 #ifdef _OPENMP
     #include <omp.h>
 
@@ -38,7 +39,7 @@
     #define printf(...) fprintf(stderr,__VA_ARGS__)
 #endif
 
-#define exit(EXIT_FAILURE) mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:invalid","Abort.");
+#define exit(EXIT_FAILURE) mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:invalid","Error in ompMC mex file. Abort!");
 
 #include "omc_utilities.h"
 #include "ompmc.h"
@@ -47,7 +48,6 @@
 #include <ctype.h>
 #include <float.h>
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
