@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <string.h>
 
 /*******************************************************************************
 * Definitions for Monte Carlo simulation of particle transport 

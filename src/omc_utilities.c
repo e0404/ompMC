@@ -162,4 +162,4 @@ int input_idx = 0;                              // number of key,value pair
 /******************************************************************************/
 
 /* Flag set by '--verbose' argument */
-int verbose_flag;
+int verbose_flag = 0;

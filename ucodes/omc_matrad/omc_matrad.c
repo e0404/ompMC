@@ -93,7 +93,10 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
 
     /* Parse Monte Carlo options and create input items structure */
     tmp_fieldpointer = mxGetField(mcOpt,0,"verbose");
-    verbose_flag = mxGetLogicals(tmp_fieldpointer)[0];
+    if (tmp_fieldpointer)
+        verbose_flag = mxGetLogicals(tmp_fieldpointer)[0];
+    else
+        verbose_flag = 0;
 
     mxArray* tmp2;
     int status;
@@ -1384,7 +1387,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     double percent_sparse = percentage_steps;   // initial percentage to allocate memory for
 
     mwSize nzmax = (mwSize) ceil((double)nCubeElements*(double)source.nbeamlets*percent_sparse);
-    plhs[0] = mxCreateSparse(nCubeElements,source.nbeamlets,nzmax,mxREAL);
+    plhs[0] = mxCreateSparse(nCubeElements,(mwSize) source.nbeamlets,nzmax,mxREAL);
 
     double *sr  = mxGetPr(plhs[0]);
     mwIndex *irs = mxGetIr(plhs[0]);
@@ -1416,7 +1419,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
         for (int ibatch=0; ibatch<nbatch; ibatch++) {            
             int ihist;
 
-            #pragma omp parallel for schedule(dynamic)
+            #pragma omp parallel for schedule(guided)
             for (ihist=0; ihist<nperbatch; ihist++) {
                 /* Initialize particle history */
                 initHistory(ibeamlet);
@@ -1452,16 +1455,20 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
         }
         double thresh = doseMax*relDoseThreshold;
         /* Count values above threshold */
-        mwSize nnz = 0; //Number of nonzeros in the dose cube
+        mwSize j_nnz = 0; //Number of nonzeros in the dose cube for the current beamlet
 
+        #pragma omp parallel for reduction(+:j_nnz)
         for (int irl=1; irl < gridsize+1; irl++) {        
             if (score.accum_endep[irl] > thresh) {
-                nnz++;
+                j_nnz++;
             }                
         }
 
+        //The number of new non-zero values is the current linear index + new upcoming entries from current beamlet + 1
+        mwSize newnnz = j_nnz + (mwSize) linIx;
+
         /* Check if we need to reallocate for sparse matrix */
-        if ((linIx + nnz) > nzmax) {
+        if (newnnz > nzmax) {
             mwSize oldnzmax = nzmax;
             percent_sparse += percentage_steps;
             nzmax = (mwSize) ceil((double)nCubeElements*(double)source.nbeamlets*percent_sparse);
@@ -1474,8 +1481,8 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
             /* Check that the new nmax is large enough and if not, also adjust 
             the percentage_steps since we seem to have set it too small for this 
             particular use case */
-            if (nzmax < (linIx + nnz)) {
-                nzmax = linIx + nnz;
+            if (nzmax < newnnz) {
+                nzmax = newnnz;
                 percent_sparse = (double)nzmax/nCubeElements;
                 percentage_steps = percent_sparse;
             }
@@ -1487,7 +1494,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
             /* Set new nzmax and reallocate more memory */
             mxSetNzmax(plhs[0], nzmax);
             mxSetPr(plhs[0], (double *) mxRealloc(sr, nzmax*sizeof(double)));
-            mxSetIr(plhs[0], (mwIndex *)  mxRealloc(irs, nzmax*sizeof(mwIndex)));
+            mxSetIr(plhs[0], (mwIndex *) mxRealloc(irs, nzmax*sizeof(mwIndex)));
             
             /* Use the new pointers */
             sr  = mxGetPr(plhs[0]);
@@ -1504,7 +1511,9 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
                 irs_var = mxGetIr(plhs[1]);
             }
         }
-        
+
+
+        //Populate sparse matrix arrays        
         for (int irl=1; irl < gridsize+1; irl++) {        
             if (score.accum_endep[irl] > thresh) {            
                 sr[linIx] = score.accum_endep[irl];
@@ -1518,6 +1527,12 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
             }
         }
         
+        if (linIx != newnnz)
+            mexPrintf("Warning: Discrepancy between linear index %d and maximum number of computed nonzeros %d at beamlet %d finalization!\n",linIx,newnnz,ibeamlet);
+
+        if (linIx > nzmax)
+            mexPrintf("Warning: Discrepancy between linear index %d and maximum number of allowed nonzeros %d at beamlet %d finalization!\n",linIx,newnnz,ibeamlet);
+
         jcs[ibeamlet+1] = linIx;
         if (outputVariance) {
             jcs_var[ibeamlet+1] = linIx;
@@ -1556,12 +1571,17 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     sr  = mxGetPr(plhs[0]);
     irs = mxGetIr(plhs[0]);
 
-    //int irl;
-    //#pragma omp parallel for
-    //for (irl = 0; irl < linIx; ++irl)
-    //{
-    //    sr[irl] = sr[irl] / ((double) nHist);
-    //}
+    //Check output
+    mexPrintf("Verifying sparse Matrix... ");
+    for (int ix = 0; ix < linIx; ix++)
+    {
+        mwIndex currIx = irs[ix];
+        double currVal = sr[ix];
+        
+        if (currIx > gridsize)
+            mexPrintf("Invalid dose-cube index %d at linear index %d in sparse matrix check!",currIx,linIx);
+    }
+    mexPrintf("done!\n");
 
     if (outputVariance) {
         /* Truncate the matrix to the exact size by reallocation */
@@ -1569,22 +1589,11 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
         mxSetPr(plhs[1], mxRealloc(sr_var, linIx*sizeof(double)));
         mxSetIr(plhs[1], mxRealloc(irs_var, linIx*sizeof(mwIndex)));
         sr_var  = mxGetPr(plhs[1]);
-        irs_var = mxGetIr(plhs[1]);
-        
-        //#pragma omp parallel for
-        //for (irl = 0; irl < linIx; ++irl)
-        //{
-        //    sr_var[irl] = (sr_var[irl] - sr[irl]*sr[irl])/((double)(nHist-1));
-        //}                
+        irs_var = mxGetIr(plhs[1]);           
     }
 
-    
-        
-    
     /* Print some output and execution time up to this point */
-    mexPrintf("Simulation finished\n");
-    mexPrintf("Execution time up to this point : %8.2f seconds\n",
-           (omc_get_time() - tbegin));    
+    mexPrintf("Simulation finished\n"); 
        
     /* Cleaning */
     cleanPhantom();
@@ -1598,6 +1607,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     cleanScore();
     cleanSource();
 
+    //Cleaning private random generators and particle stack
     #pragma omp parallel
     {
       cleanRandom();
@@ -1607,7 +1617,5 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     /* Get total execution time */
     mexPrintf("Total execution time : %8.5f seconds\n",
            (omc_get_time() - tbegin));
-    
-    return;
     
 }
