@@ -63,17 +63,17 @@ struct Random {
 /* Initialization function for the RANMAR random number generator (RNG) 
 proposed by Marsaglia and Zaman and adapted from the EGSnrc version to be 
 used in ompMC. */
-extern void initRandom(void);
+void initRandom(void);
 
 /* Generation function for the RANMAR random number generator (RNG) proposed 
 by Marsaglia and Zaman. It generates NRANDOM floating point numbers in 
 each call */
-extern void getRandom(void);
+void getRandom(void);
 
 /* Get a single floating random number in [0,1) using the RANMAR RNG */
-extern double setRandom(void);
+double setRandom(void);
 
-extern void cleanRandom(void);
+void cleanRandom(void);
 
 /******************************************************************************/
 

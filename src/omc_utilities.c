@@ -160,6 +160,3 @@ struct inputItems input_items[INPUT_PAIRS];     // key,value pairs
 int input_idx = 0;                              // number of key,value pair
 
 /******************************************************************************/
-
-/* Flag set by '--verbose' argument */
-int verbose_flag = 0;
