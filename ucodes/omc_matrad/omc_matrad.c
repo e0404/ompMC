@@ -311,31 +311,18 @@ void initPhantom() {
 
         linIx = mxCalcSingleSubscript(tmp_fieldpointer,2,tmpSubs);
 
-        if (linIx >= nmaterials)
-            break;
-
-        mexPrintf("Material %d of %d, Linear Index %d\n",iMat,nmaterials,linIx);
-
         tmpCellPointer = mxGetCell(tmp_fieldpointer,linIx);
         
-        /*
         if (tmpCellPointer == NULL)
             mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Material could not be read!");
-        */
-
+        
         char *tmp;
-
         tmp = mxArrayToString(tmpCellPointer);
-        //tmp = mxGetChars(tmpCellPointer);
-        if (tmp)
-        {
-            tmp = strcpy(media.med_names[iMat],tmp);
-            //mexPrintf(tmp);
-        }
-        else
-        {
+        
+        if (tmp == NULL)
             mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Material string could not be read!");
-        }
+        
+        tmp = strcpy(media.med_names[iMat],tmp);        
     }
 
     /* Get boundaries, density and material index for each voxel */
