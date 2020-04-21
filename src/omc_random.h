@@ -59,6 +59,9 @@ struct Random {
 	extern struct Random rng;
 	#pragma omp threadprivate(rng)
 #endif
+#ifndef M_PI
+    #define M_PI 3.14159265358979323846
+#endif
 
 /* Initialization function for the RANMAR random number generator (RNG) 
 proposed by Marsaglia and Zaman and adapted from the EGSnrc version to be 
@@ -74,6 +77,10 @@ void getRandom(void);
 double setRandom(void);
 
 void cleanRandom(void);
+
+double setStandardNormalRandom(const double mu, const double sigma);
+
+void boxMuller(double rndnormal[2]);
 
 /******************************************************************************/
 

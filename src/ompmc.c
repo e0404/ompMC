@@ -862,13 +862,30 @@ void initRayleighData(void) {
          inside EGSnrc*/
         double emin = exp((1.0 - photon_data.ge0[i])/photon_data.ge1[i]);
         double emax = exp((MXGE - photon_data.ge0[i])/photon_data.ge1[i]);
-        
+                
+
         /* The following is to avoid log(0) */
         for (int j=0; j<MXRAYFF; j++) {
+            
+            //Use a union for value aliasing (standard conform)
+            union {
+		        double ff;
+		        unsigned long zero;
+	        } conv = {ff[i*MXRAYFF + j]}; // member 'ff' set to value in ff array.
+            
+            if (conv.zero == 0) 
+            {
+                conv.zero = 1;
+                ff[i*MXRAYFF + j] = conv.ff;
+            }
+            
+            //non-standard way 
+            /*
             if (*((unsigned long*)&ff[i*MXRAYFF + j]) == 0) {
                 unsigned long zero = 1;
                 ff[i*MXRAYFF + j] = *((double*)&zero);
             }
+            */
         }
         
         /* Calculating the cumulative distribution */
