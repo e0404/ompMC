@@ -1550,13 +1550,15 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
             if (outputVariance) {
                 /* Set new nzmax and reallocate more memory */
                 mxSetNzmax(plhs[1], nzmax);
-                mxSetPr(plhs[1], (double *) mxRealloc(sr, nzmax*sizeof(double)));
-                mxSetIr(plhs[1], (mwIndex *)  mxRealloc(irs, nzmax*sizeof(mwIndex)));
+                mxSetPr(plhs[1], (double *) mxRealloc(sr_var, nzmax*sizeof(double)));
+                mxSetIr(plhs[1], (mwIndex *)  mxRealloc(irs_var, nzmax*sizeof(mwIndex)));
             
                 /* Use the new pointers */
                 sr_var  = mxGetPr(plhs[1]);
                 irs_var = mxGetIr(plhs[1]);
             }
+
+            sparse_reallocations++;
         }
 
 
