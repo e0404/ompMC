@@ -25,8 +25,8 @@
 *****************************************************************************/
 
 /******************************************************************************
-/* Definitions needed if source file compiled with mex. This macro must be 
-/* enabled during compilation time.
+ Definitions needed if source file compiled with mex. This macro must be 
+ enabled during compilation time.
 *****************************************************************************/
 #include <mex.h>
 
@@ -115,7 +115,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp_fieldpointer = mxGetField(mcOpt,0,"nHistories");
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
         tmp = mxArrayToString(tmp2);        
@@ -127,7 +127,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp_fieldpointer = mxGetField(mcOpt,0,"nBatches");
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
         tmp = mxArrayToString(tmp2);        
@@ -139,7 +139,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp_fieldpointer = mxGetField(mcOpt,0,"nSplit");
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
         tmp = mxArrayToString(tmp2);        
@@ -159,7 +159,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");  
 
     if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
         tmp = mxArrayToString(tmp2);        
@@ -171,7 +171,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp_fieldpointer = mxGetField(mcOpt,0,"charge");    
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
         tmp = mxArrayToString(tmp2);        
@@ -183,7 +183,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp_fieldpointer = mxGetField(mcOpt,0,"global_ecut");    
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
         tmp = mxArrayToString(tmp2);        
@@ -195,7 +195,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp_fieldpointer = mxGetField(mcOpt,0,"global_pcut");    
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
         tmp = mxArrayToString(tmp2);        
@@ -207,7 +207,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp_fieldpointer = mxGetField(mcOpt,0,"randomSeeds");    
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
         tmp = mxArrayToString(tmp2);        
@@ -243,7 +243,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp_fieldpointer = mxGetField(mcOpt,0,"relDoseThreshold");
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
         tmp = mxArrayToString(tmp2);        
@@ -281,42 +281,65 @@ struct Geom geometry;
 void initPhantom() {
     
     /* Get phantom information from matRad */
-    unsigned int nfields;
-    int ngeostructfields;
-    mwSize ndim, nmaterials;
-    mwSize *materialdim;
+    //int ngeostructfields;
+    mwSize nmaterials;
+    const mwSize *materialdim;
     mxArray *tmp_fieldpointer;
 
-    ngeostructfields = mxGetNumberOfFields(mcGeo);
+    //ngeostructfields = mxGetNumberOfFields(mcGeo);
 
     /* Get number of media and media names. This info is saved in media struct */
     tmp_fieldpointer = mxGetField(mcGeo,0,"material");
+
+    if (tmp_fieldpointer == NULL)
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","No materials specified!");
+    
+    
     materialdim = mxGetDimensions(tmp_fieldpointer);
     nmaterials = materialdim[0];    
     media.nmed = nmaterials;
     
     mwIndex tmpSubs[2];
-    char *tmp;
-    for (int iMat = 0; iMat < nmaterials; iMat++) {
-        tmpSubs[0] = iMat;
-        tmpSubs[1] = 0;
-        mwSize linIx = mxCalcSingleSubscript(tmp_fieldpointer,2,tmpSubs);
-        mxArray* tmpCellPointer = mxGetCell(tmp_fieldpointer,linIx);
+    mwSize iMat;
+    mwIndex linIx;
+    mxArray* tmpCellPointer;
+    
+    for (iMat = 0; iMat < nmaterials; ++iMat) 
+    {
+        tmpSubs[0] = (mwIndex) iMat;
+        tmpSubs[1] = 0;                        
+
+        linIx = mxCalcSingleSubscript(tmp_fieldpointer,2,tmpSubs);
+
+        if (linIx >= nmaterials)
+            break;
+
+        mexPrintf("Material %d of %d, Linear Index %d\n",iMat,nmaterials,linIx);
+
+        tmpCellPointer = mxGetCell(tmp_fieldpointer,linIx);
         
+        /*
+        if (tmpCellPointer == NULL)
+            mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Material could not be read!");
+        */
+
+        char *tmp;
+
         tmp = mxArrayToString(tmpCellPointer);
+        //tmp = mxGetChars(tmpCellPointer);
         if (tmp)
         {
-            strcpy(media.med_names[iMat],tmp);
+            tmp = strcpy(media.med_names[iMat],tmp);
+            //mexPrintf(tmp);
         }
         else
         {
-            mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Material string could not be read!");
+            mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Material string could not be read!");
         }
     }
 
     /* Get boundaries, density and material index for each voxel */
     const mwSize *cubeDim = mxGetDimensions(cubeRho);        
-    mwSize nCubeElements = cubeDim[0]*cubeDim[1]*cubeDim[2];
     
     geometry.isize = cubeDim[0];
     geometry.jsize = cubeDim[1];
@@ -563,6 +586,8 @@ void initSource() {
     /* Get spectrum file path from input data */
     char spectrum_file[128];
     char buffer[BUFFER_SIZE];
+
+    char* fstatus;
     
     source.spectrum = 1;    /* energy spectrum as default case */
     
@@ -588,7 +613,10 @@ void initSource() {
             mexPrintf("Path to spectrum file : %s\n", spectrum_file);      
         
         /* Read spectrum file title */
-        fgets(buffer, BUFFER_SIZE, fp);
+        fstatus = fgets(buffer, BUFFER_SIZE, fp);
+        if (fstatus == NULL)
+            mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Could not parse spectrum file.\n");
+        
         if (verbose_flag > 1)
             mexPrintf("Spectrum file title: %s", buffer);
 
@@ -598,7 +626,10 @@ void initSource() {
         int nensrc;     /* number of energy bins in spectrum histogram */
         int imode;      /* 0 : histogram counts/bin, 1 : counts/MeV*/
         
-        fgets(buffer, BUFFER_SIZE, fp);
+        fstatus = fgets(buffer, BUFFER_SIZE, fp);
+        if (fstatus == NULL)
+            mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Could not parse spectrum file.\n");
+
         sscanf(buffer, "%d %lf %d", &nensrc, &enmin, &imode);
         
         if (nensrc > MXEBIN) {
@@ -614,7 +645,10 @@ void initSource() {
         
         /* Read spectrum information */
         for (int i=0; i<nensrc; i++) {
-            fgets(buffer, BUFFER_SIZE, fp);
+            fstatus = fgets(buffer, BUFFER_SIZE, fp);
+            if (fstatus == NULL)
+                mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Could not parse spectrum file.\n");
+
             sscanf(buffer, "%lf %lf", &ensrcd[i], &srcpdf[i]);
         }
         if (verbose_flag > 2)
@@ -1169,6 +1203,9 @@ void initHistory(int ibeamlet) {
     
     rnno1 = setRandom();
     rnno2 = setRandom();
+
+    //double rnGauss[2];
+    //boxMuller(rnGauss);
     
     xiso = rnno1*source.xside1[ibeamlet] + rnno2*source.xside2[ibeamlet] + 
             source.xcorner[ibeamlet];
@@ -1180,10 +1217,26 @@ void initHistory(int ibeamlet) {
     /* Norm of the resulting vector from the source of current beam to the 
      position of the particle on bixel */
     int ibeam = source.ibeam[ibeamlet];
+       
+    //Gaussian Source
+    /*
+    double stdSource[3] = {0.5, 0.5, 0.5};
+    double rndNormalSource[3];
+    
+    rndNormalSource[0] = setStandardNormalRandom(source.xsource[ibeam],stdSource[0]);
+    rndNormalSource[1] = setStandardNormalRandom(source.ysource[ibeam],stdSource[1]);
+    rndNormalSource[2] = setStandardNormalRandom(source.zsource[ibeam],stdSource[2]);
 
+    double xd = xiso - rndNormalSource[0];
+    double yd = yiso - rndNormalSource[1];
+    double zd = ziso - rndNormalSource[2];
+    */
+
+    //Point source
     double xd = xiso - source.xsource[ibeam];
     double yd = yiso - source.ysource[ibeam];
     double zd = ziso - source.zsource[ibeam];
+
 
     double vnorm = sqrt(xd*xd + yd*yd + zd*zd);            
         
@@ -1416,7 +1469,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
 	waitbarInputs[1] = waitbarMessage;	
 	
     /* Create the waitbar with h = waitbar(progress,message); */
-    int matlabCallStatus;
+    int matlabCallStatus = 0;
     if (verbose_flag > 1) {
         matlabCallStatus = mexCallMATLAB(1, waitbarOutput, 2, waitbarInputs, "waitbar");
         waitbarHandle = waitbarOutput[0];
@@ -1439,12 +1492,12 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
 
     int outputVariance = (nlhs >= 2);
 
-    double *sr_var;
-    mwIndex *irs_var;
-    mwIndex *jcs_var;
+    double *sr_var = NULL;
+    mwIndex *irs_var = NULL;
+    mwIndex *jcs_var = NULL;
     if (outputVariance)
     {
-        plhs[1] = mxCreateSparse(nCubeElements,source.nbeamlets,nzmax,mxREAL);
+        plhs[1] = mxCreateSparse(nCubeElements,(mwSize) source.nbeamlets,nzmax,mxREAL);
         sr_var  = mxGetPr(plhs[1]);
         irs_var = mxGetIr(plhs[1]);
         jcs_var = mxGetJc(plhs[1]);
@@ -1462,6 +1515,10 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     
     if (verbose_flag > 0)
         mexPrintf("Running ompMC simulation...\n");
+
+    int sparse_reallocations;
+    sparse_reallocations = 0;
+    
     for(int ibeamlet=0; ibeamlet<source.nbeamlets; ibeamlet++) {
         for (int ibatch=0; ibatch<nbatch; ibatch++) {            
             int ihist;
@@ -1616,6 +1673,10 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     
     if (verbose_flag >= 3)
         mexPrintf("Sparse MC Dij has %d (%f percent) elements!\n", linIx, (double)linIx/((double)nCubeElements*(double)source.nbeamlets));
+
+    if (verbose_flag >= 3)
+        mexPrintf("Needed %d sparse matrix reallocations.\n",sparse_reallocations);
+
     
     /* Truncate the matrix to the exact size by reallocation */
     mxSetNzmax(plhs[0], linIx);
@@ -1631,7 +1692,6 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     for (int ix = 0; ix < linIx; ix++)
     {
         mwIndex currIx = irs[ix];
-        double currVal = sr[ix];
         
         if (currIx > gridsize)
             mexPrintf("Invalid dose-cube index %d at linear index %d in sparse matrix check!",currIx,linIx);
