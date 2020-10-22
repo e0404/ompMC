@@ -62,9 +62,88 @@ const mxArray *mcOpt;
 //verbose flag
 int verbose_flag;
 
+//Data Types and Structs
+struct Geom {
+    int *med_indices;           // index of the media in each voxel
+    double *med_densities;      // density of the medium in each voxel
+    
+    int isize;                  // number of voxels on each direction
+    int jsize;
+    int ksize;
+    
+    double *xbounds;            // boundaries of voxels on each direction
+    double *ybounds;
+    double *zbounds;
+};
+struct Geom geometry;
+
+struct Source {
+    int nmed;                   // number of media in phantom file
+    int spectrum;               // 0 : monoenergetic, 1 : spectrum
+    int charge;                 // 0 : photons, -1 : electron, +1 : positron
+    
+    /* For monoenergetic source */
+    double energy;
+    
+    /* For spectrum */
+    double deltak;              // number of elements in inverse CDF
+    double *cdfinv1;            // energy value of bin
+    double *cdfinv2;            // prob. that particle has energy xi
+    
+    /* Beamlets shape information */
+    int nbeamlets;               // number of beamlets per beam
+    int *ibeam;                  // index of beam per beamlet
+    
+    double *xsource;           // coordinates of the source of each beam
+    double *ysource;          
+    double *zsource;          
+        
+    double *xcorner;           // coordinates of the bixel corner
+    double *ycorner;           
+    double *zcorner;  
+    
+    double *xside1;           // coordinates of the first side of bixel
+    double *yside1;           
+    double *zside1;
+    
+    double *xside2;           // coordinates of the second side of bixel
+    double *yside2;           
+    double *zside2;
+        
+};
+struct Source source;
+
+
+
+enum sourceGeometryType {POINT, GAUSSIAN};
+struct OmcConfig {
+    //Simulation parameters
+    int nHist;
+    int nBatch;
+    double doseThreshold;
+
+    //Source Parameters
+    double monoEnergy;
+    char * spectrumFile;
+    //TODO: passable spectrum
+
+    enum sourceGeometryType sourceGeometry;
+    double sourceGaussianWidth; //Assuming 5mm FWHM penumbra if the source is gaussian
+};
+
+struct OmcConfig omcConfig;
+
 /* Function used to parse input from matRad */
 void parseInput(int nrhs, const mxArray *prhs[]) {
-
+    //Default values
+    omcConfig.nHist = 1e4;
+    omcConfig.nBatch = 10;
+    omcConfig.doseThreshold = 0.01;
+    omcConfig.monoEnergy = 0.1;
+    omcConfig.sourceGeometry = POINT;
+    omcConfig.sourceGaussianWidth = 2.123; //Assuming 5mm FWHM penumbra if the source is gaussian
+    
+    
     mxArray *tmp_fieldpointer;
     char *tmp;
 
@@ -110,33 +189,42 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     mxArray* tmp2;
     int status;
     int nInput = 0;
-    
-    sprintf(input_items[nInput].key,"ncase");
+        
     tmp_fieldpointer = mxGetField(mcOpt,0,"nHistories");
-    status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
-    if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
-    else
-    {
-        tmp = mxArrayToString(tmp2);        
-        strcpy(input_items[nInput].value,tmp);
-    }
     
-    nInput++;
-    sprintf(input_items[nInput].key,"nbatch");
+    //size_t nHistLength = mxGetNumberOfElements(tmp_fieldpointer);
+    if (tmp_fieldpointer)    
+        omcConfig.nHist = mxGetScalar(tmp_fieldpointer);
+    
     tmp_fieldpointer = mxGetField(mcOpt,0,"nBatches");
-    status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
-    if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
-    else
-    {
-        tmp = mxArrayToString(tmp2);        
-        strcpy(input_items[nInput].value,tmp);
+    if (tmp_fieldpointer)
+        omcConfig.nBatch = mxGetScalar(tmp_fieldpointer);
+
+    tmp_fieldpointer = mxGetField(mcOpt,0,"sourceGeometry");
+    if (tmp_fieldpointer) {
+        size_t buflen = mxGetNumberOfElements(tmp_fieldpointer) + 1;
+        char* sourceGeoTmpStr = (char*) mxCalloc(buflen + 1,sizeof(char));
+        if (mxGetString(tmp_fieldpointer, sourceGeoTmpStr, buflen) != 0) 
+            mexErrMsgIdAndTxt("MATLAB:explore:invalidStringArray","Invalid string for source Geometry");
+
+        if (strcmpi(sourceGeoTmpStr,"gaussian"))
+            omcConfig.sourceGeometry = GAUSSIAN;
+        else if (strcmpi(sourceGeoTmpStr,"point"))
+            omcConfig.sourceGeometry = POINT;
+        else
+            mexPrintf("Source geometry '%s' unkwnown, using 'point'",sourceGeoTmpStr);            
     }
     
-    nInput++; /* Get splitting factor */
-    sprintf(input_items[nInput].key,"nsplit");
+    /* Get splitting factor */
+    /*  
     tmp_fieldpointer = mxGetField(mcOpt,0,"nSplit");
+    if (tmp_fieldpointer)
+        omcConfig.nSplit = mxGetScalar(tmp_fieldpointer);
+    */
+
+    nInput++;
+    sprintf(input_items[nInput].key,"nsplit");
+    tmp_fieldpointer = mxGetField(mcOpt,0,"nSplit");    
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
         mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
@@ -146,25 +234,24 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
         strcpy(input_items[nInput].value,tmp);
     }
 
-    nInput++;
-    sprintf(input_items[nInput].key,"spectrum file");
     tmp_fieldpointer = mxGetField(mcOpt,0,"spectrumFile");
-    tmp = mxArrayToString(tmp_fieldpointer);
-    strcpy(input_items[nInput].value,tmp);
-    
-    
-    nInput++;
-    sprintf(input_items[nInput].key,"mono energy");
-    tmp_fieldpointer = mxGetField(mcOpt,0,"monoEnergy");
-    status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");  
-
-    if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
+    if (tmp_fieldpointer) {
+        size_t buflen = mxGetNumberOfElements(tmp_fieldpointer) + 1;
+        omcConfig.spectrumFile = (char*) mxCalloc(buflen + 1,sizeof(char));
+        if (mxGetString(tmp_fieldpointer, omcConfig.spectrumFile, buflen) != 0) 
+            mexErrMsgIdAndTxt("MATLAB:explore:invalidStringArray","Invalid string for path to spectrum file!");
+        
+    }
     else
     {
-        tmp = mxArrayToString(tmp2);        
-        strcpy(input_items[nInput].value,tmp);
+        size_t buflen = 255;
+        omcConfig.spectrumFile = (char*) mxCalloc(buflen + 1,sizeof(char));
+        omcConfig.spectrumFile = "./spectra/mohan6.spectrum";
     }
+   
+    tmp_fieldpointer = mxGetField(mcOpt,0,"monoEnergy");
+    if (tmp_fieldpointer)
+        omcConfig.monoEnergy = mxGetScalar(tmp_fieldpointer);    
     
     nInput++;
     sprintf(input_items[nInput].key,"charge");
@@ -238,17 +325,10 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp = mxArrayToString(tmp_fieldpointer);
     strcpy(input_items[nInput].value,tmp);
 
-    nInput++;
-    sprintf(input_items[nInput].key,"relative dose threshold");
     tmp_fieldpointer = mxGetField(mcOpt,0,"relDoseThreshold");
-    status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
-    if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
-    else
-    {
-        tmp = mxArrayToString(tmp2);        
-        strcpy(input_items[nInput].value,tmp);
-    }
+    if (tmp_fieldpointer)
+        omcConfig.doseThreshold = mxGetScalar(tmp_fieldpointer);
+    
     
     input_idx = nInput;
     
@@ -262,22 +342,9 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     return;
 }
 
+
 /******************************************************************************/
 /* Geometry definitions */
-struct Geom {
-    int *med_indices;           // index of the media in each voxel
-    double *med_densities;      // density of the medium in each voxel
-    
-    int isize;                  // number of voxels on each direction
-    int jsize;
-    int ksize;
-    
-    double *xbounds;            // boundaries of voxels on each direction
-    double *ybounds;
-    double *zbounds;
-};
-struct Geom geometry;
-
 void initPhantom() {
     
     /* Get phantom information from matRad */
@@ -532,72 +599,28 @@ double hownear(void) {
 const int MXEBIN = 200;     // number of energy bins of spectrum
 const int INVDIM = 1000;    // number of bins in inverse CDF
 
-struct Source {
-    int nmed;                   // number of media in phantom file
-    int spectrum;               // 0 : monoenergetic, 1 : spectrum
-    int charge;                 // 0 : photons, -1 : electron, +1 : positron
-    
-    /* For monoenergetic source */
-    double energy;
-    
-    /* For spectrum */
-    double deltak;              // number of elements in inverse CDF
-    double *cdfinv1;            // energy value of bin
-    double *cdfinv2;            // prob. that particle has energy xi
-    
-    /* Beamlets shape information */
-    int nbeamlets;               // number of beamlets per beam
-    int *ibeam;                  // index of beam per beamlet
-    
-    double *xsource;           // coordinates of the source of each beam
-    double *ysource;          
-    double *zsource;          
-        
-    double *xcorner;           // coordinates of the bixel corner
-    double *ycorner;           
-    double *zcorner;  
-    
-    double *xside1;           // coordinates of the first side of bixel
-    double *yside1;           
-    double *zside1;
-    
-    double *xside2;           // coordinates of the second side of bixel
-    double *yside2;           
-    double *zside2;
-        
-};
-struct Source source;
-
 void initSource() {
     
     /* Get spectrum file path from input data */
-    char spectrum_file[128];
     char buffer[BUFFER_SIZE];
 
     char* fstatus;
     
-    source.spectrum = 1;    /* energy spectrum as default case */
-    
-    /* First check of spectrum file was given as an input */
-    if (getInputValue(buffer, "spectrum file") != 1) {
-        mexPrintf("Can not find 'spectrum file' key on input file.\n");
-        mexPrintf("Switch to monoenergetic case.\n");
-        source.spectrum = 0;    /* monoenergetic source */
-    }
+    source.spectrum = 1;    /* energy spectrum as default case */    
     
     if (source.spectrum) {
-        removeSpaces(spectrum_file, buffer);
+        //removeSpaces(omcConfig.spectrumFile, buffer);
         
         /* Open .source file */
         FILE *fp;
         
-        if ((fp = fopen(spectrum_file, "r")) == NULL) {
-            mexPrintf("Unable to open file: %s\n", spectrum_file);
+        if ((fp = fopen(omcConfig.spectrumFile, "r")) == NULL) {
+            mexPrintf("Unable to open file: %s\n", omcConfig.spectrumFile);
             exit(EXIT_FAILURE);
         }
         
         if (verbose_flag > 2)
-            mexPrintf("Path to spectrum file : %s\n", spectrum_file);      
+            mexPrintf("Path to spectrum file : %s\n", omcConfig.spectrumFile);      
         
         /* Read spectrum file title */
         fstatus = fgets(buffer, BUFFER_SIZE, fp);
@@ -728,12 +751,8 @@ void initSource() {
         free(srcpdf);
         free(srccdf);
     }
-    else {  /* monoenergetic source */
-        if (getInputValue(buffer, "mono energy") != 1) {
-            mexPrintf("Can not find 'mono energy' key on input file.\n");
-            exit(EXIT_FAILURE);
-        }
-        source.energy = atof(buffer);
+    else {  /* monoenergetic source */        
+        source.energy = omcConfig.monoEnergy;
         mexPrintf("%f monoenergetic source\n", source.energy);
         
     }
@@ -1204,25 +1223,34 @@ void initHistory(int ibeamlet) {
     /* Norm of the resulting vector from the source of current beam to the 
      position of the particle on bixel */
     int ibeam = source.ibeam[ibeamlet];
-       
-    //Gaussian Source
-    /*
-    double stdSource[3] = {0.5, 0.5, 0.5};
-    double rndNormalSource[3];
-    
-    rndNormalSource[0] = setStandardNormalRandom(source.xsource[ibeam],stdSource[0]);
-    rndNormalSource[1] = setStandardNormalRandom(source.ysource[ibeam],stdSource[1]);
-    rndNormalSource[2] = setStandardNormalRandom(source.zsource[ibeam],stdSource[2]);
 
-    double xd = xiso - rndNormalSource[0];
-    double yd = yiso - rndNormalSource[1];
-    double zd = ziso - rndNormalSource[2];
-    */
+    double sourcePos[3];
+
+    //Gaussian Source
+
+    switch (omcConfig.sourceGeometry)
+    {
+        case POINT:
+            sourcePos[0] = source.xsource[ibeam];
+            sourcePos[1] = source.ysource[ibeam];
+            sourcePos[2] = source.zsource[ibeam];
+            break;
+        case GAUSSIAN: 
+            double stdSource[3] = {2.133, 2.133, 2.133};
+        
+            sourcePos[0] = setStandardNormalRandom(source.xsource[ibeam],stdSource[0]);
+            sourcePos[1] = setStandardNormalRandom(source.ysource[ibeam],stdSource[1]);
+            sourcePos[2] = setStandardNormalRandom(source.zsource[ibeam],stdSource[2]);
+            break;
+        default:
+            mexErrMsgIdAndTxt("matRad:matRad_ompInterface:invalidSourceGeometry","Source type not defined!");
+    }
+        
 
     //Point source
-    double xd = xiso - source.xsource[ibeam];
-    double yd = yiso - source.ysource[ibeam];
-    double zd = ziso - source.zsource[ibeam];
+    double xd = xiso - sourcePos[0];
+    double yd = yiso - sourcePos[1];
+    double zd = ziso - sourcePos[2];
 
 
     double vnorm = sqrt(xd*xd + yd*yd + zd*zd);            
@@ -1407,17 +1435,9 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     
     /* Get number of histories, statistical batches and splitting factor */
     char buffer[BUFFER_SIZE];
-    if (getInputValue(buffer, "ncase") != 1) {
-        mexPrintf("Can not find 'ncase' key on input file.\n");
-        exit(EXIT_FAILURE);
-    }
-    int nhist = atoi(buffer);
     
-    if (getInputValue(buffer, "nbatch") != 1) {
-        mexPrintf("Can not find 'nbatch' key on input file.\n");
-        exit(EXIT_FAILURE);
-    }
-    int nbatch = atoi(buffer); 
+    int nhist = omcConfig.nHist;
+    int nbatch = omcConfig.nBatch; 
     
     if (nhist/nbatch == 0) {
         nhist = nbatch;
@@ -1435,11 +1455,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
         mexPrintf("Histories per batch: %d\n", nperbatch);
     }
 
-    if (getInputValue(buffer, "relative dose threshold") != 1) {
-        mexPrintf("Can not find 'relative dose threshold' key on input file.\n");
-        exit(EXIT_FAILURE);
-    }    
-    double relDoseThreshold = atof(buffer);
+    double relDoseThreshold = omcConfig.doseThreshold;
 
     if (verbose_flag > 2)
         mexPrintf("Using a relative dose cut-off of %f\n",relDoseThreshold);
