@@ -38,17 +38,17 @@ https://github.com/bmaynard/iniReader */
 #define INPUT_EXT ".inp"  // extension of input files
 
 /* Parse a configuration file */
-extern void parseInputFile(char *file_name);
+void parseInputFile(char *file_name);
 
 /* Copy the value of the selected input item to the char pointer */
-extern int getInputValue(char *dest, char *key);
+int getInputValue(char *dest, char *key);
 
 /* Returns nonzero if line is a string containing only whitespace or is empty */
-extern int lineBlack(char *line);
+int lineBlack(char *line);
 
 /* Remove white spaces from string str_untrimmed and saves the results in
  str_trimmed. Useful for string input values, such as file names */
-extern void removeSpaces(char* str_trimmed, const char* str_untrimmed);
+void removeSpaces(char* str_trimmed, const char* str_untrimmed);
 
 struct inputItems {
     char key[BUFFER_SIZE];
@@ -56,7 +56,7 @@ struct inputItems {
 };
 
 extern struct inputItems input_items[];     // key,value pairs
-extern int input_idx;                       // number of key,value pair
+int input_idx;                       // number of key,value pair
 
 /******************************************************************************/
 

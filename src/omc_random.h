@@ -59,21 +59,28 @@ struct Random {
 	extern struct Random rng;
 	#pragma omp threadprivate(rng)
 #endif
+#ifndef M_PI
+    #define M_PI 3.14159265358979323846
+#endif
 
 /* Initialization function for the RANMAR random number generator (RNG) 
 proposed by Marsaglia and Zaman and adapted from the EGSnrc version to be 
 used in ompMC. */
-extern void initRandom(void);
+void initRandom(void);
 
 /* Generation function for the RANMAR random number generator (RNG) proposed 
 by Marsaglia and Zaman. It generates NRANDOM floating point numbers in 
 each call */
-extern void getRandom(void);
+void getRandom(void);
 
 /* Get a single floating random number in [0,1) using the RANMAR RNG */
-extern double setRandom(void);
+double setRandom(void);
 
-extern void cleanRandom(void);
+void cleanRandom(void);
+
+double setStandardNormalRandom(const double mu, const double sigma);
+
+void boxMuller(double rndnormal[2]);
 
 /******************************************************************************/
 

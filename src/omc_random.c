@@ -32,8 +32,19 @@
 *******************************************************************************/
 
 #include "omc_random.h"
+#include "omc_utilities.h"
 
+#include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
+
+/* Redefine printf() function due to conflicts with mex and OpenMP */
+#ifdef _OPENMP
+    #include <omp.h>
+
+    #undef printf
+    #define printf(...) fprintf(stderr,__VA_ARGS__)
+#endif
 
 /* Common functions and definitions */
 #if defined(_MSC_VER)
@@ -178,6 +189,38 @@ double setRandom() {
     rng.rng_seed += 1;
     
     return rnno;
+}
+
+double erfinv_approx(double x) {
+   double tt1, tt2, lnx, sgn;
+   sgn = (x < 0) ? -1.0 : 1.0;
+
+   x = (1.0 - x)*(1.0 + x);        // x = 1 - x*x;
+   lnx = log(x);
+
+   tt1 = 2.0/(M_PI*0.147) + 0.5 * lnx;
+   tt2 = 1.0/(0.147) * lnx;
+
+   return(sgn*sqrt(-tt1 + sqrt(tt1*tt1 - tt2)));
+}
+
+double setStandardNormalRandom(const double mu, const double sigma) {
+    double rnno = setRandom();
+    rnno = sqrt(2.0) * erfinv_approx(2.0*rnno - 1.0); 
+    rnno = mu + sigma * rnno;
+    return rnno;
+}
+
+void boxMuller(double rndnormal[2])
+{
+    rndnormal[0] = setRandom();
+    rndnormal[1] = setRandom();
+
+    double R = sqrt(-2.0*log(rndnormal[0]));
+    double Theta = 2.0*M_PI*rndnormal[1];
+
+    rndnormal[0] = R*cos(Theta);
+    rndnormal[1] = R*sin(Theta);
 }
 
 void cleanRandom() {

@@ -23,7 +23,9 @@
 
 #if defined(_WIN32) || defined(_WIN64)
     /* We are on Windows */
-    # define strtok_r strtok_s
+    #define strtok_r strtok_s
+#else
+    extern char *strtok_r(char *, const char *, char **);
 #endif
 
 #ifndef M_PI
@@ -34,9 +36,9 @@
 * User code definitions. The following functions must be provided by the user
 * in its code.
 *******************************************************************************/
-extern void ausgab(double edep);    // scoring function
-extern void howfar(int *idisc, int *irnew, double *ustep); // geometry functions
-extern double hownear(void);
+void ausgab(double edep);    // scoring function
+void howfar(int *idisc, int *irnew, double *ustep); // geometry functions
+double hownear(void);
 
 /*******************************************************************************
 * Definitions for Monte Carlo simulation of particle transport 
@@ -79,8 +81,8 @@ struct Stack {
 	#pragma omp threadprivate(stack)
 #endif
 
-extern void initStack(void);
-extern void cleanStack(void);
+void initStack(void);
+void cleanStack(void);
 
 struct Uphi {
     /* This structure holds data saved between uphi() calls */
@@ -88,12 +90,12 @@ struct Uphi {
     double cosphi, sinphi;
 };
 
-extern void transferProperties(int npnew, int npold);
-extern void selectAzimuthalAngle(double *costhe, double *sinthe);
-extern void uphi21(struct Uphi *uphi, double costhe, double sinthe);
-extern void uphi32(struct Uphi *uphi, double costhe, double sinthe);
-extern int pwlfInterval(int idx, double lvar, double *coef1, double *coef0);
-extern double pwlfEval(int idx, double lvar, double *coef1, double *coef0);
+void transferProperties(int npnew, int npold);
+void selectAzimuthalAngle(double *costhe, double *sinthe);
+void uphi21(struct Uphi *uphi, double costhe, double sinthe);
+void uphi32(struct Uphi *uphi, double costhe, double sinthe);
+int pwlfInterval(int idx, double lvar, double *coef1, double *coef0);
+double pwlfEval(int idx, double lvar, double *coef1, double *coef0);
 
 /*******************************************************************************
 * Photon physical processes definitions
@@ -111,20 +113,20 @@ struct Photon {
 };
 struct Photon photon_data;
 
-extern void readXsecData(char *file, int *ndat,
+void readXsecData(char *file, int *ndat,
                   double **xsec_data0,
                   double **xsec_data1);
 
-extern void heap_sort(int n, double *values, int *indices);
-extern double *get_data(int flag, int ne, int *ndat,
+void heap_sort(int n, double *values, int *indices);
+double *get_data(int flag, int ne, int *ndat,
                  double **data0, double **data1,
                  double *z_sorted, double *pz_sorted,
                  double ge0, double ge1);
-extern double kn_sigma0(double e);
+double kn_sigma0(double e);
 
-extern void initPhotonData(void);
-extern void cleanPhoton(void);
-extern void listPhoton(void);
+void initPhotonData(void);
+void cleanPhoton(void);
+void listPhoton(void);
 
 /* Rayleigh scattering definitions */
 #define MXRAYFF 100         // Rayleigh atomic form factor
@@ -143,11 +145,11 @@ struct Rayleigh {
 };
 struct Rayleigh rayleigh_data;
 
-extern void readFfData(double *xval, double **aff);
-extern void initRayleighData(void);
-extern void cleanRayleigh(void);
-extern void listRayleigh(void);
-extern void rayleigh(int imed, double eig, double gle, int lgle);
+void readFfData(double *xval, double **aff);
+void initRayleighData(void);
+void cleanRayleigh(void);
+void listRayleigh(void);
+void rayleigh(int imed, double eig, double gle, int lgle);
 
 /* Pair production definitions */
 #define FSC 0.00729735255664    // fine structure constant
@@ -167,23 +169,23 @@ struct Pair {
 };
 struct Pair pair_data;
 
-extern double fcoulc(double zi);
-extern double xsif(double zi, double fc);
-extern void initPairData(void);
-extern void cleanPair(void);
-extern void listPair(void);
-extern double setPairRejectionFunction(int imed, double xi, double esedei,
+double fcoulc(double zi);
+double xsif(double zi, double fc);
+void initPairData(void);
+void cleanPair(void);
+void listPair(void);
+double setPairRejectionFunction(int imed, double xi, double esedei,
                                 double eseder, double tteig);
-extern void pair(int imed);
+void pair(int imed);
 
 /* Compton scattering definitions */
-extern void compton(void);
+void compton(void);
 
 /* Photo electric effect definitions */
-extern void photo(void);
+void photo(void);
 
 /* Simulation of photon step */
-extern void photon(void);
+void photon(void);
 
 /*******************************************************************************
 * Electron physical processes definitions
@@ -250,8 +252,8 @@ struct Electron {
 };
 struct Electron electron_data;
 
-extern void cleanElectron(void);
-extern void listElectron(void);
+void cleanElectron(void);
+void listElectron(void);
 
 /* Spin data */
 #define MXE_SPIN 15
@@ -275,17 +277,17 @@ struct Spinr {
     int j;
 };
 
-extern void initSpinData(int nmed);
-extern void cleanSpin(void);
-extern void listSpin(void);
-extern void setSpline(double *x, double *f, double *a, double *b, double *c,
+void initSpinData(int nmed);
+void cleanSpin(void);
+void listSpin(void);
+void setSpline(double *x, double *f, double *a, double *b, double *c,
                 double *d,int n);
-extern double spline(double s, double *x, double *a, double *b, double *c,
+double spline(double s, double *x, double *a, double *b, double *c,
               double *d, int n);
-extern double spinRejection(int imed, int qel,	double elke, double beta2, 
+double spinRejection(int imed, int qel,	double elke, double beta2, 
     double q1, double cost, int *spin_index, int is_single, 
     struct Spinr *spin_r);
-extern void sscat(int imed, int qel, double chia2, double elke, double beta2,
+void sscat(int imed, int qel, double chia2, double elke, double beta2,
 	double *cost, double *sint);
 
 /* Screened Rutherford MS data */
@@ -316,43 +318,43 @@ struct Mscats {
     double omega2;
 };
 
-extern void readRutherfordMscat(int nmed);
-extern void initMscatData();
-extern void cleanMscat(void);
-extern void listMscat(void);
-extern void mscat(int imed, int qel, int *spin_index, int *find_index, 
+void readRutherfordMscat(int nmed);
+void initMscatData();
+void cleanMscat(void);
+void listMscat(void);
+void mscat(int imed, int qel, int *spin_index, int *find_index, 
     double elke, double beta2, double q1,  double lambda, double chia2, 
     double *cost, double *sint, struct Mscats *m_scat, struct Spinr *spin_r);
-extern double msdist(int imed, int iq, double rhof, double de, double tustep, 
+double msdist(int imed, int iq, double rhof, double de, double tustep, 
     double eke, double *x_final, double *y_final, double *z_final, 
     double *u_final, double *v_final, double *w_final);
 
 /* CSDA related definitions */
-extern double computeDrange(int imed, int iq, int lelke, double ekei,  
+double computeDrange(int imed, int iq, int lelke, double ekei,  
     double ekef, double elkei, double elkef);
-extern double computeEloss(int imed, int iq, int irl, double rhof, 
+double computeEloss(int imed, int iq, int irl, double rhof, 
     double tustep, double range, double eke, double elke, int lelke);
 
 /* Annihilation in rest */
-extern void rannih(void);
+void rannih(void);
 
 /* Bremsstrahlung */
-extern void brems(void);
+void brems(void);
 
 /* Moller scattering */
-extern void moller(void);
+void moller(void);
 
 /* Bhabha scattering */
-extern void bhabha(void);
+void bhabha(void);
 
 /* Annihilation in flight */
-extern void annih(void);
+void annih(void);
 
 /* Simulation of electron step */
-extern void electron(void);
+void electron(void);
 
 /* Simulation of the particle history */
-extern void shower(void);
+void shower(void);
 
 /* Media definitions */
 #define MXMED 9         // maximum number of media supported by the platform
@@ -403,8 +405,8 @@ struct Pegs {
 };
 struct Pegs pegs_data;
 
-extern void initMediaData(void);
-extern int readPegsFile(int *media_found);
+void initMediaData(void);
+int readPegsFile(int *media_found);
 
 /* Region-by-region definition */
 #define VACUUM -1
@@ -417,8 +419,8 @@ struct Region {
 };
 struct Region region;
 
-extern void initRegions(void);  // this function must be defined in user code
-extern void cleanRegions(void);
+void initRegions(void);  // this function must be defined in user code
+void cleanRegions(void);
 
 /******************************************************************************/
 
@@ -430,9 +432,9 @@ struct Vrt {
     /* photon splitting */
     int nsplit; // number of times the photon is divided
 };
-extern struct Vrt vrt;
+struct Vrt vrt;
 
-extern void initVrt(void);
+void initVrt(void);
 
 /******************************************************************************/
 

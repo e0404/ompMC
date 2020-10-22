@@ -25,29 +25,30 @@
 *****************************************************************************/
 
 /******************************************************************************
-/* Definitions needed if source file compiled with mex. This macro must be 
-/* enabled during compilation time.
+ Definitions needed if source file compiled with mex. This macro must be 
+ enabled during compilation time.
 *****************************************************************************/
 #include <mex.h>
 
+
 /* Redefine printf() function due to conflicts with mex and OpenMP */
+#include <stdio.h>
 #ifdef _OPENMP
     #include <omp.h>
 
     #undef printf
-    #define printf(...) fprintf(stderr,__VA_ARGS__)
+    #define printf(...) fprintf(stdout,__VA_ARGS__)
 #endif
 
-#define exit(EXIT_FAILURE) mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:invalid","Abort.");
+#define exit(EXIT_FAILURE) mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:invalid","Error in ompMC mex file. Abort!");
 
 #include "omc_utilities.h"
-#include "ompmc.h"
 #include "omc_random.h"
+#include "ompmc.h"
 
 #include <ctype.h>
 #include <float.h>
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -58,9 +59,91 @@ const mxArray *mcGeo;
 const mxArray *mcSrc;
 const mxArray *mcOpt;
 
+//verbose flag
+int verbose_flag;
+
+//Data Types and Structs
+struct Geom {
+    int *med_indices;           // index of the media in each voxel
+    double *med_densities;      // density of the medium in each voxel
+    
+    int isize;                  // number of voxels on each direction
+    int jsize;
+    int ksize;
+    
+    double *xbounds;            // boundaries of voxels on each direction
+    double *ybounds;
+    double *zbounds;
+};
+struct Geom geometry;
+
+struct Source {
+    int nmed;                   // number of media in phantom file
+    int spectrum;               // 0 : monoenergetic, 1 : spectrum
+    int charge;                 // 0 : photons, -1 : electron, +1 : positron
+    
+    /* For monoenergetic source */
+    double energy;
+    
+    /* For spectrum */
+    double deltak;              // number of elements in inverse CDF
+    double *cdfinv1;            // energy value of bin
+    double *cdfinv2;            // prob. that particle has energy xi
+    
+    /* Beamlets shape information */
+    int nbeamlets;               // number of beamlets per beam
+    int *ibeam;                  // index of beam per beamlet
+    
+    double *xsource;           // coordinates of the source of each beam
+    double *ysource;          
+    double *zsource;          
+        
+    double *xcorner;           // coordinates of the bixel corner
+    double *ycorner;           
+    double *zcorner;  
+    
+    double *xside1;           // coordinates of the first side of bixel
+    double *yside1;           
+    double *zside1;
+    
+    double *xside2;           // coordinates of the second side of bixel
+    double *yside2;           
+    double *zside2;
+        
+};
+struct Source source;
+
+
+
+enum sourceGeometryType {POINT, GAUSSIAN};
+struct OmcConfig {
+    //Simulation parameters
+    int nHist;
+    int nBatch;
+    double doseThreshold;
+
+    //Source Parameters
+    double monoEnergy;
+    char * spectrumFile;
+    //TODO: passable spectrum
+
+    enum sourceGeometryType sourceGeometry;
+    double sourceGaussianWidth; //Assuming 5mm FWHM penumbra if the source is gaussian
+};
+
+struct OmcConfig omcConfig;
+
 /* Function used to parse input from matRad */
 void parseInput(int nrhs, const mxArray *prhs[]) {
-
+    //Default values
+    omcConfig.nHist = 1e4;
+    omcConfig.nBatch = 10;
+    omcConfig.doseThreshold = 0.01;
+    omcConfig.monoEnergy = 0.1;
+    omcConfig.sourceGeometry = POINT;
+    omcConfig.sourceGaussianWidth = 2.123; //Assuming 5mm FWHM penumbra if the source is gaussian
+    
+    
     mxArray *tmp_fieldpointer;
     char *tmp;
 
@@ -93,7 +176,15 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
 
     /* Parse Monte Carlo options and create input items structure */
     tmp_fieldpointer = mxGetField(mcOpt,0,"verbose");
-    verbose_flag = mxGetLogicals(tmp_fieldpointer)[0];
+    if (tmp_fieldpointer)
+        verbose_flag = (int) mxGetScalar(tmp_fieldpointer);
+    else
+        verbose_flag = 0;
+
+    if (verbose_flag)
+        mexPrintf("ompMC output Option: Verbose flag is set to %d!\n",verbose_flag);
+    else
+        mexPrintf("ompMC logging disabled.\n");
 
     mxArray* tmp2;
     int status;
@@ -103,13 +194,26 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     
     //size_t nHistLength = mxGetNumberOfElements(tmp_fieldpointer);
     if (tmp_fieldpointer)    
-        omcConfig.nHist = mxGetScalar(nHistories);
+        omcConfig.nHist = mxGetScalar(tmp_fieldpointer);
     
     tmp_fieldpointer = mxGetField(mcOpt,0,"nBatches");
     if (tmp_fieldpointer)
         omcConfig.nBatch = mxGetScalar(tmp_fieldpointer);
 
-    
+    tmp_fieldpointer = mxGetField(mcOpt,0,"sourceGeometry");
+    if (tmp_fieldpointer) {
+        size_t buflen = mxGetNumberOfElements(tmp_fieldpointer) + 1;
+        char* sourceGeoTmpStr = (char*) mxCalloc(buflen + 1,sizeof(char));
+        if (mxGetString(tmp_fieldpointer, sourceGeoTmpStr, buflen) != 0) 
+            mexErrMsgIdAndTxt("MATLAB:explore:invalidStringArray","Invalid string for source Geometry");
+
+        if (strcmpi(sourceGeoTmpStr,"gaussian"))
+            omcConfig.sourceGeometry = GAUSSIAN;
+        else if (strcmpi(sourceGeoTmpStr,"point"))
+            omcConfig.sourceGeometry = POINT;
+        else
+            mexPrintf("Source geometry '%s' unkwnown, using 'point'",sourceGeoTmpStr);            
+    }
     
     /* Get splitting factor */
     /*  
@@ -123,7 +227,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp_fieldpointer = mxGetField(mcOpt,0,"nSplit");    
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
         tmp = mxArrayToString(tmp2);        
@@ -133,13 +237,15 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp_fieldpointer = mxGetField(mcOpt,0,"spectrumFile");
     if (tmp_fieldpointer) {
         size_t buflen = mxGetNumberOfElements(tmp_fieldpointer) + 1;
-        omcConfig.spectrumFile = mxCalloc(buflen + 1,sizeof(char));
+        omcConfig.spectrumFile = (char*) mxCalloc(buflen + 1,sizeof(char));
         if (mxGetString(tmp_fieldpointer, omcConfig.spectrumFile, buflen) != 0) 
             mexErrMsgIdAndTxt("MATLAB:explore:invalidStringArray","Invalid string for path to spectrum file!");
         
     }
     else
     {
+        size_t buflen = 255;
+        omcConfig.spectrumFile = (char*) mxCalloc(buflen + 1,sizeof(char));
         omcConfig.spectrumFile = "./spectra/mohan6.spectrum";
     }
    
@@ -152,7 +258,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp_fieldpointer = mxGetField(mcOpt,0,"charge");    
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
         tmp = mxArrayToString(tmp2);        
@@ -164,7 +270,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp_fieldpointer = mxGetField(mcOpt,0,"global_ecut");    
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
         tmp = mxArrayToString(tmp2);        
@@ -176,7 +282,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp_fieldpointer = mxGetField(mcOpt,0,"global_pcut");    
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
         tmp = mxArrayToString(tmp2);        
@@ -188,7 +294,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp_fieldpointer = mxGetField(mcOpt,0,"randomSeeds");    
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
         tmp = mxArrayToString(tmp2);        
@@ -221,76 +327,73 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
 
     tmp_fieldpointer = mxGetField(mcOpt,0,"relDoseThreshold");
     if (tmp_fieldpointer)
-        omcConfig.doseThreshold = mxgetScalar(tmp_fieldpointer);
+        omcConfig.doseThreshold = mxGetScalar(tmp_fieldpointer);
     
     
     input_idx = nInput;
     
-    mexPrintf("Input Options:\n");
-    for (int iInput = 0; iInput < nInput; iInput++)
-        mexPrintf("%s: %s\n",input_items[iInput].key,input_items[iInput].value);
-    
-    if (verbose_flag)
-        mexPrintf("ompMC output Option: Verbose flag is set!\n");
-            
+    if (verbose_flag > 1)
+    {
+        mexPrintf("Input Options:\n");
+        for (int iInput = 0; iInput < nInput; iInput++)
+            mexPrintf("%s: %s\n",input_items[iInput].key,input_items[iInput].value);
+    }
+          
     return;
 }
 
+
 /******************************************************************************/
 /* Geometry definitions */
-struct Geom {
-    int *med_indices;           // index of the media in each voxel
-    double *med_densities;      // density of the medium in each voxel
-    
-    int isize;                  // number of voxels on each direction
-    int jsize;
-    int ksize;
-    
-    double *xbounds;            // boundaries of voxels on each direction
-    double *ybounds;
-    double *zbounds;
-};
-struct Geom geometry;
-
 void initPhantom() {
     
     /* Get phantom information from matRad */
-    unsigned int nfields;
-    int ngeostructfields;
-    mwSize ndim, nmaterials;
-    mwSize *materialdim;
+    //int ngeostructfields;
+    mwSize nmaterials;
+    const mwSize *materialdim;
     mxArray *tmp_fieldpointer;
 
-    ngeostructfields = mxGetNumberOfFields(mcGeo);
+    //ngeostructfields = mxGetNumberOfFields(mcGeo);
 
     /* Get number of media and media names. This info is saved in media struct */
     tmp_fieldpointer = mxGetField(mcGeo,0,"material");
+
+    if (tmp_fieldpointer == NULL)
+        mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","No materials specified!");
+    
+    
     materialdim = mxGetDimensions(tmp_fieldpointer);
     nmaterials = materialdim[0];    
     media.nmed = nmaterials;
     
     mwIndex tmpSubs[2];
-    char *tmp;
-    for (int iMat = 0; iMat < nmaterials; iMat++) {
-        tmpSubs[0] = iMat;
-        tmpSubs[1] = 0;
-        mwSize linIx = mxCalcSingleSubscript(tmp_fieldpointer,2,tmpSubs);
-        mxArray* tmpCellPointer = mxGetCell(tmp_fieldpointer,linIx);
+    mwSize iMat;
+    mwIndex linIx;
+    mxArray* tmpCellPointer;
+    
+    for (iMat = 0; iMat < nmaterials; ++iMat) 
+    {
+        tmpSubs[0] = (mwIndex) iMat;
+        tmpSubs[1] = 0;                        
+
+        linIx = mxCalcSingleSubscript(tmp_fieldpointer,2,tmpSubs);
+
+        tmpCellPointer = mxGetCell(tmp_fieldpointer,linIx);
         
+        if (tmpCellPointer == NULL)
+            mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Material could not be read!");
+        
+        char *tmp;
         tmp = mxArrayToString(tmpCellPointer);
-        if (tmp)
-        {
-            strcpy(media.med_names[iMat],tmp);
-        }
-        else
-        {
-            mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Material string could not be read!");
-        }
+        
+        if (tmp == NULL)
+            mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Material string could not be read!");
+        
+        tmp = strcpy(media.med_names[iMat],tmp);        
     }
 
     /* Get boundaries, density and material index for each voxel */
     const mwSize *cubeDim = mxGetDimensions(cubeRho);        
-    mwSize nCubeElements = cubeDim[0]*cubeDim[1]*cubeDim[2];
     
     geometry.isize = cubeDim[0];
     geometry.jsize = cubeDim[1];
@@ -308,22 +411,28 @@ void initPhantom() {
     geometry.med_indices = (int*)mxGetPr(cubeMatIx);
 
     /* Summary with geometry information */
-    mexPrintf("Number of media in phantom : %d\n", media.nmed);
-    mexPrintf("Media names: ");
-    for (int i=0; i<media.nmed; i++) {
-        mexPrintf("%s, ", media.med_names[i]);
+    if (verbose_flag > 1)
+        mexPrintf("Number of media in phantom : %d\n", media.nmed);
+    if (verbose_flag > 2)
+    {
+        mexPrintf("Media names: ");
+        for (int i=0; i<media.nmed; i++) {
+            mexPrintf("%s, ", media.med_names[i]);
+        }
+        mexPrintf("\n");
     }
-    mexPrintf("\n");
-    mexPrintf("Number of voxels on each direction (X,Y,Z) : (%d, %d, %d)\n",
-           geometry.isize, geometry.jsize, geometry.ksize);
-    mexPrintf("Minimum and maximum boundaries on each direction : \n");
-    mexPrintf("\tX (cm) : %lf, %lf\n",
-           geometry.xbounds[0], geometry.xbounds[geometry.isize]);
-    mexPrintf("\tY (cm) : %lf, %lf\n",
-           geometry.ybounds[0], geometry.ybounds[geometry.jsize]);
-    mexPrintf("\tZ (cm) : %lf, %lf\n",
-           geometry.zbounds[0], geometry.zbounds[geometry.ksize]);
+    if (verbose_flag > 1) 
+        mexPrintf("Number of voxels on each direction (X,Y,Z) : (%d, %d, %d)\n",geometry.isize, geometry.jsize, geometry.ksize);
     
+    if (verbose_flag > 2) {
+        mexPrintf("Minimum and maximum boundaries on each direction : \n");
+        mexPrintf("\tX (cm) : %lf, %lf\n",
+            geometry.xbounds[0], geometry.xbounds[geometry.isize]);
+        mexPrintf("\tY (cm) : %lf, %lf\n",
+            geometry.ybounds[0], geometry.ybounds[geometry.jsize]);
+        mexPrintf("\tZ (cm) : %lf, %lf\n",
+            geometry.zbounds[0], geometry.zbounds[geometry.ksize]);
+    }
     return;
 }
 
@@ -490,83 +599,47 @@ double hownear(void) {
 const int MXEBIN = 200;     // number of energy bins of spectrum
 const int INVDIM = 1000;    // number of bins in inverse CDF
 
-struct Source {
-    int nmed;                   // number of media in phantom file
-    int spectrum;               // 0 : monoenergetic, 1 : spectrum
-    int charge;                 // 0 : photons, -1 : electron, +1 : positron
-    
-    /* For monoenergetic source */
-    double energy;
-    
-    /* For spectrum */
-    double deltak;              // number of elements in inverse CDF
-    double *cdfinv1;            // energy value of bin
-    double *cdfinv2;            // prob. that particle has energy xi
-    
-    /* Beamlets shape information */
-    int nbeamlets;               // number of beamlets per beam
-    int *ibeam;                  // index of beam per beamlet
-    
-    double *xsource;           // coordinates of the source of each beam
-    double *ysource;          
-    double *zsource;          
-        
-    double *xcorner;           // coordinates of the bixel corner
-    double *ycorner;           
-    double *zcorner;  
-    
-    double *xside1;           // coordinates of the first side of bixel
-    double *yside1;           
-    double *zside1;
-    
-    double *xside2;           // coordinates of the second side of bixel
-    double *yside2;           
-    double *zside2;
-        
-};
-struct Source source;
-
-struct OmcConfig {
-    int nHist = 1e6;
-    int nBatch = 10;
-    double doseThreshold = 0.01;
-    double monoEnergy = 0.1;
-    char spectrumFile[256];
-
-}
-
-struct OmcConfig omcConfig;
-
 void initSource() {
     
     /* Get spectrum file path from input data */
     char buffer[BUFFER_SIZE];
+
+    char* fstatus;
     
     source.spectrum = 1;    /* energy spectrum as default case */    
     
     if (source.spectrum) {
-        //removeSpaces(spectrum_file, buffer);
+        //removeSpaces(omcConfig.spectrumFile, buffer);
         
         /* Open .source file */
         FILE *fp;
         
         if ((fp = fopen(omcConfig.spectrumFile, "r")) == NULL) {
-            mexPrintf("Unable to open file: %s\n", spectrum_file);
+            mexPrintf("Unable to open file: %s\n", omcConfig.spectrumFile);
             exit(EXIT_FAILURE);
         }
         
-        mexPrintf("Path to spectrum file : %s\n", spectrum_file);
+        if (verbose_flag > 2)
+            mexPrintf("Path to spectrum file : %s\n", omcConfig.spectrumFile);      
         
         /* Read spectrum file title */
-        fgets(buffer, BUFFER_SIZE, fp);
-        mexPrintf("Spectrum file title: %s", buffer);
+        fstatus = fgets(buffer, BUFFER_SIZE, fp);
+        if (fstatus == NULL)
+            mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Could not parse spectrum file.\n");
+        
+        if (verbose_flag > 1)
+            mexPrintf("Spectrum file title: %s", buffer);
+
         
         /* Read number of bins and spectrum type */
         double enmin;   /* lower energy of first bin */
         int nensrc;     /* number of energy bins in spectrum histogram */
         int imode;      /* 0 : histogram counts/bin, 1 : counts/MeV*/
         
-        fgets(buffer, BUFFER_SIZE, fp);
+        fstatus = fgets(buffer, BUFFER_SIZE, fp);
+        if (fstatus == NULL)
+            mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Could not parse spectrum file.\n");
+
         sscanf(buffer, "%d %lf %d", &nensrc, &enmin, &imode);
         
         if (nensrc > MXEBIN) {
@@ -582,16 +655,22 @@ void initSource() {
         
         /* Read spectrum information */
         for (int i=0; i<nensrc; i++) {
-            fgets(buffer, BUFFER_SIZE, fp);
+            fstatus = fgets(buffer, BUFFER_SIZE, fp);
+            if (fstatus == NULL)
+                mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Could not parse spectrum file.\n");
+
             sscanf(buffer, "%lf %lf", &ensrcd[i], &srcpdf[i]);
         }
-        mexPrintf("Have read %d input energy bins from spectrum file.\n", nensrc);
+        if (verbose_flag > 2)
+            mexPrintf("Have read %d input energy bins from spectrum file.\n", nensrc);
         
         if (imode == 0) {
-            mexPrintf("Counts/bin assumed.\n");
+            if (verbose_flag > 2)
+                mexPrintf("Counts/bin assumed.\n");
         }
         else if (imode == 1) {
-            mexPrintf("Counts/MeV assumed.\n");
+            if (verbose_flag > 2)
+                mexPrintf("Counts/MeV assumed.\n");
             srcpdf[0] *= (ensrcd[0] - enmin);
             for(int i=1; i<nensrc; i++) {
                 srcpdf[i] *= (ensrcd[i] - ensrcd[i - 1]);
@@ -603,7 +682,8 @@ void initSource() {
         }
         
         double ein = ensrcd[nensrc - 1];
-        mexPrintf("Energy ranges from %f to %f MeV\n", enmin, ein);
+        if (verbose_flag > 1)
+            mexPrintf("Energy ranges from %f to %f MeV\n", enmin, ein);
         
         /* Initialization routine to calculate the inverse of the
          cumulative probability distribution that is used during execution to
@@ -634,9 +714,8 @@ void initSource() {
             }
         }
         
-        if (binsok != 0.0) {
-            mexPrintf("Warning!, some of normalized bin probabilities are "
-                   "so small that bins may be missed.\n");
+        if (verbose_flag > 1 && binsok != 0.0) {            
+            mexPrintf("Warning! Some of normalized bin probabilities are so small that bins may be missed.\n");
         }
 
         /* Calculate cdfinv. This array allows the rapid sampling for the
@@ -686,7 +765,8 @@ void initSource() {
     nfields = mxGetScalar(tmp_fieldpointer);
     source.nbeamlets = nfields;
     
-    mexPrintf("%s%d\n", "Total Number of Beamlets:", source.nbeamlets);
+    if (verbose_flag > 1)
+        mexPrintf("%s%d\n", "Total Number of Beamlets:", source.nbeamlets);
     
     tmp_fieldpointer = mxGetField(mcSrc,0,"iBeam");
     const double* iBeamPerBeamlet = mxGetPr(tmp_fieldpointer);
@@ -1129,6 +1209,9 @@ void initHistory(int ibeamlet) {
     
     rnno1 = setRandom();
     rnno2 = setRandom();
+
+    //double rnGauss[2];
+    //boxMuller(rnGauss);
     
     xiso = rnno1*source.xside1[ibeamlet] + rnno2*source.xside2[ibeamlet] + 
             source.xcorner[ibeamlet];
@@ -1140,18 +1223,46 @@ void initHistory(int ibeamlet) {
     /* Norm of the resulting vector from the source of current beam to the 
      position of the particle on bixel */
     int ibeam = source.ibeam[ibeamlet];
-    double vnorm = sqrt(pow(xiso - source.xsource[ibeam], 2.0) + 
-            pow(yiso - source.ysource[ibeam], 2.0) + 
-            pow(ziso - source.zsource[ibeam], 2.0));
+
+    double sourcePos[3];
+
+    //Gaussian Source
+
+    switch (omcConfig.sourceGeometry)
+    {
+        case POINT:
+            sourcePos[0] = source.xsource[ibeam];
+            sourcePos[1] = source.ysource[ibeam];
+            sourcePos[2] = source.zsource[ibeam];
+            break;
+        case GAUSSIAN: 
+            double stdSource[3] = {2.133, 2.133, 2.133};
+        
+            sourcePos[0] = setStandardNormalRandom(source.xsource[ibeam],stdSource[0]);
+            sourcePos[1] = setStandardNormalRandom(source.ysource[ibeam],stdSource[1]);
+            sourcePos[2] = setStandardNormalRandom(source.zsource[ibeam],stdSource[2]);
+            break;
+        default:
+            mexErrMsgIdAndTxt("matRad:matRad_ompInterface:invalidSourceGeometry","Source type not defined!");
+    }
+        
+
+    //Point source
+    double xd = xiso - sourcePos[0];
+    double yd = yiso - sourcePos[1];
+    double zd = ziso - sourcePos[2];
+
+
+    double vnorm = sqrt(xd*xd + yd*yd + zd*zd);            
         
     /* Direction of the particle from position on bixel to beam source*/
-    double u = -(xiso - source.xsource[ibeam])/vnorm;
-    double v = -(yiso - source.ysource[ibeam])/vnorm;
-    double w = -(ziso - source.zsource[ibeam])/vnorm;
+    double u = -(xd)/vnorm;
+    double v = -(yd)/vnorm;
+    double w = -(zd)/vnorm;
     
     /* Calculate the minimum distance from particle position on bixel to 
      phantom boundaries */
-    double ustep = 1.0E5;
+    double ustep = DBL_MAX; //1.0E5; 
     double dist;
     
     if(u > 0.0) {
@@ -1260,27 +1371,37 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     double tbegin;
     tbegin = omc_get_time();
     
+    
     /* Parsing program options */
 
     /* Check for proper number of input and output arguments */
     if (nrhs != 5) {
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:invalidNumInputs",
-                "Two or three input arguments required.");
+        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:invalidNumInputs","Two or three input arguments required.");
     }
     if(nlhs > 2){
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:invalidNumOutputs",
-                "Too many output arguments.");
+        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:invalidNumOutputs","Too many output arguments.");
     }
 
+    mexPrintf("Running ompMC...\n");
+
+
     parseInput(nrhs, prhs);
+    
+    if (verbose_flag > 0)
+    {
+        mexPrintf("Input successfully parsed!\n");
+        mexPrintf("Initalizing ompMC...\n");
+    }
 
     /* Get information of OpenMP environment */
 #ifdef _OPENMP
     int omp_size = omp_get_num_procs();
-    mexPrintf("Number of OpenMP threads: %d\n", omp_size);
+    if (verbose_flag > 1)
+        mexPrintf("Number of OpenMP threads: %d\n", omp_size);
     omp_set_num_threads(omp_size);
 #else
-    mexPrintf("ompMC compiled without OpenMP support. Serial execution.\n");
+    if (verbose_flag > 1)
+        mexPrintf("ompMC compiled without OpenMP support. Serial execution.\n");
 #endif
     
     /* Read geometry information from matRad and initialize geometry */
@@ -1327,16 +1448,20 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     
     int gridsize = geometry.isize*geometry.jsize*geometry.ksize;
     
-    mexPrintf("Total number of particle histories: %d\n", nhist);
-    mexPrintf("Number of statistical batches: %d\n", nbatch);
-    mexPrintf("Histories per batch: %d\n", nperbatch);
+    if (verbose_flag > 1) 
+    {
+        mexPrintf("Total number of particle histories: %d\n", nhist);
+        mexPrintf("Number of statistical batches: %d\n", nbatch);
+        mexPrintf("Histories per batch: %d\n", nperbatch);
+    }
 
     double relDoseThreshold = omcConfig.doseThreshold;
 
-    mexPrintf("Using a relative dose cut-off of %f\n",relDoseThreshold);
+    if (verbose_flag > 2)
+        mexPrintf("Using a relative dose cut-off of %f\n",relDoseThreshold);
     
     /* Use Matlab waitbar to show execution progress */
-    mxArray* waitbarHandle = 0;                             // the waitbar handle does not exist yet
+    mxArray* waitbarHandle = NULL;                             // the waitbar handle does not exist yet
 	mxArray* waitbarProgress = mxCreateDoubleScalar(0.0);   // allocate a double scalar for the progress
 	mxArray* waitbarMessage = mxCreateString("calculate dose influence matrix for photons (ompMC) ...");    // allocate a string for the message
 	
@@ -1344,12 +1469,15 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     mxArray* waitbarOutput[1];  // pointer to waitbar output
 
 	waitbarInputs[0] = waitbarProgress; 
-	waitbarInputs[1] = waitbarMessage;
+	waitbarInputs[1] = waitbarMessage;	
 	
-	/* Create the waitbar with h = waitbar(progress,message); */
-    int status = mexCallMATLAB(1, waitbarOutput, 2, waitbarInputs, "waitbar");
+    /* Create the waitbar with h = waitbar(progress,message); */
+    int matlabCallStatus = 0;
+    if (verbose_flag > 1) {
+        matlabCallStatus = mexCallMATLAB(1, waitbarOutput, 2, waitbarInputs, "waitbar");
+        waitbarHandle = waitbarOutput[0];
+    }
 
-    waitbarHandle = waitbarOutput[0];
 
     /* Create output matrix */
     mwSize nCubeElements = geometry.isize*geometry.jsize*geometry.ksize;
@@ -1357,7 +1485,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     double percent_sparse = percentage_steps;   // initial percentage to allocate memory for
 
     mwSize nzmax = (mwSize) ceil((double)nCubeElements*(double)source.nbeamlets*percent_sparse);
-    plhs[0] = mxCreateSparse(nCubeElements,source.nbeamlets,nzmax,mxREAL);
+    plhs[0] = mxCreateSparse(nCubeElements,(mwSize) source.nbeamlets,nzmax,mxREAL);
 
     double *sr  = mxGetPr(plhs[0]);
     mwIndex *irs = mxGetIr(plhs[0]);
@@ -1365,14 +1493,14 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     mwIndex linIx = 0;
     jcs[0] = 0;
 
-    bool outputVariance = (nlhs >= 2);
+    int outputVariance = (nlhs >= 2);
 
-    double *sr_var;
-    mwIndex *irs_var;
-    mwIndex *jcs_var;
+    double *sr_var = NULL;
+    mwIndex *irs_var = NULL;
+    mwIndex *jcs_var = NULL;
     if (outputVariance)
     {
-        plhs[1] = mxCreateSparse(nCubeElements,source.nbeamlets,nzmax,mxREAL);
+        plhs[1] = mxCreateSparse(nCubeElements,(mwSize) source.nbeamlets,nzmax,mxREAL);
         sr_var  = mxGetPr(plhs[1]);
         irs_var = mxGetIr(plhs[1]);
         jcs_var = mxGetJc(plhs[1]);
@@ -1381,15 +1509,24 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     
     double progress = 0.0;
 
+    if (verbose_flag > 0)
+        mexPrintf("done!\n");        
+
     /* Execution time up to this point */
-    mexPrintf("Execution time up to this point : %8.2f seconds\n",
-           (omc_get_time() - tbegin));
+    if (verbose_flag > 2)
+        mexPrintf("Execution time up to this point : %8.2f seconds\n",(omc_get_time() - tbegin));
+    
+    if (verbose_flag > 0)
+        mexPrintf("Running ompMC simulation...\n");
+
+    int sparse_reallocations;
+    sparse_reallocations = 0;
     
     for(int ibeamlet=0; ibeamlet<source.nbeamlets; ibeamlet++) {
         for (int ibatch=0; ibatch<nbatch; ibatch++) {            
             int ihist;
 
-            #pragma omp parallel for schedule(dynamic)
+            #pragma omp parallel for schedule(guided)
             for (ihist=0; ihist<nperbatch; ihist++) {
                 /* Initialize particle history */
                 initHistory(ibeamlet);
@@ -1404,11 +1541,11 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
             progress = ((double)ibeamlet + (double)(ibatch+1)/nbatch)/source.nbeamlets;
             (*mxGetPr(waitbarProgress)) = progress;
 
-            if (waitbarOutput && waitbarHandle) {              
-              waitbarInputs[0] = waitbarProgress;
-              waitbarInputs[1] = waitbarHandle;
-              waitbarInputs[2] = waitbarMessage;
-              status = mexCallMATLAB(0, waitbarOutput, 2, waitbarInputs, "waitbar");
+            if (waitbarHandle != NULL && waitbarOutput != NULL) {              
+                waitbarInputs[0] = waitbarProgress;
+                waitbarInputs[1] = waitbarHandle;
+                waitbarInputs[2] = waitbarMessage;
+                matlabCallStatus = mexCallMATLAB(0, waitbarOutput, 2, waitbarInputs, "waitbar");
             }
         }
 
@@ -1425,16 +1562,20 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
         }
         double thresh = doseMax*relDoseThreshold;
         /* Count values above threshold */
-        mwSize nnz = 0; //Number of nonzeros in the dose cube
-
-        for (int irl=1; irl < gridsize+1; irl++) {        
+        mwSize j_nnz = 0; //Number of nonzeros in the dose cube for the current beamlet
+        int irl = 1;
+        #pragma omp parallel for reduction(+:j_nnz)
+        for (irl=1; irl < gridsize+1; irl++) {        
             if (score.accum_endep[irl] > thresh) {
-                nnz++;
+                j_nnz++;
             }                
         }
 
+        //The number of new non-zero values is the current linear index + new upcoming entries from current beamlet + 1
+        mwSize newnnz = j_nnz + (mwSize) linIx;
+
         /* Check if we need to reallocate for sparse matrix */
-        if ((linIx + nnz) > nzmax) {
+        if (newnnz > nzmax) {
             mwSize oldnzmax = nzmax;
             percent_sparse += percentage_steps;
             nzmax = (mwSize) ceil((double)nCubeElements*(double)source.nbeamlets*percent_sparse);
@@ -1447,20 +1588,20 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
             /* Check that the new nmax is large enough and if not, also adjust 
             the percentage_steps since we seem to have set it too small for this 
             particular use case */
-            if (nzmax < (linIx + nnz)) {
-                nzmax = linIx + nnz;
+            if (nzmax < newnnz) {
+                nzmax = newnnz;
                 percent_sparse = (double)nzmax/nCubeElements;
                 percentage_steps = percent_sparse;
             }
 
-            if (verbose_flag) {
+            if (verbose_flag > 2) {
                 mexPrintf("Reallocating Sparse Matrix from nzmax=%d to nzmax=%d\n", oldnzmax, nzmax);
             }                
             
             /* Set new nzmax and reallocate more memory */
             mxSetNzmax(plhs[0], nzmax);
             mxSetPr(plhs[0], (double *) mxRealloc(sr, nzmax*sizeof(double)));
-            mxSetIr(plhs[0], (mwIndex *)  mxRealloc(irs, nzmax*sizeof(mwIndex)));
+            mxSetIr(plhs[0], (mwIndex *) mxRealloc(irs, nzmax*sizeof(mwIndex)));
             
             /* Use the new pointers */
             sr  = mxGetPr(plhs[0]);
@@ -1469,15 +1610,19 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
             if (outputVariance) {
                 /* Set new nzmax and reallocate more memory */
                 mxSetNzmax(plhs[1], nzmax);
-                mxSetPr(plhs[1], (double *) mxRealloc(sr, nzmax*sizeof(double)));
-                mxSetIr(plhs[1], (mwIndex *)  mxRealloc(irs, nzmax*sizeof(mwIndex)));
+                mxSetPr(plhs[1], (double *) mxRealloc(sr_var, nzmax*sizeof(double)));
+                mxSetIr(plhs[1], (mwIndex *)  mxRealloc(irs_var, nzmax*sizeof(mwIndex)));
             
                 /* Use the new pointers */
                 sr_var  = mxGetPr(plhs[1]);
                 irs_var = mxGetIr(plhs[1]);
             }
+
+            sparse_reallocations++;
         }
-        
+
+
+        //Populate sparse matrix arrays        
         for (int irl=1; irl < gridsize+1; irl++) {        
             if (score.accum_endep[irl] > thresh) {            
                 sr[linIx] = score.accum_endep[irl];
@@ -1491,6 +1636,12 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
             }
         }
         
+        if (verbose_flag > 1 && linIx != newnnz)
+            mexPrintf("Warning: Discrepancy between linear index %d and maximum number of computed nonzeros %d at beamlet %d finalization!\n",linIx,newnnz,ibeamlet);
+
+        if (verbose_flag > 1 && linIx > nzmax)
+            mexPrintf("Warning: Discrepancy between linear index %d and maximum number of allowed nonzeros %d at beamlet %d finalization!\n",linIx,newnnz,ibeamlet);
+
         jcs[ibeamlet+1] = linIx;
         if (outputVariance) {
             jcs_var[ibeamlet+1] = linIx;
@@ -1502,24 +1653,33 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
         (*mxGetPr(waitbarProgress)) = progress;
 
 		/* Update the waitbar with waitbar(hWaitbar,progress); */
-        if (waitbarOutput && waitbarHandle) {
+        if (waitbarHandle != NULL && waitbarOutput != NULL) {
             waitbarInputs[0] = waitbarProgress;
             waitbarInputs[1] = waitbarHandle;		
             waitbarInputs[2] = waitbarMessage;
-            status = mexCallMATLAB(0, waitbarOutput, 2, waitbarInputs, "waitbar");
+            matlabCallStatus = mexCallMATLAB(0, waitbarOutput, 2, waitbarInputs, "waitbar");
         }
     }
 
-    mxDestroyArray (waitbarProgress);
-	mxDestroyArray (waitbarMessage);
-    if (waitbarOutput && waitbarHandle) {
-        waitbarInputs[0] = waitbarHandle;		
-        status = mexCallMATLAB(0,waitbarOutput,1, waitbarInputs,"close") ;
-        mxDestroyArray(waitbarHandle);
-	}
+    /* Print some output and execution time up to this point */
+    if (verbose_flag > 0)
+        mexPrintf("Simulation finished!\nFinalizing output...\n"); 
     
-    mexPrintf("Sparse MC Dij has %d (%f percent) elements!\n", linIx, 
-        (double)linIx/((double)nCubeElements*(double)source.nbeamlets));
+    mxDestroyArray (waitbarProgress);
+    mxDestroyArray (waitbarMessage);
+    if (waitbarHandle != NULL && waitbarOutput != NULL) {
+        waitbarInputs[0] = waitbarHandle;		
+        matlabCallStatus = mexCallMATLAB(0,waitbarOutput,1, waitbarInputs,"close") ;
+        mxDestroyArray(waitbarHandle);
+    }
+
+    
+    if (verbose_flag >= 3)
+        mexPrintf("Sparse MC Dij has %d (%f percent) elements!\n", linIx, (double)linIx/((double)nCubeElements*(double)source.nbeamlets));
+
+    if (verbose_flag >= 3)
+        mexPrintf("Needed %d sparse matrix reallocations.\n",sparse_reallocations);
+
     
     /* Truncate the matrix to the exact size by reallocation */
     mxSetNzmax(plhs[0], linIx);
@@ -1529,12 +1689,18 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     sr  = mxGetPr(plhs[0]);
     irs = mxGetIr(plhs[0]);
 
-    //int irl;
-    //#pragma omp parallel for
-    //for (irl = 0; irl < linIx; ++irl)
-    //{
-    //    sr[irl] = sr[irl] / ((double) nHist);
-    //}
+    //Check output
+    if (verbose_flag >= 3)
+        mexPrintf("Verifying sparse Matrix... ");
+    for (int ix = 0; ix < linIx; ix++)
+    {
+        mwIndex currIx = irs[ix];
+        
+        if (currIx > gridsize)
+            mexPrintf("Invalid dose-cube index %d at linear index %d in sparse matrix check!",currIx,linIx);
+    }
+    if (verbose_flag >= 3)
+        mexPrintf("done!\n");
 
     if (outputVariance) {
         /* Truncate the matrix to the exact size by reallocation */
@@ -1542,22 +1708,10 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
         mxSetPr(plhs[1], mxRealloc(sr_var, linIx*sizeof(double)));
         mxSetIr(plhs[1], mxRealloc(irs_var, linIx*sizeof(mwIndex)));
         sr_var  = mxGetPr(plhs[1]);
-        irs_var = mxGetIr(plhs[1]);
-        
-        //#pragma omp parallel for
-        //for (irl = 0; irl < linIx; ++irl)
-        //{
-        //    sr_var[irl] = (sr_var[irl] - sr[irl]*sr[irl])/((double)(nHist-1));
-        //}                
+        irs_var = mxGetIr(plhs[1]);           
     }
 
     
-        
-    
-    /* Print some output and execution time up to this point */
-    mexPrintf("Simulation finished\n");
-    mexPrintf("Execution time up to this point : %8.2f seconds\n",
-           (omc_get_time() - tbegin));    
        
     /* Cleaning */
     cleanPhantom();
@@ -1571,16 +1725,14 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     cleanScore();
     cleanSource();
 
+    //Cleaning private random generators and particle stack
     #pragma omp parallel
     {
       cleanRandom();
       cleanStack();
     }
-
     /* Get total execution time */
-    mexPrintf("Total execution time : %8.5f seconds\n",
-           (omc_get_time() - tbegin));
-    
-    return;
+    if (verbose_flag > 0)        
+        mexPrintf("Finished! Total execution time : %8.5f seconds\n", (omc_get_time() - tbegin));
     
 }
