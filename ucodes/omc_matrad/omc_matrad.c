@@ -98,33 +98,29 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     mxArray* tmp2;
     int status;
     int nInput = 0;
-    
-    sprintf(input_items[nInput].key,"ncase");
+        
     tmp_fieldpointer = mxGetField(mcOpt,0,"nHistories");
-    status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
-    if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
-    else
-    {
-        tmp = mxArrayToString(tmp2);        
-        strcpy(input_items[nInput].value,tmp);
-    }
     
-    nInput++;
-    sprintf(input_items[nInput].key,"nbatch");
+    //size_t nHistLength = mxGetNumberOfElements(tmp_fieldpointer);
+    if (tmp_fieldpointer)    
+        omcConfig.nHist = mxGetScalar(nHistories);
+    
     tmp_fieldpointer = mxGetField(mcOpt,0,"nBatches");
-    status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
-    if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
-    else
-    {
-        tmp = mxArrayToString(tmp2);        
-        strcpy(input_items[nInput].value,tmp);
-    }
+    if (tmp_fieldpointer)
+        omcConfig.nBatch = mxGetScalar(tmp_fieldpointer);
+
     
-    nInput++; /* Get splitting factor */
-    sprintf(input_items[nInput].key,"nsplit");
+    
+    /* Get splitting factor */
+    /*  
     tmp_fieldpointer = mxGetField(mcOpt,0,"nSplit");
+    if (tmp_fieldpointer)
+        omcConfig.nSplit = mxGetScalar(tmp_fieldpointer);
+    */
+
+    nInput++;
+    sprintf(input_items[nInput].key,"nsplit");
+    tmp_fieldpointer = mxGetField(mcOpt,0,"nSplit");    
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
         mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
@@ -134,25 +130,22 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
         strcpy(input_items[nInput].value,tmp);
     }
 
-    nInput++;
-    sprintf(input_items[nInput].key,"spectrum file");
     tmp_fieldpointer = mxGetField(mcOpt,0,"spectrumFile");
-    tmp = mxArrayToString(tmp_fieldpointer);
-    strcpy(input_items[nInput].value,tmp);
-    
-    
-    nInput++;
-    sprintf(input_items[nInput].key,"mono energy");
-    tmp_fieldpointer = mxGetField(mcOpt,0,"monoEnergy");
-    status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");  
-
-    if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
+    if (tmp_fieldpointer) {
+        size_t buflen = mxGetNumberOfElements(tmp_fieldpointer) + 1;
+        omcConfig.spectrumFile = mxCalloc(buflen + 1,sizeof(char));
+        if (mxGetString(tmp_fieldpointer, omcConfig.spectrumFile, buflen) != 0) 
+            mexErrMsgIdAndTxt("MATLAB:explore:invalidStringArray","Invalid string for path to spectrum file!");
+        
+    }
     else
     {
-        tmp = mxArrayToString(tmp2);        
-        strcpy(input_items[nInput].value,tmp);
+        omcConfig.spectrumFile = "./spectra/mohan6.spectrum";
     }
+   
+    tmp_fieldpointer = mxGetField(mcOpt,0,"monoEnergy");
+    if (tmp_fieldpointer)
+        omcConfig.monoEnergy = mxGetScalar(tmp_fieldpointer);    
     
     nInput++;
     sprintf(input_items[nInput].key,"charge");
@@ -226,17 +219,10 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp = mxArrayToString(tmp_fieldpointer);
     strcpy(input_items[nInput].value,tmp);
 
-    nInput++;
-    sprintf(input_items[nInput].key,"relative dose threshold");
     tmp_fieldpointer = mxGetField(mcOpt,0,"relDoseThreshold");
-    status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
-    if (status != 0)
-        mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:Error","Call to num2str not successful");
-    else
-    {
-        tmp = mxArrayToString(tmp2);        
-        strcpy(input_items[nInput].value,tmp);
-    }
+    if (tmp_fieldpointer)
+        omcConfig.doseThreshold = mxgetScalar(tmp_fieldpointer);
+    
     
     input_idx = nInput;
     
@@ -540,28 +526,31 @@ struct Source {
 };
 struct Source source;
 
+struct OmcConfig {
+    int nHist = 1e6;
+    int nBatch = 10;
+    double doseThreshold = 0.01;
+    double monoEnergy = 0.1;
+    char spectrumFile[256];
+
+}
+
+struct OmcConfig omcConfig;
+
 void initSource() {
     
     /* Get spectrum file path from input data */
-    char spectrum_file[128];
     char buffer[BUFFER_SIZE];
     
-    source.spectrum = 1;    /* energy spectrum as default case */
-    
-    /* First check of spectrum file was given as an input */
-    if (getInputValue(buffer, "spectrum file") != 1) {
-        mexPrintf("Can not find 'spectrum file' key on input file.\n");
-        mexPrintf("Switch to monoenergetic case.\n");
-        source.spectrum = 0;    /* monoenergetic source */
-    }
+    source.spectrum = 1;    /* energy spectrum as default case */    
     
     if (source.spectrum) {
-        removeSpaces(spectrum_file, buffer);
+        //removeSpaces(spectrum_file, buffer);
         
         /* Open .source file */
         FILE *fp;
         
-        if ((fp = fopen(spectrum_file, "r")) == NULL) {
+        if ((fp = fopen(omcConfig.spectrumFile, "r")) == NULL) {
             mexPrintf("Unable to open file: %s\n", spectrum_file);
             exit(EXIT_FAILURE);
         }
@@ -683,12 +672,8 @@ void initSource() {
         free(srcpdf);
         free(srccdf);
     }
-    else {  /* monoenergetic source */
-        if (getInputValue(buffer, "mono energy") != 1) {
-            mexPrintf("Can not find 'mono energy' key on input file.\n");
-            exit(EXIT_FAILURE);
-        }
-        source.energy = atof(buffer);
+    else {  /* monoenergetic source */        
+        source.energy = omcConfig.monoEnergy;
         mexPrintf("%f monoenergetic source\n", source.energy);
         
     }
@@ -1329,17 +1314,9 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     
     /* Get number of histories, statistical batches and splitting factor */
     char buffer[BUFFER_SIZE];
-    if (getInputValue(buffer, "ncase") != 1) {
-        mexPrintf("Can not find 'ncase' key on input file.\n");
-        exit(EXIT_FAILURE);
-    }
-    int nhist = atoi(buffer);
     
-    if (getInputValue(buffer, "nbatch") != 1) {
-        mexPrintf("Can not find 'nbatch' key on input file.\n");
-        exit(EXIT_FAILURE);
-    }
-    int nbatch = atoi(buffer); 
+    int nhist = omcConfig.nHist;
+    int nbatch = omcConfig.nBatch; 
     
     if (nhist/nbatch == 0) {
         nhist = nbatch;
@@ -1354,11 +1331,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     mexPrintf("Number of statistical batches: %d\n", nbatch);
     mexPrintf("Histories per batch: %d\n", nperbatch);
 
-    if (getInputValue(buffer, "relative dose threshold") != 1) {
-        mexPrintf("Can not find 'relative dose threshold' key on input file.\n");
-        exit(EXIT_FAILURE);
-    }    
-    double relDoseThreshold = atof(buffer);
+    double relDoseThreshold = omcConfig.doseThreshold;
 
     mexPrintf("Using a relative dose cut-off of %f\n",relDoseThreshold);
     
@@ -1462,7 +1435,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
 
         /* Check if we need to reallocate for sparse matrix */
         if ((linIx + nnz) > nzmax) {
-            int oldnzmax = nzmax;
+            mwSize oldnzmax = nzmax;
             percent_sparse += percentage_steps;
             nzmax = (mwSize) ceil((double)nCubeElements*(double)source.nbeamlets*percent_sparse);
             
@@ -1551,7 +1524,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     /* Truncate the matrix to the exact size by reallocation */
     mxSetNzmax(plhs[0], linIx);
     mxSetPr(plhs[0], mxRealloc(sr, linIx*sizeof(double)));
-    mxSetIr(plhs[0], mxRealloc(irs, linIx*sizeof(int)));
+    mxSetIr(plhs[0], mxRealloc(irs, linIx*sizeof(mwIndex)));
     
     sr  = mxGetPr(plhs[0]);
     irs = mxGetIr(plhs[0]);
@@ -1567,7 +1540,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
         /* Truncate the matrix to the exact size by reallocation */
         mxSetNzmax(plhs[1], linIx);
         mxSetPr(plhs[1], mxRealloc(sr_var, linIx*sizeof(double)));
-        mxSetIr(plhs[1], mxRealloc(irs_var, linIx*sizeof(int)));
+        mxSetIr(plhs[1], mxRealloc(irs_var, linIx*sizeof(mwIndex)));
         sr_var  = mxGetPr(plhs[1]);
         irs_var = mxGetIr(plhs[1]);
         
