@@ -214,6 +214,11 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
         else
             mexPrintf("Source geometry '%s' unkwnown, using 'point'",sourceGeoTmpStr);            
     }
+
+    tmp_fieldpointer = mxGetField(mcOpt,0,"sourceGaussianWidth");
+    if (tmp_fieldpointer) {
+        omcConfig.sourceGaussianWidth = mxGetScalar(tmp_fieldpointer);
+    }
     
     /* Get splitting factor */
     /*  
