@@ -141,7 +141,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     omcConfig.doseThreshold = 0.01;
     omcConfig.monoEnergy = 0.1;
     omcConfig.sourceGeometry = POINT;
-    omcConfig.sourceGaussianWidth = 2.123; //Assuming 5mm FWHM penumbra if the source is gaussian
+    omcConfig.sourceGaussianWidth = 0.2123; //Assuming 5mm FWHM penumbra if the source is gaussian
     
     
     mxArray *tmp_fieldpointer;
@@ -200,6 +200,11 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     if (tmp_fieldpointer)
         omcConfig.nBatch = mxGetScalar(tmp_fieldpointer);
 
+    tmp_fieldpointer = mxGetField(mcOpt,0,"sourceGaussianWidth");
+    if (tmp_fieldpointer) {
+        omcConfig.sourceGaussianWidth = mxGetScalar(tmp_fieldpointer);
+    }
+
     tmp_fieldpointer = mxGetField(mcOpt,0,"sourceGeometry");
     if (tmp_fieldpointer) {
         size_t buflen = mxGetNumberOfElements(tmp_fieldpointer) + 1;
@@ -207,18 +212,24 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
         if (mxGetString(tmp_fieldpointer, sourceGeoTmpStr, buflen) != 0) 
             mexErrMsgIdAndTxt("MATLAB:explore:invalidStringArray","Invalid string for source Geometry");
 
-        if (strcmpi(sourceGeoTmpStr,"gaussian"))
+        //Parse source definition
+        if (strcmpi(sourceGeoTmpStr,"gaussian") == 0) 
+        {
             omcConfig.sourceGeometry = GAUSSIAN;
-        else if (strcmpi(sourceGeoTmpStr,"point"))
+            mexPrintf("Using 'gaussian' source geometry with %f mm width...\n",omcConfig.sourceGaussianWidth);
+        }
+        else if (strcmpi(sourceGeoTmpStr,"point") == 0)
+        {
             omcConfig.sourceGeometry = POINT;
+            mexPrintf("Using 'point' source geometry...\n");
+        }
         else
-            mexPrintf("Source geometry '%s' unkwnown, using 'point'",sourceGeoTmpStr);            
+        {            
+            mexPrintf("Source geometry '%s' unkwnown, using 'point'\n",sourceGeoTmpStr);            
+        }
     }
 
-    tmp_fieldpointer = mxGetField(mcOpt,0,"sourceGaussianWidth");
-    if (tmp_fieldpointer) {
-        omcConfig.sourceGaussianWidth = mxGetScalar(tmp_fieldpointer);
-    }
+    
     
     /* Get splitting factor */
     /*  
@@ -1215,15 +1226,13 @@ void initHistory(int ibeamlet) {
     rnno1 = setRandom();
     rnno2 = setRandom();
 
-    //double rnGauss[2];
-    //boxMuller(rnGauss);
-    
     xiso = rnno1*source.xside1[ibeamlet] + rnno2*source.xside2[ibeamlet] + 
             source.xcorner[ibeamlet];
     yiso = rnno1*source.yside1[ibeamlet] + rnno2*source.yside2[ibeamlet] + 
             source.ycorner[ibeamlet];
     ziso = rnno1*source.zside1[ibeamlet] + rnno2*source.zside2[ibeamlet] + 
             source.zcorner[ibeamlet];
+    
     
     /* Norm of the resulting vector from the source of current beam to the 
      position of the particle on bixel */
@@ -1240,12 +1249,47 @@ void initHistory(int ibeamlet) {
             sourcePos[1] = source.ysource[ibeam];
             sourcePos[2] = source.zsource[ibeam];
             break;
-        case GAUSSIAN: 
-            double stdSource[3] = {2.133, 2.133, 2.133};
-        
-            sourcePos[0] = setStandardNormalRandom(source.xsource[ibeam],stdSource[0]);
-            sourcePos[1] = setStandardNormalRandom(source.ysource[ibeam],stdSource[1]);
-            sourcePos[2] = setStandardNormalRandom(source.zsource[ibeam],stdSource[2]);
+        case GAUSSIAN:         
+            //double stdSource[3] = {omcConfig.sourceGaussianWidth, omcConfig.sourceGaussianWidth, omcConfig.sourceGaussianWidth};
+            //sourcePos[0] = setStandardNormalRandom(source.xsource[ibeam],stdSource[0]);
+            //sourcePos[1] = setStandardNormalRandom(source.ysource[ibeam],stdSource[1]);
+            //sourcePos[2] = setStandardNormalRandom(source.zsource[ibeam],stdSource[2]);
+                        
+            //Get the normalized collimator plane vectors
+            double planeVec1_norm = sqrt(   
+                                            source.xside1[ibeamlet]*source.xside1[ibeamlet] + 
+                                            source.yside1[ibeamlet]*source.yside1[ibeamlet] + 
+                                            source.zside1[ibeamlet]*source.zside1[ibeamlet]
+                                        );
+            double planeVec2_norm = sqrt(   
+                                            source.xside2[ibeamlet]*source.xside2[ibeamlet] + 
+                                            source.yside2[ibeamlet]*source.yside2[ibeamlet] + 
+                                            source.zside2[ibeamlet]*source.zside2[ibeamlet]
+                                        );
+            double planeVec1[3];
+            planeVec1[0] = source.xside1[ibeamlet] / planeVec1_norm;
+            planeVec1[1] = source.yside1[ibeamlet] / planeVec1_norm;
+            planeVec1[2] = source.zside1[ibeamlet] / planeVec1_norm;    
+
+            double planeVec2[3];
+            planeVec2[0] = source.xside2[ibeamlet] / planeVec2_norm;
+            planeVec2[1] = source.yside2[ibeamlet] / planeVec2_norm;
+            planeVec2[2] = source.zside2[ibeamlet] / planeVec2_norm;            
+
+            //Create two normally distributed random veriables with box-muller transform
+            double rnSource[2]; 
+            boxMuller(rnSource);
+
+            //Scale with source width
+            rnSource[0] *= omcConfig.sourceGaussianWidth;
+            rnSource[1] *= omcConfig.sourceGaussianWidth;
+
+            //Now use the plane vectors to add the random 2D offset to the source
+            sourcePos[0] = source.xsource[ibeam] + rnSource[0]*planeVec1[0] + rnSource[1]*planeVec2[0];
+            sourcePos[1] = source.ysource[ibeam] + rnSource[0]*planeVec1[1] + rnSource[1]*planeVec2[1];
+            sourcePos[2] = source.zsource[ibeam] + rnSource[0]*planeVec1[2] + rnSource[1]*planeVec2[2];
+
+            
             break;
         default:
             mexErrMsgIdAndTxt("matRad:matRad_ompInterface:invalidSourceGeometry","Source type not defined!");
