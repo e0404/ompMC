@@ -213,12 +213,12 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
             mexErrMsgIdAndTxt("MATLAB:explore:invalidStringArray","Invalid string for source Geometry");
 
         //Parse source definition
-        if (strcmpi(sourceGeoTmpStr,"gaussian") == 0) 
+        if (strcmp(sourceGeoTmpStr,"gaussian") == 0) 
         {
             omcConfig.sourceGeometry = GAUSSIAN;
             mexPrintf("Using 'gaussian' source geometry with %f mm width...\n",omcConfig.sourceGaussianWidth);
         }
-        else if (strcmpi(sourceGeoTmpStr,"point") == 0)
+        else if (strcmp(sourceGeoTmpStr,"point") == 0)
         {
             omcConfig.sourceGeometry = POINT;
             mexPrintf("Using 'point' source geometry...\n");
@@ -1244,24 +1244,26 @@ void initHistory(int ibeamlet) {
 
     switch (omcConfig.sourceGeometry)
     {
-        case POINT:
+        case POINT: ;
             sourcePos[0] = source.xsource[ibeam];
             sourcePos[1] = source.ysource[ibeam];
             sourcePos[2] = source.zsource[ibeam];
             break;
-        case GAUSSIAN:         
+        case GAUSSIAN: ;        
             //double stdSource[3] = {omcConfig.sourceGaussianWidth, omcConfig.sourceGaussianWidth, omcConfig.sourceGaussianWidth};
             //sourcePos[0] = setStandardNormalRandom(source.xsource[ibeam],stdSource[0]);
             //sourcePos[1] = setStandardNormalRandom(source.ysource[ibeam],stdSource[1]);
             //sourcePos[2] = setStandardNormalRandom(source.zsource[ibeam],stdSource[2]);
                         
             //Get the normalized collimator plane vectors
-            double planeVec1_norm = sqrt(   
+            double planeVec1_norm;
+            double planeVec2_norm;
+            planeVec1_norm = sqrt(   
                                             source.xside1[ibeamlet]*source.xside1[ibeamlet] + 
                                             source.yside1[ibeamlet]*source.yside1[ibeamlet] + 
                                             source.zside1[ibeamlet]*source.zside1[ibeamlet]
                                         );
-            double planeVec2_norm = sqrt(   
+            planeVec2_norm = sqrt(   
                                             source.xside2[ibeamlet]*source.xside2[ibeamlet] + 
                                             source.yside2[ibeamlet]*source.yside2[ibeamlet] + 
                                             source.zside2[ibeamlet]*source.zside2[ibeamlet]
@@ -1291,7 +1293,7 @@ void initHistory(int ibeamlet) {
 
             
             break;
-        default:
+        default: ;
             mexErrMsgIdAndTxt("matRad:matRad_ompInterface:invalidSourceGeometry","Source type not defined!");
     }
         
