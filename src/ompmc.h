@@ -50,6 +50,8 @@ double hownear(void);
 /* Common functions and definitions */
 #define MXSTACK 10000 // maximum number of particles in stack
 
+//typedef struct Stack Stack;
+
 struct Stack {
     int np;         // stack pointer
     int npold;       // stack pointer before interactions
@@ -71,15 +73,17 @@ struct Stack {
     double *wt;     // particle weight
 };
 
+/*
 #if defined(_MSC_VER)
-	/* use __declspec(thread) instead of threadprivate to avoid
-	error C3053. More information in:
-	https://stackoverflow.com/questions/12560243/using-threadprivate-directive-in-visual-studio */
-	extern __declspec(thread) struct Stack stack;
+	//use __declspec(thread) instead of threadprivate to avoid 
+	//error C3053. More information in:
+	// https://stackoverflow.com/questions/12560243/using-threadprivate-directive-in-visual-studio 
+	__declspec(thread) struct Stack stack;
 #else
-	extern struct Stack stack;
-	#pragma omp threadprivate(stack)
+	struct Stack stack;
+    #pragma omp threadprivate(stack)
 #endif
+*/
 
 void initStack(void);
 void cleanStack(void);
@@ -111,7 +115,6 @@ struct Photon {
     double *gbr20, *gbr21;
     double *cohe0, *cohe1;
 };
-struct Photon photon_data;
 
 void readXsecData(char *file, int *ndat,
                   double **xsec_data0,
@@ -143,7 +146,7 @@ struct Rayleigh {
     double *pmax1;
     int *i_array;
 };
-struct Rayleigh rayleigh_data;
+
 
 void readFfData(double *xval, double **aff);
 void initRayleighData(void);
@@ -167,7 +170,6 @@ struct Pair {
     double *delcm;
     double *zbrang;
 };
-struct Pair pair_data;
 
 double fcoulc(double zi);
 double xsif(double zi, double fc);
@@ -250,7 +252,6 @@ struct Electron {
     double *expeke1;
     
 };
-struct Electron electron_data;
 
 void cleanElectron(void);
 void listElectron(void);
@@ -269,7 +270,6 @@ struct Spin {
     double dqq1i;
     double *spin_rej;
 };
-struct Spin spin_data;
 
 struct Spinr {
     /* This structure holds data saved between spinRejection calls */
@@ -309,7 +309,6 @@ struct Mscat {
     double dllambi;
     double dqmsi;
 };
-struct Mscat mscat_data;
 
 struct Mscats {
     /* This structure holds data saved between mscat calls */
@@ -365,7 +364,6 @@ struct Media {
     int nmed;                   // number of media in the problem
     char med_names[MXMED][60];  // media names
 };
-struct Media media;
 
 struct Element {
     /* Attributes of an element in a medium */
@@ -403,7 +401,6 @@ struct Pegs {
     
     struct Element elements[MXMED][MXELEMENT];  // element properties
 };
-struct Pegs pegs_data;
 
 void initMediaData(void);
 int readPegsFile(int *media_found);
@@ -417,7 +414,6 @@ struct Region {
     double *pcut;
     double *ecut;
 };
-struct Region region;
 
 void initRegions(void);  // this function must be defined in user code
 void cleanRegions(void);
@@ -432,7 +428,6 @@ struct Vrt {
     /* photon splitting */
     int nsplit; // number of times the photon is divided
 };
-struct Vrt vrt;
 
 void initVrt(void);
 

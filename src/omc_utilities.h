@@ -55,8 +55,6 @@ struct inputItems {
     char value[BUFFER_SIZE];
 };
 
-extern struct inputItems input_items[];     // key,value pairs
-int input_idx;                       // number of key,value pair
 
 /******************************************************************************/
 

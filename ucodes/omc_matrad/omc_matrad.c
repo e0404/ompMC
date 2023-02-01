@@ -62,6 +62,22 @@ const mxArray *mcOpt;
 //verbose flag
 int verbose_flag;
 
+#if defined(_MSC_VER)
+	//use __declspec(thread) instead of threadprivate to avoid 
+	//error C3053. More information in:
+	// https://stackoverflow.com/questions/12560243/using-threadprivate-directive-in-visual-studio 
+	__declspec(thread) extern struct Stack stack;
+#else
+	extern struct Stack stack;
+    #pragma omp threadprivate(stack)
+#endif
+extern struct Media media;
+extern struct Pegs pegs_data;
+extern struct Region region;
+
+extern struct inputItems input_items[];     // key,value pairs
+extern int input_idx;                       // number of key,value pair
+
 //Data Types and Structs
 struct Geom {
     int *med_indices;           // index of the media in each voxel

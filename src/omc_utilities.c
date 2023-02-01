@@ -33,6 +33,9 @@
     #define printf(...) fprintf(stderr,__VA_ARGS__)
 #endif
 
+struct inputItems input_items[];     // key,value pairs
+int input_idx;                       // number of key,value pair
+
 /******************************************************************************/
 /* Timing utilities. If OpenMP is enabled it calculates the wall time through 
  omp_get_wtime() function. Otherwise, it calculates CPU time through the clock() 

@@ -36,14 +36,26 @@
 
 /* Common functions and definitions */
 #if defined(_MSC_VER)
-	/* use __declspec(thread) instead of threadprivate to avoid 
-	error C3053. More information in:
-	https://stackoverflow.com/questions/12560243/using-threadprivate-directive-in-visual-studio */
+	//use __declspec(thread) instead of threadprivate to avoid 
+	//error C3053. More information in:
+	// https://stackoverflow.com/questions/12560243/using-threadprivate-directive-in-visual-studio 
 	__declspec(thread) struct Stack stack;
 #else
-	#pragma omp threadprivate(stack)
 	struct Stack stack;
+    #pragma omp threadprivate(stack)
 #endif
+
+struct Media media;
+struct Photon photon_data;
+struct Rayleigh rayleigh_data;
+struct Pair pair_data;
+struct Electron electron_data;
+struct Mscat mscat_data;
+struct Pegs pegs_data;
+struct Region region;
+struct Vrt vrt;
+struct Spin spin_data;
+
 
 void initStack() {
     
