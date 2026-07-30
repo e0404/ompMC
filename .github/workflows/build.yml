@@ -55,7 +55,7 @@ jobs:
 
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install libomp
         if: matrix.libomp
@@ -94,7 +94,7 @@ jobs:
 
       - name: Set up MATLAB
         if: matrix.matlab
-        uses: matlab-actions/setup-matlab@v2
+        uses: matlab-actions/setup-matlab@v3
         with:
           # Pinned so that a new MATLAB release cannot break the build on its
           # own. R2024b is available for all of the runners used here.
@@ -183,7 +183,7 @@ jobs:
       # public repositories, so no license secret is involved.
       - name: Test the MEX file in MATLAB
         if: matrix.matlab
-        uses: matlab-actions/run-command@v2
+        uses: matlab-actions/run-command@v3
         with:
           command: addpath('build/bin'); addpath('ucodes/omc_matrad'); test_omc_matrad_mex
 
@@ -204,7 +204,7 @@ jobs:
           ls -l artifacts
 
       - name: Upload the artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ompmc-${{ matrix.name }}
           path: artifacts/
