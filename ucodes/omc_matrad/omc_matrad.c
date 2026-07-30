@@ -1437,8 +1437,19 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     /* Execution time measurement */
     double tbegin;
     tbegin = omc_get_time();
-    
-    
+
+    /* Keep this MEX file resident for the rest of the MATLAB session. Once an
+     OpenMP parallel region has run, the worker threads of the OpenMP runtime
+     outlive the MEX file, and unloading it -- through "clear mex" or when
+     MATLAB exits -- takes the runtime down with it while those threads are
+     still alive. With the Microsoft runtime (vcomp140, used by MSVC builds)
+     that reliably crashes MATLAB with an access violation. Locking is the
+     supported way out; the price is that a rebuilt MEX file is only picked up
+     after restarting MATLAB. */
+    if (!mexIsLocked()) {
+        mexLock();
+    }
+
     /* Parsing program options */
 
     /* Check for proper number of input and output arguments */

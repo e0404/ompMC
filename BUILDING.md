@@ -72,6 +72,53 @@ absolute path, so libomp has to be present on the machine that runs them.
 
 **Linux.** Nothing special; the OpenMP runtime comes with GCC.
 
+## OpenMP and MATLAB
+
+MATLAB loads its own OpenMP runtime (`libiomp5`, plus `libmwompwrapper`) at
+startup, so a MEX file compiled with `-fopenmp` or `/openmp` puts a *second*
+OpenMP runtime into the process — `libgomp` for GCC/MinGW, `vcomp140` for MSVC,
+`libomp` for clang. Measured on Windows with MATLAB R2025b, the two runtimes
+coexist happily and parallel regions produce correct results with the full
+thread count.
+
+What is *not* safe is unloading the MEX file afterwards. Once a parallel region
+has run, the OpenMP worker threads outlive the MEX file, and dropping the last
+reference to the runtime — via `clear mex` or simply by quitting MATLAB — takes
+it down while those threads are still alive. With `vcomp140` this crashes MATLAB
+with an access violation, every time. `omc_matrad` therefore calls `mexLock()`
+on entry. The consequence for development is that **a rebuilt MEX file is only
+picked up after restarting MATLAB**.
+
+[test_omc_matrad_mex.m](ucodes/omc_matrad/test_omc_matrad_mex.m) covers this. It
+runs a small dose calculation from `test_fixture.mat` — inputs captured from
+matRad's `matRad_PhotonOmpMCEngine` for a BOXPHANTOM photon plan, 25 beamlets on
+a 48×48×48 dose grid — and then releases the MEX file. Removing the `mexLock()`
+call makes that test take MATLAB down with an access violation, so the crash
+cannot come back unnoticed. Run it locally with:
+
+```matlab
+addpath('build/bin'); addpath('ucodes/omc_matrad');
+test_omc_matrad_mex
+```
+
+Only structural properties of the result are asserted (shape, sparsity, finite
+non-negative dose, every beamlet scoring). ompMC seeds its RNG per thread, so
+the numbers depend on the thread count and are not comparable across machines.
+
+Do not try to remove the duplicate by linking the MEX file against MATLAB's own
+`libiomp5`: MATLAB routes OpenMP through `libmwompwrapper`, and a MEX file
+linked straight to `libiomp5` crashes inside `__kmp_launch_worker` on its first
+parallel region.
+
+On macOS, Homebrew's `libomp` and MATLAB's `libiomp5` are the same LLVM runtime,
+and libomp's duplicate detection may abort with `OMP: Error #15`. Setting
+`KMP_DUPLICATE_LIB_OK=TRUE` before starting MATLAB is the usual escape hatch.
+
+Note also that MSVC implements OpenMP 2.0, which requires the loop variable of a
+`#pragma omp parallel for` to be declared *outside* the `for` statement. The
+current sources comply; `for (int i = 0; ...)` under an OpenMP pragma would
+break the MSVC build with error C3015.
+
 ## Running omc_dosxyz
 
 `-i` takes the input file path *without* the `.inp` extension, and the paths

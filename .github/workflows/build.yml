@@ -155,6 +155,18 @@ jobs:
           esac
           rm -f output/smoke_test.3ddose
 
+      # Loads the MEX file into MATLAB and runs a small dose calculation from a
+      # captured matRad plan, which the build step alone cannot check. This
+      # covers loading, the OpenMP parallel regions, and releasing the MEX file
+      # afterwards -- the last of which crashes MATLAB outright if the MEX file
+      # does not lock itself. MathWorks licenses MATLAB free of charge for
+      # public repositories, so no license secret is involved.
+      - name: Test the MEX file in MATLAB
+        if: matrix.matlab
+        uses: matlab-actions/run-command@v2
+        with:
+          command: addpath('build/bin'); addpath('ucodes/omc_matrad'); test_omc_matrad_mex
+
       - name: Collect the artifacts
         shell: bash
         run: |
