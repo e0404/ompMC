@@ -12,9 +12,17 @@ concurrency:
   cancel-in-progress: true
 
 # The MEX file is compiled straight from CMake against the MATLAB headers and
-# import libraries, so the MATLAB installed by setup-matlab is never started and
-# no license is needed. Configurations without a supported MATLAB (Linux ARM)
-# build omc_dosxyz only.
+# import libraries, so building it never starts MATLAB and needs no license.
+# The MATLAB test step does start MATLAB, which MathWorks licenses free of
+# charge for public repositories.
+#
+# linux-arm64 builds omc_dosxyz only, since MathWorks publishes no Linux ARM
+# release at all.
+#
+# The two macOS jobs get their OpenMP runtime into the MEX file differently,
+# because Apple Silicon MATLAB ships bin/maca64/libomp.dylib while Intel MATLAB
+# ships no runtime a MEX file can bind to. CMake detects which case applies; see
+# the omc_matrad section of CMakeLists.txt.
 
 jobs:
   build:
@@ -116,26 +124,6 @@ jobs:
           echo "matlabroot: $root"
           test -f "$root/extern/include/mex.h"
           echo "MATLAB_ROOT=$root" >> "$GITHUB_ENV"
-
-      # Diagnostic: the MEX file resolves its OpenMP symbols against whatever
-      # runtime MATLAB has already loaded, so record which one that is and
-      # whether it is new enough for the entry points clang emits.
-      - name: Report the available OpenMP runtimes
-        if: matrix.libomp && matrix.matlab
-        shell: bash
-        run: |
-          echo "--- runtimes shipped by MATLAB ---"
-          ls -l "$MATLAB_ROOT"/bin/mac*64/ | grep -iE 'omp' || echo "  none found"
-          for lib in "$MATLAB_ROOT"/bin/mac*64/lib*omp*.dylib; do
-            [ -e "$lib" ] || continue
-            echo "  $lib"
-            for sym in __kmpc_dispatch_deinit __kmpc_fork_call __kmpc_dispatch_init_4; do
-              n=$(nm -gU "$lib" 2>/dev/null | grep -c "_$sym\$" || true)
-              echo "      $sym: $n"
-            done
-          done
-          echo "--- Homebrew libomp ---"
-          ls -l "$(brew --prefix libomp)/lib" || true
 
       - name: Configure
         shell: bash

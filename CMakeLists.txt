@@ -218,25 +218,82 @@ if(OMPMC_MEX_ENABLED)
         LINK_TO ompmc_core
         MODULE)
 
+    set(OMPMC_MEX_OPENMP_SOURCE "none")
+
     if(OMPMC_OPENMP_ENABLED)
         if(APPLE)
-            # MATLAB already has an LLVM OpenMP runtime loaded on macOS
-            # (MATLAB.app/bin/mac*64/libomp.dylib), and a MEX file that links a
-            # second copy -- Homebrew's libomp.dylib, say -- crashes MATLAB: the
-            # two runtimes share symbol names, so worker threads started by one
-            # end up in the other's code operating on foreign thread state. The
-            # observed symptoms are "OMP: Error #179 pthread_mutex_init failed"
-            # followed by a segmentation fault in __kmp_suspend_64.
-            #
-            # So the MEX file links no OpenMP runtime at all. Its OpenMP symbols
-            # stay undefined and dyld binds them, when MATLAB loads the MEX
-            # file, to the copy MATLAB has already brought in. That also keeps
-            # the MEX file free of an absolute path into a particular MATLAB or
-            # Homebrew installation. The standalone omc_dosxyz is unaffected and
-            # keeps linking the runtime normally.
-            target_link_options(omc_matrad PRIVATE "SHELL:-undefined dynamic_lookup")
+            # How the MEX file gets its OpenMP runtime on macOS depends on
+            # whether MATLAB brings one into the process, which differs between
+            # the Apple Silicon and the Intel builds of MATLAB. Ask the
+            # installation rather than guessing from the architecture.
+            string(REGEX REPLACE "^mex" "" _ompmc_matlab_arch "${Matlab_MEX_EXTENSION}")
+            file(GLOB _ompmc_matlab_openmp
+                "${Matlab_ROOT_DIR}/bin/${_ompmc_matlab_arch}/libomp.dylib"
+                "${Matlab_ROOT_DIR}/bin/${_ompmc_matlab_arch}/libiomp5.dylib")
+
+            if(_ompmc_matlab_openmp)
+                # Apple Silicon MATLAB ships bin/maca64/libomp.dylib, the very
+                # LLVM runtime clang targets. A MEX file that linked a second
+                # copy -- Homebrew's libomp.dylib, say -- would put two copies of
+                # the same runtime in the process; they share symbol names, so
+                # worker threads started by one end up in the other's code
+                # operating on foreign thread state. The observed symptoms are
+                # "OMP: Error #179 pthread_mutex_init failed" followed by a
+                # segmentation fault in __kmp_suspend_64.
+                #
+                # So link no runtime at all here. The OpenMP symbols stay
+                # undefined and dyld binds them, when MATLAB loads the MEX file,
+                # to the copy MATLAB has already brought in. That also keeps the
+                # MEX file free of an absolute path into a particular MATLAB or
+                # Homebrew installation.
+                target_link_options(omc_matrad PRIVATE "SHELL:-undefined dynamic_lookup")
+                set(OMPMC_MEX_OPENMP_SOURCE "loaded by MATLAB, bound at load time")
+            else()
+                # Intel MATLAB ships no OpenMP runtime a MEX file can bind to:
+                # bin/maci64 holds neither libomp.dylib nor libiomp5.dylib, only
+                # the libmwompwrapper shim, which defines none of the __kmpc_*
+                # entry points. Binding at load time therefore fails outright
+                # with an unresolved __kmpc_dispatch_deinit.
+                #
+                # Give the MEX file a private runtime instead, linked from the
+                # static libomp.a. Nothing can collide with it: the MEX file
+                # exports only mexFunction (matlab_add_mex passes an
+                # -exported_symbols_list), so the runtime stays invisible to the
+                # rest of the process, and its internal calls are bound at link
+                # time rather than going through the flat namespace.
+                set(_ompmc_libomp_hints "")
+                if(OpenMP_omp_LIBRARY)
+                    get_filename_component(_ompmc_libomp_dir "${OpenMP_omp_LIBRARY}" DIRECTORY)
+                    list(APPEND _ompmc_libomp_hints "${_ompmc_libomp_dir}")
+                endif()
+                if(OpenMP_ROOT)
+                    list(APPEND _ompmc_libomp_hints "${OpenMP_ROOT}/lib")
+                endif()
+
+                find_library(OMPMC_LIBOMP_STATIC
+                    NAMES libomp.a
+                    HINTS ${_ompmc_libomp_hints}
+                    DOC "Static LLVM OpenMP runtime to link into the MEX file")
+
+                if(NOT OMPMC_LIBOMP_STATIC)
+                    message(FATAL_ERROR
+                        "This MATLAB (${Matlab_ROOT_DIR}) ships no OpenMP runtime "
+                        "for the MEX file to use, so a static libomp.a has to be "
+                        "linked into it, and none was found. Install one with "
+                        "'brew install libomp', point the build at it with "
+                        "-DOMPMC_LIBOMP_STATIC=<path to libomp.a>, or build "
+                        "without the MEX file (-DOMPMC_BUILD_MATRAD_MEX=OFF) or "
+                        "without OpenMP (-DOMPMC_WITH_OPENMP=OFF).")
+                endif()
+
+                # libomp is implemented in C++, so it needs the C++ runtime even
+                # though every ompMC translation unit is C.
+                target_link_libraries(omc_matrad "${OMPMC_LIBOMP_STATIC}" c++)
+                set(OMPMC_MEX_OPENMP_SOURCE "static ${OMPMC_LIBOMP_STATIC}")
+            endif()
         else()
             target_link_libraries(omc_matrad ${OMPMC_OPENMP_RUNTIME})
+            set(OMPMC_MEX_OPENMP_SOURCE "linked shared runtime")
         endif()
     endif()
 
@@ -291,8 +348,8 @@ endif()
 message(STATUS "  OpenMP           : ${OMPMC_OPENMP_ENABLED}")
 message(STATUS "  omc_dosxyz       : ${OMPMC_BUILD_DOSXYZ}")
 message(STATUS "  omc_matrad (mex) : ${OMPMC_MEX_ENABLED}")
-if(OMPMC_MEX_ENABLED AND OMPMC_OPENMP_ENABLED AND APPLE)
-    message(STATUS "    OpenMP runtime : resolved at load time from MATLAB")
+if(OMPMC_MEX_ENABLED AND OMPMC_OPENMP_ENABLED)
+    message(STATUS "    OpenMP runtime : ${OMPMC_MEX_OPENMP_SOURCE}")
 endif()
 if(OMPMC_MEX_ENABLED)
     message(STATUS "    MATLAB root    : ${Matlab_ROOT_DIR}")

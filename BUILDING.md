@@ -110,9 +110,11 @@ Do not try to remove the duplicate by linking the MEX file against MATLAB's own
 linked straight to `libiomp5` crashes inside `__kmp_launch_worker` on its first
 parallel region.
 
-macOS needs its own arrangement. MATLAB ships an LLVM OpenMP runtime of its own
-at `MATLAB.app/bin/mac*64/libomp.dylib` — the very runtime clang targets — so a
-MEX file linked against Homebrew's `libomp.dylib` puts two copies of the *same*
+macOS needs its own arrangement, and it differs by architecture.
+
+On **Apple Silicon**, MATLAB ships an LLVM OpenMP runtime of its own at
+`MATLAB.app/bin/maca64/libomp.dylib` — the very runtime clang targets — so a MEX
+file linked against Homebrew's `libomp.dylib` puts two copies of the *same*
 runtime into the process. They export the same symbols, so calls cross between
 them: a worker thread started by one ends up in the other's code operating on
 thread state it does not own. The observed failure is `OMP: Error #179 Function
@@ -129,6 +131,26 @@ file carries no absolute path into a particular MATLAB or Homebrew tree.
 Note that `KMP_DUPLICATE_LIB_OK=TRUE`, the usual advice for duplicate OpenMP
 runtimes, is not a fix here: it only silences the duplicate-runtime check, it
 does not stop the two runtimes from calling into each other.
+
+On **Intel macOS** that same arrangement does not work, because Intel MATLAB
+brings no OpenMP runtime into the process for the MEX file to bind to:
+`bin/maci64` contains neither `libomp.dylib` nor `libiomp5.dylib`, only the
+`libmwompwrapper` shim, which defines none of the `__kmpc_*` entry points. A MEX
+file built the Apple Silicon way fails to load outright, with an unresolved
+`__kmpc_dispatch_deinit` — an entry point clang emits for `schedule(dynamic)`
+and `schedule(guided)` loops.
+
+There the MEX file gets a private runtime instead, linked from Homebrew's static
+`libomp.a`. Nothing can collide with it: `matlab_add_mex` passes an
+`-exported_symbols_list` that exports only `mexFunction`, so the runtime stays
+invisible to the rest of the process, and its internal calls are resolved at
+link time rather than through the flat namespace. `libomp.a` is C++ internally,
+so `libc++` is linked alongside it.
+
+The build picks between the two by asking the MATLAB installation which runtime
+it ships, not by looking at the architecture, so it keeps working if MathWorks
+changes what a release contains. The configuration summary reports the outcome
+as `OpenMP runtime` under `omc_matrad`.
 
 Note also that MSVC implements OpenMP 2.0, which requires the loop variable of a
 `#pragma omp parallel for` to be declared *outside* the `for` statement. The
