@@ -142,8 +142,24 @@ if(OMPMC_HAVE_LIBM)
     target_link_libraries(ompmc_core PUBLIC m)
 endif()
 
+# OpenMP is attached in two steps. The compile options and the omp.h include
+# path go on the core library, so every user code compiles its pragmas the same
+# way. The runtime *library* is linked per user code instead, because the MEX
+# file must not always bring its own -- see the omc_matrad section below.
+set(OMPMC_OPENMP_RUNTIME "")
+
 if(OMPMC_OPENMP_ENABLED)
-    target_link_libraries(ompmc_core PUBLIC OpenMP::OpenMP_C)
+    get_target_property(_ompmc_omp_options OpenMP::OpenMP_C INTERFACE_COMPILE_OPTIONS)
+    if(_ompmc_omp_options)
+        target_compile_options(ompmc_core PUBLIC ${_ompmc_omp_options})
+    endif()
+
+    get_target_property(_ompmc_omp_includes OpenMP::OpenMP_C INTERFACE_INCLUDE_DIRECTORIES)
+    if(_ompmc_omp_includes)
+        target_include_directories(ompmc_core SYSTEM PUBLIC ${_ompmc_omp_includes})
+    endif()
+
+    set(OMPMC_OPENMP_RUNTIME OpenMP::OpenMP_C)
 endif()
 
 if(OMPMC_NATIVE_TUNING)
@@ -161,7 +177,7 @@ endif()
 
 if(OMPMC_BUILD_DOSXYZ)
     add_executable(omc_dosxyz ucodes/omc_dosxyz/omc_dosxyz.c)
-    target_link_libraries(omc_dosxyz PRIVATE ompmc_core)
+    target_link_libraries(omc_dosxyz PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
 
     if(NOT OMPMC_HAVE_GETOPT_LONG)
         message(STATUS "No system getopt_long(), using the bundled replacement")
@@ -201,6 +217,28 @@ if(OMPMC_MEX_ENABLED)
         OUTPUT_NAME omc_matrad
         LINK_TO ompmc_core
         MODULE)
+
+    if(OMPMC_OPENMP_ENABLED)
+        if(APPLE)
+            # MATLAB already has an LLVM OpenMP runtime loaded on macOS
+            # (MATLAB.app/bin/mac*64/libomp.dylib), and a MEX file that links a
+            # second copy -- Homebrew's libomp.dylib, say -- crashes MATLAB: the
+            # two runtimes share symbol names, so worker threads started by one
+            # end up in the other's code operating on foreign thread state. The
+            # observed symptoms are "OMP: Error #179 pthread_mutex_init failed"
+            # followed by a segmentation fault in __kmp_suspend_64.
+            #
+            # So the MEX file links no OpenMP runtime at all. Its OpenMP symbols
+            # stay undefined and dyld binds them, when MATLAB loads the MEX
+            # file, to the copy MATLAB has already brought in. That also keeps
+            # the MEX file free of an absolute path into a particular MATLAB or
+            # Homebrew installation. The standalone omc_dosxyz is unaffected and
+            # keeps linking the runtime normally.
+            target_link_options(omc_matrad PRIVATE "SHELL:-undefined dynamic_lookup")
+        else()
+            target_link_libraries(omc_matrad ${OMPMC_OPENMP_RUNTIME})
+        endif()
+    endif()
 
     # matlab_add_mex() does not go through the usual output directory
     # variables for every generator, so pin the location explicitly.
@@ -253,6 +291,9 @@ endif()
 message(STATUS "  OpenMP           : ${OMPMC_OPENMP_ENABLED}")
 message(STATUS "  omc_dosxyz       : ${OMPMC_BUILD_DOSXYZ}")
 message(STATUS "  omc_matrad (mex) : ${OMPMC_MEX_ENABLED}")
+if(OMPMC_MEX_ENABLED AND OMPMC_OPENMP_ENABLED AND APPLE)
+    message(STATUS "    OpenMP runtime : resolved at load time from MATLAB")
+endif()
 if(OMPMC_MEX_ENABLED)
     message(STATUS "    MATLAB root    : ${Matlab_ROOT_DIR}")
     message(STATUS "    MATLAB version : ${Matlab_VERSION_STRING}")

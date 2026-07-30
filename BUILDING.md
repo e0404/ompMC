@@ -110,9 +110,25 @@ Do not try to remove the duplicate by linking the MEX file against MATLAB's own
 linked straight to `libiomp5` crashes inside `__kmp_launch_worker` on its first
 parallel region.
 
-On macOS, Homebrew's `libomp` and MATLAB's `libiomp5` are the same LLVM runtime,
-and libomp's duplicate detection may abort with `OMP: Error #15`. Setting
-`KMP_DUPLICATE_LIB_OK=TRUE` before starting MATLAB is the usual escape hatch.
+macOS needs its own arrangement. MATLAB ships an LLVM OpenMP runtime of its own
+at `MATLAB.app/bin/mac*64/libomp.dylib` — the very runtime clang targets — so a
+MEX file linked against Homebrew's `libomp.dylib` puts two copies of the *same*
+runtime into the process. They export the same symbols, so calls cross between
+them: a worker thread started by one ends up in the other's code operating on
+thread state it does not own. The observed failure is `OMP: Error #179 Function
+pthread_mutex_init failed` followed by a segmentation fault in
+`__kmp_suspend_64`, with both dylibs visible in the stack trace.
+
+The build therefore links **no** OpenMP runtime into the MEX file on macOS. Its
+OpenMP symbols are left undefined (`-undefined dynamic_lookup`) and bind to
+MATLAB's copy when the MEX file is loaded. Homebrew's libomp is still needed at
+build time for `omp.h`, and `omc_dosxyz` — which runs in its own process, with
+no MATLAB around — keeps linking it normally. A side benefit is that the MEX
+file carries no absolute path into a particular MATLAB or Homebrew tree.
+
+Note that `KMP_DUPLICATE_LIB_OK=TRUE`, the usual advice for duplicate OpenMP
+runtimes, is not a fix here: it only silences the duplicate-runtime check, it
+does not stop the two runtimes from calling into each other.
 
 Note also that MSVC implements OpenMP 2.0, which requires the loop variable of a
 `#pragma omp parallel for` to be declared *outside* the `for` statement. The

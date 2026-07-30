@@ -43,7 +43,7 @@ jobs:
             generator: Unix Makefiles
             matlab: false     # setup-matlab has no Linux ARM release
           - name: macos-x64
-            os: macos-13
+            os: macos-15-intel     # macos-13 is retired; this is the Intel label
             generator: Unix Makefiles
             libomp: true
             matlab: true
