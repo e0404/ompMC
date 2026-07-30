@@ -1,0 +1,179 @@
+name: build
+
+on:
+  push:
+    branches: [master, dev_parallel]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The MEX file is compiled straight from CMake against the MATLAB headers and
+# import libraries, so the MATLAB installed by setup-matlab is never started and
+# no license is needed. Configurations without a supported MATLAB (Linux ARM)
+# build omc_dosxyz only.
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64-msvc
+            os: windows-2022
+            generator: Visual Studio 17 2022
+            cmake_extra: -A x64
+            matlab: true
+          - name: windows-x64-mingw
+            os: windows-2022
+            generator: MinGW Makefiles
+            mingw: true
+            matlab: true
+          - name: linux-x64-gcc
+            os: ubuntu-22.04
+            generator: Unix Makefiles
+            matlab: true
+          - name: linux-arm64-gcc
+            os: ubuntu-24.04-arm
+            generator: Unix Makefiles
+            matlab: false     # setup-matlab has no Linux ARM release
+          - name: macos-x64
+            os: macos-13
+            generator: Unix Makefiles
+            libomp: true
+            matlab: true
+          - name: macos-arm64
+            os: macos-14
+            generator: Unix Makefiles
+            libomp: true
+            matlab: true
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install libomp
+        if: matrix.libomp
+        run: brew install libomp
+
+      - name: Set up MinGW-w64
+        if: matrix.mingw
+        shell: pwsh
+        run: |
+          $candidates = @(
+            'C:\mingw64\bin',
+            'C:\ProgramData\mingw64\mingw64\bin',
+            'C:\msys64\mingw64\bin',
+            (Join-Path $env:ChocolateyInstall 'lib\mingw\tools\install\mingw64\bin')
+          )
+          function Find-MinGW($paths) {
+            foreach ($p in $paths) {
+              if ($p -and (Test-Path (Join-Path $p 'gcc.exe')) -and
+                          (Test-Path (Join-Path $p 'mingw32-make.exe'))) {
+                return $p
+              }
+            }
+            return $null
+          }
+          $bin = Find-MinGW $candidates
+          if (-not $bin) {
+            Write-Host 'No usable MinGW-w64 on the image, installing it'
+            choco install mingw --no-progress -y
+            $bin = Find-MinGW $candidates
+          }
+          if (-not $bin) { throw 'MinGW-w64 not found' }
+          Write-Host "Using MinGW-w64 from $bin"
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          Add-Content -Path $env:GITHUB_ENV -Value "MINGW_BIN=$bin"
+          & (Join-Path $bin 'gcc.exe') --version
+
+      - name: Set up MATLAB
+        if: matrix.matlab
+        uses: matlab-actions/setup-matlab@v2
+        with:
+          # Pinned so that a new MATLAB release cannot break the build on its
+          # own. R2024b is available for all of the runners used here.
+          release: R2024b
+
+      - name: Locate the MATLAB installation
+        if: matrix.matlab
+        shell: bash
+        run: |
+          set -euo pipefail
+          matlab_bin="$(command -v matlab)"
+          # Follow the launcher symlink when there is one, so that we end up at
+          # the real matlabroot rather than at a directory of shims.
+          resolved="$(readlink -f "$matlab_bin" 2>/dev/null || echo "$matlab_bin")"
+          root="$(dirname "$(dirname "$resolved")")"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            root="$(cygpath -m "$root")"
+          fi
+          echo "matlabroot: $root"
+          test -f "$root/extern/include/mex.h"
+          echo "MATLAB_ROOT=$root" >> "$GITHUB_ENV"
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(-S . -B build -G "${{ matrix.generator }}")
+          extra="${{ matrix.cmake_extra }}"
+          if [ -n "$extra" ]; then
+            args+=($extra)
+          fi
+          args+=(-DCMAKE_BUILD_TYPE=Release)
+          args+=(-DOMPMC_BUILD_MATRAD_MEX=${{ matrix.matlab && 'ON' || 'OFF' }})
+          if [ -n "${MATLAB_ROOT:-}" ]; then
+            args+=("-DMatlab_ROOT_DIR=$MATLAB_ROOT")
+          fi
+          cmake "${args[@]}"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Smoke test omc_dosxyz
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=build/bin/omc_dosxyz
+          if [ -f "$exe.exe" ]; then
+            exe="$exe.exe"
+          fi
+          # The -i value carries no extension, omc_dosxyz appends .inp itself.
+          "$exe" -i ucodes/omc_dosxyz/smoke_test -o smoke_test
+          # A valid .3ddose starts with the voxel counts of the WATER phantom.
+          header="$(head -n 1 output/smoke_test.3ddose)"
+          echo "3ddose header: $header"
+          case "$header" in
+            *61*61*150*) ;;
+            *) echo "unexpected .3ddose header"; exit 1 ;;
+          esac
+          rm -f output/smoke_test.3ddose
+
+      - name: Collect the artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cp build/bin/omc_dosxyz build/bin/omc_dosxyz.exe artifacts/ 2>/dev/null || true
+          cp build/bin/*.mex* artifacts/ 2>/dev/null || true
+          if [ "${{ matrix.mingw || false }}" = "true" ]; then
+            # The MinGW binaries need the GCC runtime next to them to be usable
+            # outside of this job.
+            for dll in libgomp-1.dll libgcc_s_seh-1.dll libwinpthread-1.dll; do
+              cp "$(cygpath -u "$MINGW_BIN")/$dll" artifacts/ 2>/dev/null || true
+            done
+          fi
+          ls -l artifacts
+
+      - name: Upload the artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ompmc-${{ matrix.name }}
+          path: artifacts/
+          if-no-files-found: error

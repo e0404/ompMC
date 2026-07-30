@@ -9,3 +9,12 @@ xmgr_script
 *.o
 *.exe
 *.pdf
+
+# CMake build trees and their products
+build/
+build-*/
+CMakeUserPresets.json
+*.mexa64
+*.mexmaca64
+*.mexmaci64
+*.mexw64
