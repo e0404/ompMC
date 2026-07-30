@@ -117,6 +117,26 @@ jobs:
           test -f "$root/extern/include/mex.h"
           echo "MATLAB_ROOT=$root" >> "$GITHUB_ENV"
 
+      # Diagnostic: the MEX file resolves its OpenMP symbols against whatever
+      # runtime MATLAB has already loaded, so record which one that is and
+      # whether it is new enough for the entry points clang emits.
+      - name: Report the available OpenMP runtimes
+        if: matrix.libomp && matrix.matlab
+        shell: bash
+        run: |
+          echo "--- runtimes shipped by MATLAB ---"
+          ls -l "$MATLAB_ROOT"/bin/mac*64/ | grep -iE 'omp' || echo "  none found"
+          for lib in "$MATLAB_ROOT"/bin/mac*64/lib*omp*.dylib; do
+            [ -e "$lib" ] || continue
+            echo "  $lib"
+            for sym in __kmpc_dispatch_deinit __kmpc_fork_call __kmpc_dispatch_init_4; do
+              n=$(nm -gU "$lib" 2>/dev/null | grep -c "_$sym\$" || true)
+              echo "      $sym: $n"
+            done
+          done
+          echo "--- Homebrew libomp ---"
+          ls -l "$(brew --prefix libomp)/lib" || true
+
       - name: Configure
         shell: bash
         run: |
