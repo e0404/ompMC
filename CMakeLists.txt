@@ -40,6 +40,7 @@ option(OMPMC_NATIVE_TUNING
     "Tune the generated code for the building machine (-mtune=native)" OFF)
 option(OMPMC_LTO
     "Enable link time optimization on optimized builds" ON)
+option(OMPMC_BUILD_TESTS "Build the unit tests and register them with CTest" ON)
 
 set(OMPMC_BUILD_MATRAD_MEX "AUTO" CACHE STRING
     "Build the omc_matrad MEX file: ON (fail if MATLAB is missing), OFF, or AUTO")
@@ -376,6 +377,34 @@ if(OMPMC_MEX_ENABLED)
 endif()
 
 ################################################################################
+# Tests
+################################################################################
+
+if(OMPMC_BUILD_TESTS)
+    enable_testing()
+
+    add_executable(test_ompmc tests/test_ompmc.c)
+    target_link_libraries(test_ompmc PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_ompmc)
+
+    if(MSVC)
+        target_compile_definitions(test_ompmc PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME unit COMMAND test_ompmc)
+
+    # The smoke test drives the whole transport chain, so it has to run from
+    # the repository root where the data, pegs4 and phantoms folders live.
+    if(OMPMC_BUILD_DOSXYZ)
+        add_test(NAME smoke
+            COMMAND omc_dosxyz -i ucodes/omc_dosxyz/smoke_test -o smoke_test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    endif()
+endif()
+
+################################################################################
 # Installation
 ################################################################################
 
@@ -406,6 +435,7 @@ else()
 endif()
 message(STATUS "  OpenMP           : ${OMPMC_OPENMP_ENABLED}")
 message(STATUS "  LTO              : ${OMPMC_LTO_ENABLED}")
+message(STATUS "  Tests            : ${OMPMC_BUILD_TESTS}")
 message(STATUS "  omc_dosxyz       : ${OMPMC_BUILD_DOSXYZ}")
 message(STATUS "  omc_matrad (mex) : ${OMPMC_MEX_ENABLED}")
 if(OMPMC_MEX_ENABLED AND OMPMC_OPENMP_ENABLED)

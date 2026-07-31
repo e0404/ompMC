@@ -58,6 +58,54 @@ struct inputItems {
 
 /******************************************************************************/
 
+/******************************************************************************/
+/* Voxel geometry helpers shared by the user codes. Both are on the transport
+ hot path -- omcDecodeRegion() runs on every howfar() and hownear() call -- so
+ they are inline in the header rather than a call into another translation
+ unit. Keeping them here also makes them reachable from the unit tests. */
+
+/* Decode a region number into its voxel indices along each axis. Regions are
+ numbered 1 + ix + iy*imax + iz*imax*jmax, with 0 reserved for "outside the
+ geometry"; irl must be >= 1.
+
+ Written with two integer divisions rather than the three the arithmetic
+ suggests: the quotient of the first division is imax*(iy + iz*jmax)/imax,
+ i.e. exactly the combined y,z index, so the second division can work on that
+ directly. Each division pairs with its own remainder into one instruction. */
+static inline void omcDecodeRegion(int irl, int imax, int jmax,
+                                   int *ix, int *iy, int *iz) {
+
+    int ir0 = irl - 1;
+    int irxy = ir0/imax;
+
+    *ix = ir0 - irxy*imax;
+    *iz = irxy/jmax;
+    *iy = irxy - (*iz)*jmax;
+}
+
+/* Index of the voxel along one axis containing pos, i.e. the smallest i in
+ [0, n-1] with bounds[i+1] >= pos. bounds holds n+1 ascending values.
+ Positions outside the grid clamp to the first or last voxel rather than
+ running off the end of bounds[]. */
+static inline int omcFindVoxelIndex(const double *bounds, int n, double pos) {
+
+    int lo = 0;
+    int hi = n - 1;
+
+    while (lo < hi) {
+        int mid = lo + (hi - lo)/2;
+        if (bounds[mid+1] < pos) {
+            lo = mid + 1;
+        }
+        else {
+            hi = mid;
+        }
+    }
+
+    return lo;
+}
+/******************************************************************************/
+
 /* Flag set by '--verbose' argument */
 extern int verbose_flag;
 

@@ -1,0 +1,456 @@
+/******************************************************************************
+ ompMC - An OpenMP parallel implementation for Monte Carlo particle transport
+ simulations
+
+ Unit tests for the self-contained pieces of the transport core: the piecewise
+ linear interpolation helpers, the cubic spline used for the spin data, the
+ RANMAR random number generator, the azimuthal angle sampler and the voxel
+ geometry helpers shared by the user codes.
+
+ The heavy physics routines are not covered here; they need the PEGS and cross
+ section data loaded and are exercised end to end by the omc_dosxyz smoke test
+ instead.
+*****************************************************************************/
+
+#include "ompmc.h"
+#include "omc_random.h"
+#include "omc_utilities.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/*******************************************************************************
+* ompmc.c is compiled into the same library as the code under test and refers
+* to these, so they have to exist even though no test reaches them.
+*******************************************************************************/
+int verbose_flag = 0;
+
+void ausgab(double edep) { (void)edep; }
+void howfar(int *idisc, int *irnew, double *ustep) {
+    (void)idisc; (void)irnew; (void)ustep;
+}
+double hownear(void) { return 0.0; }
+void initRegions(void) { }
+
+/*******************************************************************************
+* Minimal assertion harness
+*******************************************************************************/
+static int tests_run = 0;
+static int tests_failed = 0;
+static const char *current_test = "";
+
+#define CHECK(cond)                                                           \
+    do {                                                                      \
+        if (!(cond)) {                                                        \
+            printf("  FAIL %s:%d in %s: %s\n",                                \
+                   __FILE__, __LINE__, current_test, #cond);                  \
+            tests_failed++;                                                   \
+        }                                                                     \
+    } while (0)
+
+#define CHECK_CLOSE(got, want, tol)                                           \
+    do {                                                                      \
+        double _g = (got), _w = (want);                                       \
+        if (!(fabs(_g - _w) <= (tol))) {                                      \
+            printf("  FAIL %s:%d in %s: %s == %.17g, expected %.17g "         \
+                   "(tol %g)\n", __FILE__, __LINE__, current_test,            \
+                   #got, _g, _w, (double)(tol));                              \
+            tests_failed++;                                                   \
+        }                                                                     \
+    } while (0)
+
+#define RUN(fn)                                                               \
+    do {                                                                      \
+        current_test = #fn;                                                   \
+        tests_run++;                                                          \
+        int _before = tests_failed;                                           \
+        fn();                                                                 \
+        printf("%-42s %s\n", #fn,                                             \
+               tests_failed == _before ? "ok" : "FAILED");                    \
+    } while (0)
+
+/*******************************************************************************
+* Piecewise linear interpolation helpers (ompmc.c)
+*
+* The energy grids are stored as coef1*log(E) + coef0, evaluated by pwlfEval()
+* and truncated to the containing interval by pwlfInterval(). Everything that
+* reads a cross section or stopping power goes through these two.
+*******************************************************************************/
+static void test_pwlf_eval_is_affine(void) {
+
+    double coef1[3] = {2.0, -1.5, 0.0};
+    double coef0[3] = {1.0,  4.0, 7.0};
+
+    CHECK_CLOSE(pwlfEval(0, 3.0, coef1, coef0), 7.0, 0.0);
+    CHECK_CLOSE(pwlfEval(1, 2.0, coef1, coef0), 1.0, 0.0);
+
+    /* Index 2 has zero slope, so it is constant in lvar */
+    CHECK_CLOSE(pwlfEval(2, -100.0, coef1, coef0), 7.0, 0.0);
+    CHECK_CLOSE(pwlfEval(2,  100.0, coef1, coef0), 7.0, 0.0);
+}
+
+static void test_pwlf_interval_truncates(void) {
+
+    double coef1[1] = {4.0};
+    double coef0[1] = {0.5};
+
+    /* 4*lvar + 0.5, truncated towards zero */
+    CHECK(pwlfInterval(0, 1.0,  coef1, coef0) == 4);
+    CHECK(pwlfInterval(0, 1.2,  coef1, coef0) == 5);
+    CHECK(pwlfInterval(0, 0.0,  coef1, coef0) == 0);
+
+    /* pwlfInterval must agree with truncating what pwlfEval returns; the
+     transport code relies on the two staying consistent */
+    for (int i = 0; i < 50; i++) {
+        double lvar = -3.0 + 0.17*i;
+        CHECK(pwlfInterval(0, lvar, coef1, coef0) ==
+              (int)pwlfEval(0, lvar, coef1, coef0));
+    }
+}
+
+/*******************************************************************************
+* Cubic spline (ompmc.c), used to resample the spin rejection data
+*******************************************************************************/
+static void test_spline_interpolates_nodes(void) {
+
+    enum { N = 9 };
+    double x[N], f[N], a[N], b[N], c[N], d[N];
+
+    for (int i = 0; i < N; i++) {
+        x[i] = (double)i;
+        f[i] = sin(0.4*i) + 0.1*i;
+    }
+
+    setSpline(x, f, a, b, c, d, N);
+
+    /* A spline must reproduce the tabulated values at the nodes */
+    for (int i = 0; i < N - 1; i++) {
+        CHECK_CLOSE(spline(x[i], x, a, b, c, d, N), f[i], 1.0E-12);
+    }
+}
+
+static void test_spline_matches_smooth_function(void) {
+
+    enum { N = 33 };
+    double x[N], f[N], a[N], b[N], c[N], d[N];
+
+    for (int i = 0; i < N; i++) {
+        x[i] = -2.0 + 4.0*i/(N - 1);
+        f[i] = exp(-x[i]*x[i]);
+    }
+
+    setSpline(x, f, a, b, c, d, N);
+
+    /* Between the nodes a cubic spline over a smooth function should track it
+     to far better than the node spacing */
+    for (int i = 0; i < 40; i++) {
+        double s = -1.9 + 3.8*i/39.0;
+        CHECK_CLOSE(spline(s, x, a, b, c, d, N), exp(-s*s), 1.0E-4);
+    }
+}
+
+/*******************************************************************************
+* heap_sort (ompmc.c), used when building the photon cross section tables
+*******************************************************************************/
+static void test_heap_sort_orders_values_and_indices(void) {
+
+    enum { N = 7 };
+    double values[N] = {3.5, -1.0, 9.25, 0.0, 3.5, 100.0, -7.5};
+    double original[N];
+    int indices[N];
+
+    memcpy(original, values, sizeof(values));
+    heap_sort(N, values, indices);
+
+    for (int i = 1; i < N; i++) {
+        CHECK(values[i-1] <= values[i]);
+    }
+
+    /* indices are 1 based and must still point at the value that moved */
+    for (int i = 0; i < N; i++) {
+        CHECK(indices[i] >= 1 && indices[i] <= N);
+        CHECK_CLOSE(original[indices[i] - 1], values[i], 0.0);
+    }
+}
+
+/*******************************************************************************
+* RANMAR random number generator (omc_random.c)
+*******************************************************************************/
+
+/* initRandom() reads its seeds through getInputValue(), so stage them the way
+ the user codes do rather than parsing a file. */
+extern struct inputItems input_items[];
+extern int input_idx;
+
+static void seedRandom(const char *seeds) {
+    strcpy(input_items[0].key, "rng seeds");
+    strcpy(input_items[0].value, seeds);
+    input_idx = 1;
+    initRandom();
+}
+
+static void test_random_stays_in_unit_interval(void) {
+
+    seedRandom("97 33");
+
+    /* Well past the NRANDOM refill boundary so the array wrap is covered */
+    for (int i = 0; i < 20*NRANDOM + 7; i++) {
+        double r = setRandom();
+        CHECK(r >= 0.0 && r < 1.0);
+    }
+
+    cleanRandom();
+}
+
+static void test_random_is_reproducible_for_a_seed(void) {
+
+    enum { N = 3*NRANDOM };
+    double first[N];
+
+    seedRandom("97 33");
+    for (int i = 0; i < N; i++) {
+        first[i] = setRandom();
+    }
+    cleanRandom();
+
+    seedRandom("97 33");
+    for (int i = 0; i < N; i++) {
+        CHECK_CLOSE(setRandom(), first[i], 0.0);
+    }
+    cleanRandom();
+}
+
+static void test_random_differs_between_seeds(void) {
+
+    enum { N = 64 };
+    double first[N];
+    int identical = 1;
+
+    seedRandom("97 33");
+    for (int i = 0; i < N; i++) {
+        first[i] = setRandom();
+    }
+    cleanRandom();
+
+    seedRandom("1802 9373");
+    for (int i = 0; i < N; i++) {
+        if (setRandom() != first[i]) {
+            identical = 0;
+        }
+    }
+    cleanRandom();
+
+    CHECK(!identical);
+}
+
+static void test_random_is_a_multiple_of_two_to_the_minus_24(void) {
+
+    seedRandom("97 33");
+
+    /* The generator works on 24 bit integers and only scales at the end, so
+     every value must land exactly on the 2^-24 grid */
+    for (int i = 0; i < 4*NRANDOM; i++) {
+        double r = setRandom();
+        double scaled = r/TWOM24;
+        CHECK_CLOSE(scaled, floor(scaled + 0.5), 0.0);
+        CHECK(scaled < 16777216.0);
+    }
+
+    cleanRandom();
+}
+
+static void test_random_mean_is_plausible(void) {
+
+    enum { N = 200000 };
+    double sum = 0.0;
+
+    seedRandom("97 33");
+    for (int i = 0; i < N; i++) {
+        sum += setRandom();
+    }
+    cleanRandom();
+
+    /* Standard error of the mean of N uniforms is 1/sqrt(12N) ~ 6.5E-4 here,
+     so five sigma is a very loose bound that still catches a broken stream */
+    CHECK_CLOSE(sum/N, 0.5, 5.0/sqrt(12.0*N));
+}
+
+/*******************************************************************************
+* Azimuthal angle sampling (ompmc.c)
+*******************************************************************************/
+static void test_azimuthal_angle_is_on_the_unit_circle(void) {
+
+    seedRandom("97 33");
+
+    double sum_cos = 0.0;
+    double sum_sin = 0.0;
+    enum { N = 20000 };
+
+    for (int i = 0; i < N; i++) {
+        double costhe, sinthe;
+        selectAzimuthalAngle(&costhe, &sinthe);
+
+        CHECK_CLOSE(costhe*costhe + sinthe*sinthe, 1.0, 1.0E-12);
+        sum_cos += costhe;
+        sum_sin += sinthe;
+    }
+
+    /* Uniform in phi means both first moments average to zero */
+    CHECK_CLOSE(sum_cos/N, 0.0, 0.05);
+    CHECK_CLOSE(sum_sin/N, 0.0, 0.05);
+
+    cleanRandom();
+}
+
+/*******************************************************************************
+* Voxel geometry helpers (omc_utilities.h)
+*******************************************************************************/
+static void test_decode_region_round_trips(void) {
+
+    const int imax = 7, jmax = 5, kmax = 3;
+
+    for (int iz = 0; iz < kmax; iz++) {
+        for (int iy = 0; iy < jmax; iy++) {
+            for (int ix = 0; ix < imax; ix++) {
+                int irl = 1 + ix + iy*imax + iz*imax*jmax;
+                int dx, dy, dz;
+
+                omcDecodeRegion(irl, imax, jmax, &dx, &dy, &dz);
+
+                CHECK(dx == ix);
+                CHECK(dy == iy);
+                CHECK(dz == iz);
+            }
+        }
+    }
+}
+
+static void test_decode_region_matches_the_original_formula(void) {
+
+    /* Guards the two division rewrite against the three division form the
+     user codes used before */
+    const int imax = 13, jmax = 11, kmax = 9;
+
+    for (int irl = 1; irl <= imax*jmax*kmax; irl++) {
+        int ix, iy, iz;
+        omcDecodeRegion(irl, imax, jmax, &ix, &iy, &iz);
+
+        int ijmax = imax*jmax;
+        int rx = (irl - 1)%imax;
+        int rz = (irl - 1 - rx)/ijmax;
+        int ry = ((irl - 1 - rx) - rz*ijmax)/imax;
+
+        CHECK(ix == rx);
+        CHECK(iy == ry);
+        CHECK(iz == rz);
+    }
+}
+
+static void test_decode_region_handles_a_single_voxel_axis(void) {
+
+    int ix, iy, iz;
+
+    /* imax == 1 makes the first division degenerate */
+    omcDecodeRegion(4, 1, 2, &ix, &iy, &iz);
+    CHECK(ix == 0);
+    CHECK(iy == 1);
+    CHECK(iz == 1);
+}
+
+static void test_find_voxel_index_matches_linear_scan(void) {
+
+    enum { N = 16 };
+    double bounds[N + 1];
+
+    for (int i = 0; i <= N; i++) {
+        bounds[i] = -4.0 + 0.5*i;
+    }
+
+    for (int t = 0; t < 400; t++) {
+        double pos = -4.05 + 8.1*t/399.0;
+
+        /* The linear scan initHistory() used, kept in range the way the
+         clamping in initHistory() guarantees */
+        int expect = 0;
+        while (expect < N - 1 && bounds[expect+1] < pos) {
+            expect++;
+        }
+
+        CHECK(omcFindVoxelIndex(bounds, N, pos) == expect);
+    }
+}
+
+static void test_find_voxel_index_on_boundaries_and_outside(void) {
+
+    double bounds[5] = {0.0, 1.0, 2.0, 3.0, 4.0};
+
+    /* A position exactly on an internal boundary belongs to the lower voxel,
+     matching bounds[i+1] >= pos */
+    CHECK(omcFindVoxelIndex(bounds, 4, 0.0) == 0);
+    CHECK(omcFindVoxelIndex(bounds, 4, 1.0) == 0);
+    CHECK(omcFindVoxelIndex(bounds, 4, 1.5) == 1);
+    CHECK(omcFindVoxelIndex(bounds, 4, 3.0) == 2);
+    CHECK(omcFindVoxelIndex(bounds, 4, 4.0) == 3);
+
+    /* Outside clamps instead of walking off the end of bounds[] */
+    CHECK(omcFindVoxelIndex(bounds, 4, -10.0) == 0);
+    CHECK(omcFindVoxelIndex(bounds, 4,  10.0) == 3);
+
+    /* Degenerate single voxel grid */
+    CHECK(omcFindVoxelIndex(bounds, 1, 0.5) == 0);
+    CHECK(omcFindVoxelIndex(bounds, 1, 99.0) == 0);
+}
+
+/*******************************************************************************
+* Klein-Nishina total cross section (ompmc.c)
+*******************************************************************************/
+static void test_kn_sigma0_is_positive_and_falls_with_energy(void) {
+
+    double previous = kn_sigma0(0.05);
+    CHECK(previous > 0.0);
+
+    /* The Compton cross section per electron decreases monotonically above a
+     few tens of keV */
+    for (double e = 0.1; e < 20.0; e *= 1.5) {
+        double sigma = kn_sigma0(e);
+        CHECK(sigma > 0.0);
+        CHECK(sigma < previous);
+        previous = sigma;
+    }
+}
+
+/*******************************************************************************/
+int main(void) {
+
+    printf("ompMC unit tests\n\n");
+
+    RUN(test_pwlf_eval_is_affine);
+    RUN(test_pwlf_interval_truncates);
+
+    RUN(test_spline_interpolates_nodes);
+    RUN(test_spline_matches_smooth_function);
+
+    RUN(test_heap_sort_orders_values_and_indices);
+
+    RUN(test_random_stays_in_unit_interval);
+    RUN(test_random_is_reproducible_for_a_seed);
+    RUN(test_random_differs_between_seeds);
+    RUN(test_random_is_a_multiple_of_two_to_the_minus_24);
+    RUN(test_random_mean_is_plausible);
+
+    RUN(test_azimuthal_angle_is_on_the_unit_circle);
+
+    RUN(test_decode_region_round_trips);
+    RUN(test_decode_region_matches_the_original_formula);
+    RUN(test_decode_region_handles_a_single_voxel_axis);
+    RUN(test_find_voxel_index_matches_linear_scan);
+    RUN(test_find_voxel_index_on_boundaries_and_outside);
+
+    RUN(test_kn_sigma0_is_positive_and_falls_with_energy);
+
+    printf("\n%d test groups, %d check failures\n", tests_run, tests_failed);
+
+    return tests_failed == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+}
