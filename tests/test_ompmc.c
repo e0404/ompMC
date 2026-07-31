@@ -14,6 +14,7 @@
 
 #include "ompmc.h"
 #include "omc_random.h"
+#include "omc_score.h"
 #include "omc_utilities.h"
 
 #include <math.h>
@@ -23,16 +24,26 @@
 
 /*******************************************************************************
 * ompmc.c is compiled into the same library as the code under test and refers
-* to these, so they have to exist even though no test reaches them.
+* to these, so they have to exist even though most tests never reach them.
+* ausgab() is not among them: it comes from omc_score.c and is exercised
+* directly below.
 *******************************************************************************/
 int verbose_flag = 0;
 
-void ausgab(double edep) { (void)edep; }
 void howfar(int *idisc, int *irnew, double *ustep) {
     (void)idisc; (void)irnew; (void)ustep;
 }
 double hownear(void) { return 0.0; }
 void initRegions(void) { }
+
+/* The particle stack is thread local in the core library, so it has to be
+ declared the same way here as the user codes do. */
+#if defined(_MSC_VER)
+    __declspec(thread) extern struct Stack stack;
+#else
+    extern struct Stack stack;
+    #pragma omp threadprivate(stack)
+#endif
 
 /*******************************************************************************
 * Minimal assertion harness
@@ -404,6 +415,155 @@ static void test_find_voxel_index_on_boundaries_and_outside(void) {
 }
 
 /*******************************************************************************
+* Energy scoring (omc_score.c)
+*******************************************************************************/
+
+/* Deposit edep in region irl the way the transport code does, through the
+ particle stack. */
+static void depositAt(int irl, double edep, double wt) {
+
+    stack.np = 0;
+    stack.ir[0] = irl;
+    stack.wt[0] = wt;
+
+    ausgab(edep);
+}
+
+static void test_score_accumulates_repeated_deposits(void) {
+
+    initScore(10);
+    initStack();
+
+    /* Interleaved, the way an electron crossing back and forth would */
+    depositAt(3, 1.0, 1.0);
+    depositAt(3, 2.0, 1.0);
+    depositAt(3, 4.0, 1.0);
+    depositAt(5, 0.5, 1.0);
+    depositAt(5, 0.25, 1.0);
+    depositAt(3, 8.0, 1.0);
+
+    CHECK_CLOSE(score.endep[3], 15.0, 1.0E-12);
+    CHECK_CLOSE(score.endep[5], 0.75, 1.0E-12);
+
+    /* Nothing else may have been written */
+    for (int i = 0; i <= 10; i++) {
+        if (i != 3 && i != 5) {
+            CHECK(score.endep[i] == 0.0);
+        }
+    }
+
+    cleanStack();
+    cleanScore();
+}
+
+static void test_score_applies_the_particle_weight(void) {
+
+    initScore(4);
+    initStack();
+
+    depositAt(2, 3.0, 2.5);
+
+    CHECK_CLOSE(score.endep[2], 7.5, 1.0E-12);
+
+    cleanStack();
+    cleanScore();
+}
+
+static void test_score_tracks_touched_voxels_only(void) {
+
+    initScore(100);
+    initStack();
+
+    depositAt(42, 1.0, 1.0);
+    depositAt(7, 2.0, 1.0);
+    depositAt(42, 3.0, 1.0);   // already recorded, must not be listed twice
+
+    CHECK(score.beam_count == 2);
+
+    accumEndep(0.5);
+
+    CHECK_CLOSE(score.accum_endep[42], 2.0, 1.0E-12);
+    CHECK_CLOSE(score.accum_endep2[42], 4.0, 1.0E-12);
+    CHECK_CLOSE(score.accum_endep[7], 1.0, 1.0E-12);
+
+    /* The batch is consumed and its grid entries cleared, while the voxels
+     stay on the beamlet's list for the batches still to come */
+    CHECK(score.endep[42] == 0.0);
+    CHECK(score.endep[7] == 0.0);
+    CHECK(score.beam_count == 2);
+
+    /* A second batch that reaches neither voxel must leave the totals alone */
+    accumEndep(0.5);
+    CHECK_CLOSE(score.accum_endep[42], 2.0, 1.0E-12);
+    CHECK_CLOSE(score.accum_endep[7], 1.0, 1.0E-12);
+
+    cleanStack();
+    cleanScore();
+}
+
+static void test_score_beam_voxels_are_sorted_and_unique(void) {
+
+    /* The sparse column built from this list needs ascending row indices, so
+     deposit in descending order and across several batches to make sure the
+     ordering comes from the sort and not from the insertion order. */
+    const int order[6] = {90, 12, 55, 3, 55, 71};
+
+    initScore(100);
+    initStack();
+
+    for (int i = 0; i < 6; i++) {
+        depositAt(order[i], 1.0, 1.0);
+            accumEndep(1.0);
+    }
+
+    const int *list;
+    int n = scoreBeamVoxels(&list);
+
+    CHECK(n == 5);      // 55 appears twice in the input
+
+    for (int i = 1; i < n; i++) {
+        CHECK(list[i-1] < list[i]);     // ascending and duplicate free
+    }
+
+    if (n == 5) {
+        CHECK(list[0] == 3);
+        CHECK(list[4] == 90);
+    }
+
+    cleanStack();
+    cleanScore();
+}
+
+static void test_reset_beam_score_clears_both_accumulators(void) {
+
+    initScore(20);
+    initStack();
+
+    depositAt(9, 4.0, 1.0);
+    accumEndep(1.0);
+
+    CHECK(score.accum_endep[9] != 0.0);
+    CHECK(score.accum_endep2[9] != 0.0);
+
+    resetBeamScore();
+
+    /* accum_endep2 used to survive this, so a beamlet's variance leaked into
+     the next one */
+    CHECK(score.accum_endep[9] == 0.0);
+    CHECK(score.accum_endep2[9] == 0.0);
+    CHECK(score.beam_count == 0);
+
+    /* A following beamlet starts from zero */
+    depositAt(9, 1.0, 1.0);
+    accumEndep(1.0);
+    CHECK_CLOSE(score.accum_endep[9], 1.0, 1.0E-12);
+    CHECK_CLOSE(score.accum_endep2[9], 1.0, 1.0E-12);
+
+    cleanStack();
+    cleanScore();
+}
+
+/*******************************************************************************
 * Klein-Nishina total cross section (ompmc.c)
 *******************************************************************************/
 static void test_kn_sigma0_is_positive_and_falls_with_energy(void) {
@@ -447,6 +607,12 @@ int main(void) {
     RUN(test_decode_region_handles_a_single_voxel_axis);
     RUN(test_find_voxel_index_matches_linear_scan);
     RUN(test_find_voxel_index_on_boundaries_and_outside);
+
+    RUN(test_score_accumulates_repeated_deposits);
+    RUN(test_score_applies_the_particle_weight);
+    RUN(test_score_tracks_touched_voxels_only);
+    RUN(test_score_beam_voxels_are_sorted_and_unique);
+    RUN(test_reset_beam_score_clears_both_accumulators);
 
     RUN(test_kn_sigma0_is_positive_and_falls_with_energy);
 

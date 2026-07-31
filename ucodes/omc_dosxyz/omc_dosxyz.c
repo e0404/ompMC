@@ -37,6 +37,7 @@
 #include "omc_utilities.h"
 #include "ompmc.h"
 #include "omc_random.h"
+#include "omc_score.h"
 
 /******************************************************************************/
 /* Parsing program options with getopt long
@@ -659,81 +660,9 @@ void cleanSource() {
 }
 
 /******************************************************************************/
-/* Scoring definitions */
-struct Score {
-    double ensrc;               // total energy from source
-    double *endep;              // 3D dep. energy matrix per batch
-    
-    /* The following variables are needed for statistical analysis. Their
-     values are accumulated across the simulation */
-    double *accum_endep;        // 3D deposited energy matrix
-    double *accum_endep2;       // 3D square deposited energy
-};
-struct Score score;
-
-void initScore() {
-    
-    int gridsize = geometry.isize*geometry.jsize*geometry.ksize;
-    
-    score.ensrc = 0.0;
-    
-    /* Region with index 0 corresponds to region outside phantom */
-    score.endep = malloc((gridsize + 1)*sizeof(double));
-    score.accum_endep = malloc((gridsize + 1)*sizeof(double));
-    score.accum_endep2 = malloc((gridsize + 1)*sizeof(double));
-    
-    /* Initialize all arrays to zero */
-    memset(score.endep, 0.0, (gridsize + 1)*sizeof(double));
-    memset(score.accum_endep, 0.0, (gridsize + 1)*sizeof(double));
-    memset(score.accum_endep2, 0.0, (gridsize + 1)*sizeof(double));
-    
-    return;
-}
-
-void cleanScore() {
-    
-    free(score.endep);
-    free(score.accum_endep);
-    free(score.accum_endep2);
-    
-    return;
-}
-
-void ausgab(double edep) {
-    
-    int np = stack.np;
-    int irl = stack.ir[np];
-    double endep = stack.wt[np]*edep;
-        
-    /* Deposit particle energy on spot */
-    #pragma omp atomic
-    score.endep[irl] += endep;
-    
-    return;
-}
-
-void accumEndep() {
-    
-    int gridsize = geometry.isize*geometry.jsize*geometry.ksize;
-    
-    /* Accumulate endep and endep squared for statistical analysis */
-    double edep = 0.0;
-    
-    int irl = 0;
-    
-    #pragma omp parallel for firstprivate(edep)
-    for (irl=0; irl<gridsize + 1; irl++) {
-        edep = score.endep[irl];
-        
-        score.accum_endep[irl] += edep;
-        score.accum_endep2[irl] += edep*edep;
-    }
-    
-    /* Clean scoring array */
-    memset(score.endep, 0.0, (gridsize + 1)*sizeof(double));
-    
-    return;
-}
+/* Scoring definitions. The scoring arrays, ausgab() and accumEndep() live in
+ the core library, in omc_score.c, so that both user codes share the touched
+ voxel bookkeeping. */
 
 void accumulateResults(int iout, int nhist, int nbatch)
 {
@@ -1018,8 +947,9 @@ void initHistory() {
     }
     
     /* Accumulate sampled kinetic energy for fraction of deposited energy
-     calculations */
-    score.ensrc += ein;
+     calculations. This runs inside the parallel history loop, so it has to
+     go through scoreSource() rather than a bare += . */
+    scoreSource(ein);
            
     /* Set particle position. First obtain a random position in the rectangle
      defined by the collimator */
@@ -1199,7 +1129,7 @@ int main (int argc, char **argv) {
     initVrt();
     
     /* Preparation of scoring struct */
-    initScore();
+    initScore(geometry.isize*geometry.jsize*geometry.ksize);
 
     #pragma omp parallel
     {
@@ -1277,9 +1207,9 @@ int main (int argc, char **argv) {
             /* Start electromagnetic shower simulation */
             shower();
         }
-        
+
         /* Accumulate results of current batch for statistical analysis */
-        accumEndep();
+        accumEndep(1.0);
     }
     
     /* Print some output and execution time up to this point */

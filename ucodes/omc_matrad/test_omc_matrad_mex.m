@@ -96,6 +96,23 @@ end
 fprintf('dij: %s sparse, %d nonzeros, max %.4g, all %d beamlets scored.\n', ...
     mat2str(size(dij)), nnz(dij), full(max(dose)), numel(beamletDose));
 
+% A CSC matrix has to hold ascending row indices within each column. The MEX
+% file fills the columns from the list of voxels the beamlet deposited in,
+% which is built in whatever order the transport happened to reach them and
+% only becomes ascending because it is sorted before use; get that wrong and
+% the matrix is quietly malformed rather than obviously broken. find() walks
+% the stored arrays in order, so a column whose rows come back out of order
+% is the symptom.
+[rowIdx, colIdx] = find(dij);
+for k = 1:size(dij, 2)
+    rowsInColumn = rowIdx(colIdx == k);
+    if ~issorted(rowsInColumn)
+        error('ompMC:test:unsortedColumn', ...
+            'Row indices of column %d are not ascending; the sparse matrix is malformed.', k);
+    end
+end
+fprintf('All %d columns hold ascending row indices.\n', size(dij, 2));
+
 if ~isequal(size(dijVar), expectedSize) || nnz(dijVar) == 0
     error('ompMC:test:badVariance', ...
         'The variance output is %s with %d nonzeros, expected %s and nonzero.', ...

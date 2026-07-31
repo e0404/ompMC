@@ -27,7 +27,6 @@
 *******************************************************************************/
 int verbose_flag = 0;
 
-void ausgab(double edep) { (void)edep; }
 void howfar(int *idisc, int *irnew, double *ustep) {
     (void)idisc; (void)irnew; (void)ustep;
 }

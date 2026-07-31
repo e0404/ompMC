@@ -45,6 +45,7 @@
 #include "omc_utilities.h"
 #include "omc_random.h"
 #include "ompmc.h"
+#include "omc_score.h"
 
 #include <ctype.h>
 #include <float.h>
@@ -854,173 +855,88 @@ void cleanSource() {
 }
 
 /******************************************************************************/
-/* Scoring definitions */
-struct Score {
-    double ensrc;               // total energy from source
-    double *endep;              // 3D dep. energy matrix per batch
-    
-    /* The following variables are needed for statistical analysis. Their
-     values are accumulated across the simulation */
-    double *accum_endep;        // 3D deposited energy matrix
-    double *accum_endep2;       // 3D square deposited energy
-};
-struct Score score;
-
-void initScore() {
-    
-    int gridsize = geometry.isize*geometry.jsize*geometry.ksize;
-    
-    score.ensrc = 0.0;
-    
-    /* Region with index 0 corresponds to region outside phantom */
-    score.endep = malloc((gridsize + 1)*sizeof(double));
-    score.accum_endep = malloc((gridsize + 1)*sizeof(double));
-    score.accum_endep2 = malloc((gridsize + 1)*sizeof(double));
-    
-    /* Initialize all arrays to zero */
-    memset(score.endep, 0.0, (gridsize + 1)*sizeof(double));
-    memset(score.accum_endep, 0.0, (gridsize + 1)*sizeof(double));
-    memset(score.accum_endep2, 0.0, (gridsize + 1)*sizeof(double));
-    
-    return;
-}
-
-void cleanScore() {
-    
-    free(score.endep);
-    free(score.accum_endep);
-    free(score.accum_endep2);
-    
-    return;
-}
-
-void ausgab(double edep) {
-    
-    int np = stack.np;
-    int irl = stack.ir[np];
-    double endep = stack.wt[np]*edep;
-        
-    /* Deposit particle energy on spot */
-    #pragma omp atomic
-    score.endep[irl] += endep;
-    
-    return;
-}
-
-void accumEndep(int nperbatch) {
-    
-    int gridsize = geometry.isize*geometry.jsize*geometry.ksize;
-    
-    /* Accumulate endep and endep squared for statistical analysis */
-    double edep = 0.0;
-    
-    int irl = 0;
-    
-    #pragma omp parallel for firstprivate(edep)
-    for (irl=0; irl<gridsize + 1; irl++) {
-        edep = score.endep[irl];
-        edep /= (double) nperbatch;
-        score.accum_endep[irl] += edep;
-        score.accum_endep2[irl] += edep*edep;
-    }
-    
-    /* Clean scoring array */
-    memset(score.endep, 0.0, (gridsize + 1)*sizeof(double));
-    
-    return;
-}
+/* Scoring definitions. The scoring arrays, ausgab() and accumEndep() live in
+ the core library, in omc_score.c, so that both user codes share the touched
+ voxel bookkeeping. */
 
 void accumulateResults(int iout, int nhist, int nbatch)
 {
-    int irl;
-    int imax = geometry.isize;
-    int ijmax = geometry.isize*geometry.jsize;
-    double endep, endep2, unc_endep;
+    /* Only voxels this beamlet actually deposited in can be nonzero, and for
+     an untouched voxel the arithmetic below reduces to writing back the zeros
+     that are already there: accum_endep is 0, so endep and endep2 come out 0,
+     the endep != 0 branch is not taken, and both outputs are set to 0. Zeroing
+     the dose in air is likewise a no-op on a voxel that never received any.
+     So walking the touched set is equivalent to walking the grid, at a
+     fraction of the cost for a single beamlet. */
+    const int *touched;
+    int ntouched = scoreBeamVoxels(&touched);
 
-    /* Calculate incident fluence */
-    //double inc_fluence = ;    
-    double mass;
-    int iz;
+    #pragma omp parallel for
+    for (int n = 0; n < ntouched; n++) {
+        int irl = touched[n];
 
-
-    #pragma omp parallel for private(irl,endep,endep2,unc_endep,mass)
-    for (iz=0; iz<geometry.ksize; iz++) {
-        for (int iy=0; iy<geometry.jsize; iy++) {
-            for (int ix=0; ix<geometry.isize; ix++) {
-                irl = 1 + ix + iy*imax + iz*ijmax;
-                endep = score.accum_endep[irl];
-                endep2 = score.accum_endep2[irl];
-                
-
-                double factor;
-                if (iout) {
-                    
-                    /* Convert deposited energy to dose */
-                    mass = (geometry.xbounds[ix+1] - geometry.xbounds[ix])*
-                        (geometry.ybounds[iy+1] - geometry.ybounds[iy])*
-                        (geometry.zbounds[iz+1] - geometry.zbounds[iz]);
-                    
-                    /* Transform deposited energy to Gy */
-                    mass *= geometry.med_densities[irl-1];
-                    
-                    factor = 1.602E-10/(mass);                                      
-                    
-                } else {    /* Output mean deposited energy */
-                    factor = 1.0;
-                }
-
-                endep *= factor;
-                endep2 *= factor*factor;
-
-
-                /* First calculate mean deposited energy across batches and its
-                 uncertainty */
-                endep /= (double) nbatch;
-                endep2 /= (double) (nbatch - 1);
-                
-                /* Batch approach uncertainty calculation */
-                if (endep != 0.0) {
-                    unc_endep = endep2 - endep * endep;
-                    //unc_endep /= (double)(nbatch - 1);
-                    
-                    //Variance of the mean
-                    unc_endep /= nbatch;
-                    
-                    /* Relative uncertainty */
-                    //unc_endep = sqrt(unc_endep)/endep;
-                }
-                else {
-                    endep = 0.0;
-                    unc_endep = 0.0;
-                }
-
-
-                /* We separate de calculation of dose, to give the user the
-                 option to output mean energy (iout=0) or deposited dose
-                 (iout=1) per incident fluence */
-                
-                /* Store output quantities */
-                score.accum_endep[irl] = endep;
-                score.accum_endep2[irl] = unc_endep;
-            }
+        /* Region 0 is outside the geometry. ausgab() does reach it, through
+         the discard path in electron(), but it has no voxel and is not part
+         of the output. */
+        if (irl == 0) {
+            continue;
         }
-    }
-    
-    /* Zero dose in air */
-    #pragma omp parallel for private(irl)
-    for (iz=0; iz<geometry.ksize; iz++) {
-        for (int iy=0; iy<geometry.jsize; iy++) {
-            for (int ix=0; ix<geometry.isize; ix++) {
-                irl = 1 + ix + iy*imax + iz*ijmax;
-                
-                if(geometry.med_densities[irl-1] < 0.044) {
-                    score.accum_endep[irl] = 0.0;
-                    score.accum_endep2[irl] = 0.0;
-                }
-            }
+
+        int ix, iy, iz;
+        omcDecodeRegion(irl, geometry.isize, geometry.jsize, &ix, &iy, &iz);
+
+        double endep = score.accum_endep[irl];
+        double endep2 = score.accum_endep2[irl];
+        double factor;
+
+        if (iout) {
+            /* Convert deposited energy to dose */
+            double mass = (geometry.xbounds[ix+1] - geometry.xbounds[ix])*
+                (geometry.ybounds[iy+1] - geometry.ybounds[iy])*
+                (geometry.zbounds[iz+1] - geometry.zbounds[iz]);
+
+            /* Transform deposited energy to Gy */
+            mass *= geometry.med_densities[irl-1];
+
+            factor = 1.602E-10/(mass);
         }
+        else {  /* Output mean deposited energy */
+            factor = 1.0;
+        }
+
+        endep *= factor;
+        endep2 *= factor*factor;
+
+        /* First calculate mean deposited energy across batches and its
+         uncertainty */
+        endep /= (double) nbatch;
+        endep2 /= (double) (nbatch - 1);
+
+        double unc_endep;
+
+        /* Batch approach uncertainty calculation */
+        if (endep != 0.0) {
+            unc_endep = endep2 - endep * endep;
+
+            //Variance of the mean
+            unc_endep /= nbatch;
+        }
+        else {
+            endep = 0.0;
+            unc_endep = 0.0;
+        }
+
+        /* Zero dose in air */
+        if (geometry.med_densities[irl-1] < 0.044) {
+            endep = 0.0;
+            unc_endep = 0.0;
+        }
+
+        /* Store output quantities */
+        score.accum_endep[irl] = endep;
+        score.accum_endep2[irl] = unc_endep;
     }
-    
+
     return;
 }
 
@@ -1229,7 +1145,7 @@ void initHistory(int ibeamlet) {
     
     /* Accumulate sampled kinetic energy for fraction of deposited energy
      calculations */
-    score.ensrc += ein;
+    scoreSource(ein);
     
     /* Set particle position. First obtain a random position in the rectangle
      defined by the bixel at isocenter*/    
@@ -1488,7 +1404,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     initVrt();
     
     /* Preparation of scoring struct */
-    initScore();
+    initScore(geometry.isize*geometry.jsize*geometry.ksize);
 
     #pragma omp parallel
     {
@@ -1602,9 +1518,9 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
                 /* Start electromagnetic shower simulation */
                 shower();
             }
-            
+
             /* Accumulate results of current batch for statistical analysis */
-            accumEndep(nperbatch);
+            accumEndep(1.0/(double)nperbatch);
 
             progress = ((double)ibeamlet + (double)(ibatch+1)/nbatch)/source.nbeamlets;
             (*mxGetPr(waitbarProgress)) = progress;
@@ -1621,22 +1537,30 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
         int iout = 1;   /* i.e. deposit mean dose per particle fluence */
         accumulateResults(iout, nhist, nbatch);
 
+        /* Everything from here to the end of the beamlet only ever looks at
+         voxels this beamlet deposited in; the rest of the grid is zero and
+         below any positive threshold. The list comes back ascending, which is
+         what the sparse column below needs. */
+        const int *touched;
+        int ntouched = scoreBeamVoxels(&touched);
+
         /* Get maximum value to apply threshold */
         double doseMax = 0.0;
-        for (int irl=1; irl < gridsize+1; irl++) {
-            if (score.accum_endep[irl] > doseMax) {
+        for (int n = 0; n < ntouched; n++) {
+            int irl = touched[n];
+            if (irl != 0 && score.accum_endep[irl] > doseMax) {
                 doseMax = score.accum_endep[irl];
             }
         }
         double thresh = doseMax*relDoseThreshold;
+
         /* Count values above threshold */
         mwSize j_nnz = 0; //Number of nonzeros in the dose cube for the current beamlet
-        int irl = 1;
-        #pragma omp parallel for reduction(+:j_nnz)
-        for (irl=1; irl < gridsize+1; irl++) {        
-            if (score.accum_endep[irl] > thresh) {
+        for (int n = 0; n < ntouched; n++) {
+            int irl = touched[n];
+            if (irl != 0 && score.accum_endep[irl] > thresh) {
                 j_nnz++;
-            }                
+            }
         }
 
         //The number of new non-zero values is the current linear index + new upcoming entries from current beamlet + 1
@@ -1690,12 +1614,13 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
         }
 
 
-        //Populate sparse matrix arrays        
-        for (int irl=1; irl < gridsize+1; irl++) {        
-            if (score.accum_endep[irl] > thresh) {            
+        //Populate sparse matrix arrays
+        for (int n = 0; n < ntouched; n++) {
+            int irl = touched[n];
+            if (irl != 0 && score.accum_endep[irl] > thresh) {
                 sr[linIx] = score.accum_endep[irl];
                 irs[linIx] = irl-1;
-                
+
                 if (outputVariance) {
                     sr_var[linIx] = score.accum_endep2[irl];
                     irs_var[linIx] = irl-1;
@@ -1715,8 +1640,10 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
             jcs_var[ibeamlet+1] = linIx;
         }
         
-        /* Reset accum_endep for following beamlet */
-        memset(score.accum_endep, 0.0, (gridsize + 1)*sizeof(double));                
+        /* Reset the accumulators for the following beamlet. This clears
+         accum_endep2 as well, which the memset it replaces did not, so the
+         variance of one beamlet no longer leaks into the next. */
+        resetBeamScore();
 		progress = (double) (ibeamlet+1) / (double) source.nbeamlets;		
         (*mxGetPr(waitbarProgress)) = progress;
 
