@@ -956,9 +956,9 @@ void initRegions() {
         region.med[i] = imed;
         
         if (imed == VACUUM) {
-            region.rhof[0] = 0.0F;
-            region.pcut[0] = 0.0F;
-            region.ecut[0] = 0.0F;
+            region.rhof[i] = 0.0F;
+            region.pcut[i] = 0.0F;
+            region.ecut[i] = 0.0F;
         }
         else {
             if (geometry.med_densities[i - 1] == 0.0F) {
@@ -981,9 +981,10 @@ void initRegions() {
             if (pegs_data.ae[imed] <= ecut) {
                 region.ecut[i] = ecut;
             } else {
-                printf("Warning!, global pcut value is below PEGS's ecut value "
+                printf("Warning!, global ecut value is below PEGS's ecut value "
                        "%f for medium %d, using PEGS value.\n",
                        pegs_data.ae[imed], imed);
+                region.ecut[i] = pegs_data.ae[imed];
             }
         }
     }

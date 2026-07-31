@@ -3781,18 +3781,20 @@ void mscat(int imed, int qel, int *spin_index, int *find_index,
 			k = ak;
 			ak -= k;
             
-			if (ak > mscat_data.wms_array[m_scat->i*(MXQ_MS + 1)*(MXU_MS + 1) + 
-                (m_scat->j)*(MXU_MS + 1) + k]) {
-				k = mscat_data.ims_array[m_scat->i*(MXQ_MS + 1)*(MXU_MS + 1) + 
-                (m_scat->j)*(MXU_MS + 1) + k];
+			int msbase = m_scat->i*(MXQ_MS + 1)*(MXU_MS + 1) +
+                (m_scat->j)*(MXU_MS + 1);
+
+			if (ak > mscat_data.wms_array[msbase + k]) {
+				k = mscat_data.ims_array[msbase + k];
 			}
 
-			a = mscat_data.fms_array[m_scat->i*(MXQ_MS + 1)*(MXU_MS + 1) + 
-                (m_scat->j)*(MXU_MS + 1) + k];
-			u = mscat_data.ums_array[m_scat->i*(MXQ_MS + 1)*(MXU_MS + 1) + 
-                (m_scat->j)*(MXU_MS + 1) + k];
-			du = mscat_data.ums_array[m_scat->i*(MXQ_MS + 1)*(MXU_MS + 1) + 
-                (m_scat->j)*(MXU_MS + 1) + k] - u;
+			a = mscat_data.fms_array[msbase + k];
+			u = mscat_data.ums_array[msbase + k];
+			/* Width of the bin, i.e. the distance to the *next* tabulated u.
+			 This read the same element as u above, making du identically
+			 zero, which disabled the sub-bin interpolation below and left
+			 the sampled angle pinned to the lower edge of its bin. */
+			du = mscat_data.ums_array[msbase + k + 1] - u;
 			xi = setRandom();
 
 			if (fabs(a) < 0.2) {
