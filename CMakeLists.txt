@@ -395,6 +395,22 @@ if(OMPMC_BUILD_TESTS)
 
     add_test(NAME unit COMMAND test_ompmc)
 
+    # Needs the PEGS and cross section data, so it runs from the repository
+    # root like the smoke test below.
+    add_executable(test_media_data tests/test_media_data.c)
+    target_link_libraries(test_media_data
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_media_data)
+
+    if(MSVC)
+        target_compile_definitions(test_media_data PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME media COMMAND test_media_data
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
     # The smoke test drives the whole transport chain, so it has to run from
     # the repository root where the data, pegs4 and phantoms folders live.
     if(OMPMC_BUILD_DOSXYZ)

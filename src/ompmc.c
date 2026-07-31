@@ -978,7 +978,7 @@ void initRayleighData(void) {
         int ibin = 1;
         double b = rayleigh_data.b_array[i*MXRAYFF + 0];
         double pow_x1 = pow(rayleigh_data.xgrid[i*MXRAYFF + 0], 2.0*b);
-        rayleigh_data.i_array[i*MXRAYFF + 0] = 1;
+        rayleigh_data.i_array[i*RAYCDFSIZE + 0] = 1;
         
         for (int j=2; j<=RAYCDFSIZE-1; j++) {
             double w = dw;
@@ -1138,14 +1138,19 @@ void rayleigh(int imed, double eig, double gle, int lgle) {
                            rayleigh_data.pmax1, rayleigh_data.pmax0);
     double xmax = HC_INVERSE*eig;
     double dwi = (double)RAYCDFSIZE - 1.0;
-    
+
+    /* All the form factor tables are stored medium by medium, so every index
+     into them needs the offset of the current medium. */
+    const int icdf = imed*RAYCDFSIZE;    // base of this medium's i_array
+    const int iff = imed*MXRAYFF;        // base of its xgrid/fcum/b/c arrays
+
     do {
         rnno1 = setRandom();
-        
+
         do {
             rnno0 = setRandom();
             rnno0 *= pmax;
-            
+
             /* For the following indexes the C convention must be used.
              The cast must be applied to the product: written as
              (int)rnno0*dwi the cast binds to rnno0 alone, which is always
@@ -1153,17 +1158,27 @@ void rayleigh(int imed, double eig, double gle, int lgle) {
              it is and the search below degenerated into a linear scan of
              the whole CDF from element 0. */
             ibin = (int)(rnno0*dwi);
-            ib = rayleigh_data.i_array[ibin] - 1;
-            
-            if((rayleigh_data.i_array[ibin+1] - 1) > ib) {
-                while(rnno0 >= rayleigh_data.fcum[ib+1]) {
+
+            /* pmax can come out marginally above 1 when lgle lands on the
+             last energy interval, whose interpolation coefficients are a copy
+             of the previous one's and so extrapolate. That would put ibin+1
+             one past the end of this medium's slab, so bound it here. */
+            if (ibin > RAYCDFSIZE - 2) {
+                ibin = RAYCDFSIZE - 2;
+            }
+
+            ib = rayleigh_data.i_array[icdf + ibin] - 1;
+
+            if((rayleigh_data.i_array[icdf + ibin + 1] - 1) > ib) {
+                while(rnno0 >= rayleigh_data.fcum[iff + ib + 1]) {
                     ib++;
                 }
             }
-            
-            rnno0 = (rnno0 - rayleigh_data.fcum[ib])*rayleigh_data.c_array[ib];
-            xv = rayleigh_data.xgrid[ib]*exp(log(1.0 + rnno0)*
-                                             rayleigh_data.b_array[ib]);
+
+            rnno0 = (rnno0 - rayleigh_data.fcum[iff + ib])*
+                rayleigh_data.c_array[iff + ib];
+            xv = rayleigh_data.xgrid[iff + ib]*exp(log(1.0 + rnno0)*
+                                             rayleigh_data.b_array[iff + ib]);
         } while(xv >= xmax);
         
         xv /= eig;
