@@ -1849,7 +1849,7 @@ void photo() {
     /* Now sample photo-electron direction */
     double eelec = stack.e[np];
     
-    if (eelec > region.ecut[stack.ir[np]]){
+    if (eelec > regionEcut(stack.ir[np])){
         /* Velocity of electron in c units */
         double beta = sqrt((eelec - RM)*(eelec + RM))/eelec;
         
@@ -1936,7 +1936,7 @@ void photon() {
     int irsave;
 
     /* First check for photon cutoff energy */
-    if (eig <= region.pcut[irl] || stack.wt[np] == 0) {
+    if (eig <= regionPcut(irl) || stack.wt[np] == 0) {
         edep = eig;
         
         /* Deposit energy on the spot */
@@ -2160,7 +2160,7 @@ void photon() {
         irl = stack.ir[np];
         imed = region.med[irl];
 
-        if (eig <= region.pcut[irl]) {
+        if (eig <= regionPcut(irl)) {
             edep = eig;
             ausgab(edep);
             np -= 1;
@@ -4726,7 +4726,7 @@ void electron() {
     double rnno;
 
     /* First check of electron cut-off energy */
-    if(eie <= region.ecut[irl]) {
+    if(eie <= regionEcut(irl)) {
         
         edep = stack.e[np] - RM;    // get energy deposition for user
 
@@ -5182,7 +5182,7 @@ void electron() {
                 }			
 
                 /* First check of electron cut-off energy */
-                if(eie <= region.ecut[irl]) {
+                if(eie <= regionEcut(irl)) {
                     
                     edep = stack.e[np] - RM;    // get energy deposition for user
                     
@@ -5245,7 +5245,7 @@ void electron() {
 				if (do_single) {    // Single scattering
                     /* kinetic energy used to sample MS angle 
                     (normally midpoint) */
-					double ekems = fmax(ekef, region.ecut[irl] - RM);
+					double ekems = fmax(ekef, regionEcut(irl) - RM);
 					
                     p2 = ekems*(ekems + 2.0*RM);
 					beta2 = p2/(p2 + RM*RM);
@@ -5324,7 +5324,7 @@ void electron() {
 			eie -= edep;
 			stack.e[np] = eie;
 
-            if(irnew == irl && eie <= region.ecut[irl]) {
+            if(irnew == irl && eie <= regionEcut(irl)) {
                     
                     edep = stack.e[np] - RM;    // get energy deposition for user
                     
@@ -5366,7 +5366,7 @@ void electron() {
             }
 			
             /* Check electron cut-off energy */
-			if(eie <= region.ecut[irl]) {
+			if(eie <= regionEcut(irl)) {
         
                 edep = stack.e[np] - RM;    // get energy deposition for user
                 
@@ -6012,9 +6012,8 @@ void cleanRegions() {
     
     free(region.med);
     free(region.rhof);
-    free(region.ecut);
-    free(region.pcut);
-    
+    /* pcut and ecut are per medium and live inside the struct */
+
     return;
 }
 

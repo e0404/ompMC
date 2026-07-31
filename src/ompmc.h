@@ -409,11 +409,36 @@ int readPegsFile(int *media_found);
 #define VACUUM -1
 
 struct Region {
-    int *med;
-    double *rhof;
-    double *pcut;
-    double *ecut;
+    int *med;       // medium index, per region
+    double *rhof;   // mass density ratio, per region
+
+    /* Photon and electron transport cut-offs. These are a property of the
+     medium, not of the individual voxel: initRegions() sets them to
+     max(global cut, the medium's PEGS threshold), so every voxel of a given
+     medium held an identical copy. Storing them per medium instead keeps two
+     arrays the size of the whole geometry out of the transport loop's working
+     set -- on a 13.8M voxel dose grid that is 220 MB no longer being read at
+     random -- and leaves them permanently in L1.
+
+     Indexed by medium + 1, so that VACUUM (-1) lands on slot 0, which holds
+     zero for both. Use regionPcut()/regionEcut() rather than indexing this
+     directly. */
+    double pcut[MXMED + 1];
+    double ecut[MXMED + 1];
 };
+
+extern struct Region region;
+
+/* Transport cut-offs for the region irl. region.med[irl] is on the same cache
+ line as the medium lookup the caller has almost always just done, so this
+ costs an L1 hit and an index into a table that never leaves L1. */
+static inline double regionPcut(int irl) {
+    return region.pcut[region.med[irl] + 1];
+}
+
+static inline double regionEcut(int irl) {
+    return region.ecut[region.med[irl] + 1];
+}
 
 void initRegions(void);  // this function must be defined in user code
 void cleanRegions(void);

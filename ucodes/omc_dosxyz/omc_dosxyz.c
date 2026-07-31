@@ -840,12 +840,11 @@ void initRegions() {
     /* +1 : consider region surrounding phantom */
     int nreg = geometry.isize*geometry.jsize*geometry.ksize + 1;
     
-    /* Allocate memory for region data */
+    /* Allocate memory for region data. The cut-offs are per medium and live
+     inside the struct, so only these two scale with the geometry. */
     region.med = malloc(nreg*sizeof(int));
     region.rhof = malloc(nreg*sizeof(double));
-    region.pcut = malloc(nreg*sizeof(double));
-    region.ecut = malloc(nreg*sizeof(double));
-    
+
     /* First get global energy cutoff parameters */
     char buffer[BUFFER_SIZE];
     if (getInputValue(buffer, "global ecut") != 1) {
@@ -860,23 +859,55 @@ void initRegions() {
     }
     double pcut = atof(buffer);
     
+    /* Transport cut-offs, per medium rather than per voxel. Slot 0 stands for
+     vacuum, so the table is indexed by medium + 1. Doing this once per medium
+     also means the warnings below are printed once each, rather than once per
+     voxel of the medium. */
+    region.pcut[0] = 0.0;
+    region.ecut[0] = 0.0;
+
+    for (int imed = 0; imed < media.nmed; imed++) {
+        /* Check if global cut-off values are within PEGS data */
+        if (pegs_data.ap[imed] <= pcut) {
+            region.pcut[imed + 1] = pcut;
+        } else {
+            printf("Warning!, global pcut value is below PEGS's pcut value "
+                   "%f for medium %d, using PEGS value.\n",
+                   pegs_data.ap[imed], imed);
+            region.pcut[imed + 1] = pegs_data.ap[imed];
+        }
+        if (pegs_data.ae[imed] <= ecut) {
+            region.ecut[imed + 1] = ecut;
+        } else {
+            printf("Warning!, global ecut value is below PEGS's ecut value "
+                   "%f for medium %d, using PEGS value.\n",
+                   pegs_data.ae[imed], imed);
+            region.ecut[imed + 1] = pegs_data.ae[imed];
+        }
+    }
+
     /* Initialize transport parameters on each region. Region 0 is outside the
      geometry */
     region.med[0] = VACUUM;
     region.rhof[0] = 0.0;
-    region.pcut[0] = 0.0;
-    region.ecut[0] = 0.0;
-    
+
     for (int i=1; i<nreg; i++) {
-        
+
         /* -1 : EGS counts media from 1. Substract 1 to get medium index */
         int imed = geometry.med_indices[i - 1] - 1;
+
+        /* The cut-off tables are indexed by this, so a bad material index in
+         the phantom would read past them rather than merely give odd physics */
+        if (imed < VACUUM || imed >= media.nmed) {
+            printf("Voxel %d has material index %d, outside the %d media "
+                   "given in the phantom file.\n", i - 1, imed + 1, media.nmed);
+            exit(EXIT_FAILURE);
+        }
+
         region.med[i] = imed;
-        
+
         if (imed == VACUUM) {
             region.rhof[i] = 0.0F;
-            region.pcut[i] = 0.0F;
-            region.ecut[i] = 0.0F;
         }
         else {
             if (geometry.med_densities[i - 1] == 0.0F) {
@@ -886,27 +917,9 @@ void initRegions() {
                 region.rhof[i] =
                     geometry.med_densities[i - 1]/pegs_data.rho[imed];
             }
-            
-            /* Check if global cut-off values are within PEGS data */
-            if (pegs_data.ap[imed] <= pcut) {
-                region.pcut[i] = pcut;
-            } else {
-                printf("Warning!, global pcut value is below PEGS's pcut value "
-                       "%f for medium %d, using PEGS value.\n",
-                       pegs_data.ap[imed], imed);
-                region.pcut[i] = pegs_data.ap[imed];
-            }
-            if (pegs_data.ae[imed] <= ecut) {
-                region.ecut[i] = ecut;
-            } else {
-                printf("Warning!, global ecut value is below PEGS's ecut value "
-                       "%f for medium %d, using PEGS value.\n",
-                       pegs_data.ae[imed], imed);
-                region.ecut[i] = pegs_data.ae[imed];
-            }
         }
     }
-    
+
     return;
 }
 
