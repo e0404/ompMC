@@ -1146,8 +1146,13 @@ void rayleigh(int imed, double eig, double gle, int lgle) {
             rnno0 = setRandom();
             rnno0 *= pmax;
             
-            /* For the following indexes the C convention must be used */
-            ibin = (int)rnno0*dwi;
+            /* For the following indexes the C convention must be used.
+             The cast must be applied to the product: written as
+             (int)rnno0*dwi the cast binds to rnno0 alone, which is always
+             zero here, so i_array was never used as the acceleration table
+             it is and the search below degenerated into a linear scan of
+             the whole CDF from element 0. */
+            ibin = (int)(rnno0*dwi);
             ib = rayleigh_data.i_array[ibin] - 1;
             
             if((rayleigh_data.i_array[ibin+1] - 1) > ib) {

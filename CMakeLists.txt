@@ -28,6 +28,7 @@ include(CheckIncludeFile)
 include(CheckSymbolExists)
 include(CheckLibraryExists)
 include(CheckCCompilerFlag)
+include(CheckIPOSupported)
 
 ################################################################################
 # Options
@@ -37,6 +38,8 @@ option(OMPMC_BUILD_DOSXYZ "Build the omc_dosxyz command line user code" ON)
 option(OMPMC_WITH_OPENMP "Build with OpenMP multi threading support" ON)
 option(OMPMC_NATIVE_TUNING
     "Tune the generated code for the building machine (-mtune=native)" OFF)
+option(OMPMC_LTO
+    "Enable link time optimization on optimized builds" ON)
 
 set(OMPMC_BUILD_MATRAD_MEX "AUTO" CACHE STRING
     "Build the omc_matrad MEX file: ON (fail if MATLAB is missing), OFF, or AUTO")
@@ -171,6 +174,59 @@ if(OMPMC_NATIVE_TUNING)
     endif()
 endif()
 
+# The transport code calls sqrt() constantly (uphi21/uphi32, mscat,
+# spinRejection, msdist). By default GCC and Clang must assume the caller may
+# inspect errno afterwards, so they cannot reduce those calls to a bare sqrt
+# instruction and emit a domain check plus a libm call path around each one.
+# ompMC never reads errno, so allow the plain instruction. This is not part of
+# -ffast-math: no reassociation, no loss of IEEE semantics for the values
+# themselves, and results are unchanged.
+check_c_compiler_flag("-fno-math-errno" OMPMC_HAVE_NO_MATH_ERRNO)
+if(OMPMC_HAVE_NO_MATH_ERRNO)
+    target_compile_options(ompmc_core PUBLIC "-fno-math-errno")
+endif()
+
+# ausgab(), howfar() and hownear() are defined by the user code but called from
+# the transport loop in ompmc.c, so without link time optimization every
+# invocation is an opaque cross translation unit call -- hownear() once per
+# electron step, howfar() at least that often. LTO lets them inline.
+set(OMPMC_LTO_ENABLED FALSE)
+
+if(OMPMC_LTO)
+    check_ipo_supported(RESULT OMPMC_HAVE_IPO OUTPUT _ompmc_ipo_error LANGUAGES C)
+    if(OMPMC_HAVE_IPO)
+        set(OMPMC_LTO_ENABLED TRUE)
+
+        # Plain binutils ar/ranlib cannot read GCC's LTO objects without being
+        # handed the plugin, and warn "plugin needed to handle lto object" when
+        # they meet one. The gcc-ar/gcc-ranlib wrappers pass it themselves, so
+        # use those whenever the toolchain ships them.
+        if(CMAKE_C_COMPILER_AR AND CMAKE_C_COMPILER_RANLIB)
+            set(CMAKE_AR "${CMAKE_C_COMPILER_AR}")
+            set(CMAKE_RANLIB "${CMAKE_C_COMPILER_RANLIB}")
+        endif()
+    else()
+        message(STATUS
+            "Link time optimization is not available with this toolchain, "
+            "ignoring: ${_ompmc_ipo_error}")
+    endif()
+endif()
+
+# Only on optimized configurations; LTO on a Debug build costs build time
+# without buying anything, and makes the result harder to step through.
+function(ompmc_enable_lto target)
+    if(OMPMC_LTO_ENABLED)
+        set_property(TARGET ${target} PROPERTY
+            INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        set_property(TARGET ${target} PROPERTY
+            INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+        set_property(TARGET ${target} PROPERTY
+            INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL TRUE)
+    endif()
+endfunction()
+
+ompmc_enable_lto(ompmc_core)
+
 ################################################################################
 # omc_dosxyz - command line user code
 ################################################################################
@@ -178,6 +234,7 @@ endif()
 if(OMPMC_BUILD_DOSXYZ)
     add_executable(omc_dosxyz ucodes/omc_dosxyz/omc_dosxyz.c)
     target_link_libraries(omc_dosxyz PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(omc_dosxyz)
 
     if(NOT OMPMC_HAVE_GETOPT_LONG)
         message(STATUS "No system getopt_long(), using the bundled replacement")
@@ -314,6 +371,8 @@ if(OMPMC_MEX_ENABLED)
             _CRT_SECURE_NO_WARNINGS
             _USE_MATH_DEFINES)
     endif()
+
+    ompmc_enable_lto(omc_matrad)
 endif()
 
 ################################################################################
@@ -346,6 +405,7 @@ else()
     message(STATUS "  Build type       : ${CMAKE_BUILD_TYPE}")
 endif()
 message(STATUS "  OpenMP           : ${OMPMC_OPENMP_ENABLED}")
+message(STATUS "  LTO              : ${OMPMC_LTO_ENABLED}")
 message(STATUS "  omc_dosxyz       : ${OMPMC_BUILD_DOSXYZ}")
 message(STATUS "  omc_matrad (mex) : ${OMPMC_MEX_ENABLED}")
 if(OMPMC_MEX_ENABLED AND OMPMC_OPENMP_ENABLED)
