@@ -122,8 +122,6 @@ void initRandom() {
     rng.cdrndm = 7654321;
     rng.cmrndm = 16777213;
     
-    rng.twom24 = 1.0/16777216.0;
-    
     rng.ixx = 97;
     rng.jxx = 33;
     
@@ -185,7 +183,7 @@ double setRandom() {
         getRandom();
     }
     
-    rnno = rng.rng_array[rng.rng_seed]*rng.twom24;
+    rnno = rng.rng_array[rng.rng_seed]*TWOM24;
     rng.rng_seed += 1;
     
     return rnno;

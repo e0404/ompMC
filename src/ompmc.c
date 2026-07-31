@@ -1162,8 +1162,8 @@ void rayleigh(int imed, double eig, double gle, int lgle) {
         } while(xv >= xmax);
         
         xv /= eig;
-        costhe = 1.0 - TWICE_HC2*pow(xv, 2.0);
-        csqthe = pow(costhe, 2.0);
+        costhe = 1.0 - TWICE_HC2*(xv*xv);
+        csqthe = costhe*costhe;
     } while(2.0*rnno1 >= (1.0 + csqthe));
     
     sinthe = sqrt(1.0 - csqthe);
@@ -1448,10 +1448,12 @@ void listPair() {
 double setPairRejectionFunction(int imed, double xi, double esedei,
                                 double eseder, double tteig) {
     
+    double dxi = xi - 0.5;
+    double ratio = (1.0 + eseder)*(1.0 + esedei)/(2.0*tteig);
     double rej = 2.0 + 3.0*(esedei + eseder) - 4.0*(esedei + eseder +
-        1.0 - 4.0*pow((xi - 0.5), 2.0))*(1.0 +
-            0.25*log((pow(((1.0 + eseder)*(1.0 + esedei)/(2.0*tteig)),2.0)) +
-                pair_data.zbrang[imed]*pow(xi, 2.0)));
+        1.0 - 4.0*(dxi*dxi))*(1.0 +
+            0.25*log((ratio*ratio) +
+                pair_data.zbrang[imed]*(xi*xi)));
     
     return rej;
 }
@@ -1617,13 +1619,15 @@ void pair(int imed) {
         double eseder = 1.0/esedei;
         
         /* Determine the normalization */
-        double ximin = 1.0/(1.0 + pow((M_PI*ttese), 2.0));
+        double pi_ttese = M_PI*ttese;
+        double ximin = 1.0/(1.0 + pi_ttese*pi_ttese);
         
         /* Set pair rejection function eq. 4 PIRS 0287 */
         double rejmin = setPairRejectionFunction(imed, ximin, esedei,
                                                  eseder, tteig);
         
-        double ya = pow((2.0/tteig), 2.0);
+        double two_tteig = 2.0/tteig;
+        double ya = two_tteig*two_tteig;
         double xitry = fmax(0.01, fmax(ximin, fmin(0.5,
             sqrt(ya/pair_data.zbrang[imed]))));
         double galpha = 1.0 + 0.25*log(ya +
@@ -1634,9 +1638,9 @@ void pair(int imed) {
         double ximid = galpha/(3.0*gbeta);
         
         if (galpha >= 0.0) {
-            ximid = 0.5 - ximid + sqrt(pow(ximid, 2.0) + 0.25);
+            ximid = 0.5 - ximid + sqrt(ximid*ximid + 0.25);
         } else{
-            ximid = 0.5 - ximid - sqrt(pow(ximid, 2.0) + 0.25);
+            ximid = 0.5 - ximid - sqrt(ximid*ximid + 0.25);
         }
         
         ximid = fmax(0.01, fmax(ximin, fmin(0.5, ximid)));
@@ -1729,7 +1733,7 @@ void compton() {
             /* At high energies the original EGS4 method is more efficient */
             if (first_time){
                 alph1 = log(broi);
-                alph2 = ko*(broi + 1.0)*pow(bro, 2.0);
+                alph2 = ko*(broi + 1.0)*(bro*bro);
                 alpha = alph1 + alph2;
             }
             do {
@@ -1742,12 +1746,12 @@ void compton() {
                 }
                 else {
                     /* use the br part */
-                    br = sqrt(rnno2*pow(broi, 2.0) + (1.0 - rnno2))*bro;
+                    br = sqrt(rnno2*(broi*broi) + (1.0 - rnno2))*bro;
                 }
                 
                 temp = (1.0 - br)/(ko*br);
                 sinthe = fmax(0.0, temp*(2.0 - temp));
-                aux = 1.0 + pow(br, 2.0);
+                aux = 1.0 + br*br;
                 rejf3 = aux - br*sinthe;
                 
                 rnno3 = setRandom();
@@ -1848,17 +1852,18 @@ void photo() {
                 }
                 else {
                     if (fkappa > 0.0) {
+                        double gm1 = gamma - 1.0;
                         costhe = 1.0 - (1.0 - fkappa)*(gamma - 3.0)/
-                            (2.0*(1.0 + fkappa)*pow((gamma-1.0), 3.0));
+                            (2.0*(1.0 + fkappa)*(gm1*gm1*gm1));
                     }
                     else {
                         costhe = (beta + fkappa)/(1.0 + beta*fkappa);
                     }
                 }
-                xi = (1.0 + beta*fkappa)*pow(gamma, 2.0);
+                xi = (1.0 + beta*fkappa)*(gamma*gamma);
             }
             else {
-                xi = pow(gamma, 2.0)*(1.0 + alpha*(sqrt(1.0f
+                xi = (gamma*gamma)*(1.0 + alpha*(sqrt(1.0f
                         + ratio*(2.0*rnpht + ratio)) - 1.0));
                 costhe = (1.0 - 1.0/xi)/beta;
             }
@@ -3832,15 +3837,15 @@ double msdist(int imed, int iq, double rhof, double de, double tustep,
     double e = eke - 0.5*de;
 	double tau = e/RM;  // average kinetic energy over the step divided by 
                         // electron mass
-	double tau2 = pow(tau, 2.0);
+	double tau2 = tau*tau;
 	double epsilon = de/eke;    // fractional energy loss
 	double epsilonp = de/e;
 
-	e *= (1.0 - pow(epsilonp, 2.0)*(6.0 + 10.0*tau + 5.0*tau2)/(24.0*tau2 + 
+	e *= (1.0 - (epsilonp*epsilonp)*(6.0 + 10.0*tau + 5.0*tau2)/(24.0*tau2 +
         72.0*tau + 48.0));
 
 	double p2 = e*(e + 2.0*RM); // average momentum over the step
-	double beta2 = p2/(p2 + pow(RM, 2.0));  // speed at e in units of c, squared
+	double beta2 = p2/(p2 + RM*RM);  // speed at e in units of c, squared
 	double chia2 = xcccc/(4.0*p2*blccc);    // screening angle, note: our chia2 
 										    // is Moliere's chia2/4
     
@@ -3948,7 +3953,7 @@ double msdist(int imed, int iq, double rhof, double de, double tustep,
 	temp *= epsilonp;
 	temp1 = 1.0 - temp;
 	delta += 0.40824829*(epsilon*(tau + 1.0)/((tau + 2.0)*(chilog*(1.0 + 
-        chia2) - 1.0)*(chilog*(1.0 + 2.0*chia2) - 2.0))	- 0.25*pow(temp, 2.0));
+        chia2) - 1.0)*(chilog*(1.0 + 2.0*chia2) - 2.0))	- 0.25*(temp*temp));
 	double b = eta*delta;           // substep transport distance
 	double c = eta*(1.0 - delta);   // substep transport distance	
 
@@ -4288,7 +4293,7 @@ void brems() {
                 log(delta + pair_data.dl6[imed*8+l-1]);
 			phi2 = phi1;
 		}
-		rejf = (1.0 + pow(aux, 2.0))*phi1 - 2.0*aux*phi2/3.0;		
+		rejf = (1.0 + aux*aux)*phi1 - 2.0*aux*phi2/3.0;
 	} while(rnno07 >= rejf);
 
 	/* Setup the new photon */
@@ -4313,7 +4318,7 @@ void brems() {
     double aux1 = aux*ztarg;
 
     if(aux1 > 10.0) {
-        rjarg3 = -log(pair_data.zbrang[imed]) + (1.0 - aux1)/pow(aux1, 2.0);
+        rjarg3 = -log(pair_data.zbrang[imed]) + (1.0 - aux1)/(aux1*aux1);
     }
     else {
         rjarg3 = log(aux/(1.0 + aux1));
@@ -4325,8 +4330,10 @@ void brems() {
         rtest = setRandom();
         double aux3 = z2maxi/(y2tst + (1.0 - y2tst)*z2maxi);
         rtest = rtest*aux3*rejmax;
-        y2tst = pow(aux3, 2.0) - 1.0;
-        double y2tst1 = esedei*y2tst/pow(aux3, 4.0);
+        double aux3sq = aux3*aux3;
+        double aux3quad = aux3sq*aux3sq;
+        y2tst = aux3sq - 1.0;
+        double y2tst1 = esedei*y2tst/aux3quad;
         double aux4 = 16.0*y2tst1 - rjarg2;
         double aux5 = rjarg1 - 4.0*y2tst1;
 
@@ -4334,12 +4341,12 @@ void brems() {
             break;
         }
 
-        double aux2 = log(aux/(1.0 + aux1/pow(aux3, 4.0)));
+        double aux2 = log(aux/(1.0 + aux1/aux3quad));
         rejtst = aux4 + aux5*aux2;
     }
 
 	double costhe = 1.0 - 2.0*y2tst*y2maxi;
-    double sinthe = sqrt(fmax(0.0 ,(1.0 - pow(costhe, 2.0))));
+    double sinthe = sqrt(fmax(0.0 ,(1.0 - costhe*costhe)));
 
     /* Azimuthal angle sampling */
     double cphi; double sphi;
@@ -4414,8 +4421,9 @@ void moller() {
 	double extrae = eie - pegs_data.thmoll[imed]; // energy above Moller thresh
 
 	double g2; double g3;   // used for rejection function calculation
-	g2 = pow(t0, 2.0)/pow(e0, 2.0); 
-	g3 = (2.0*t0 + 1.0)/pow(e0, 2.0);
+	double e0sq = e0*e0;
+	g2 = (t0*t0)/e0sq;
+	g3 = (2.0*t0 + 1.0)/e0sq;
 	
 	double br;  // kinetic energy fraction to lowew energy electron
 	double gmax = (1.0 + 1.25*g2);  // maximum value of the rejection function
@@ -4432,7 +4440,7 @@ void moller() {
 		br = pegs_data.te[imed]/(ekin - extrae*rnno27); 
 		r = br/(1.0 - br);
 		rnno28 = setRandom();
-		rejf4 = (1.0 + g2*pow(br, 2.0) + r*(r - g3)); // rejection function 
+		rejf4 = (1.0 + g2*(br*br) + r*(r - g3)); // rejection function
 													  // multiplied by gmax
 		rnno28 *= gmax;
 	} while(rnno28 > rejf4);
@@ -4482,7 +4490,8 @@ void bhabha() {
 	double e0 = t0 + 1.0;       // total energy of incident positron in RM units
 
 	double yy = 1.0/(t0 + 2.0);
-	double beta2 = (pow(e0, 2.0) - 1.0)/pow(e0, 2.0);   // incident positron 
+	double e0sq = e0*e0;
+	double beta2 = (e0sq - 1.0)/e0sq;   // incident positron
 													    // velocity in c units
 	double ep0 = pegs_data.te[imed]/ekin;   // minimum fractional energy of a 
 										    // secondary 'electron'
@@ -4493,10 +4502,12 @@ void bhabha() {
 
     /* Used in rejection function calculation */
 	double b1; double b2; double b3; double b4; 
-	b4 = pow(yp, 3.0);
-	b3 = b4 + pow(yp, 2.0);
-	b2 = yp*(3.0 + pow(yy, 2.0));
-	b1 = 2.0 - pow(yy, 2.0);
+	double ypsq = yp*yp;
+	double yysq = yy*yy;
+	b4 = ypsq*yp;
+	b3 = b4 + ypsq;
+	b2 = yp*(3.0 + yysq);
+	b1 = 2.0 - yysq;
 
 	/* Sample br from min(ep0) to 1.0 */
 	double rnno03; double rnno04;   // random numbers
@@ -4578,7 +4589,7 @@ void annih() {
 	double aa = stack.u[np]; // for inline rotations
 	double bb = stack.v[np];
     double cc = stack.w[np];
-    double sinpsi = pow(aa, 2.0) + pow(bb, 2.0);
+    double sinpsi = aa*aa + bb*bb;
 	double sindel; double cosdel;   // for inline rotations
 
 	if(sinpsi > 1.0E-20) { 
@@ -4597,7 +4608,8 @@ void annih() {
 
 		/* Now decide whether to accept */
         rnno02 = setRandom();
-		rejf = 1.0 - pow(ep*a - 1.0, 2.0)/(ep*(pow(a, 2.0) - 2.0));
+		double epa1 = ep*a - 1.0;
+		rejf = 1.0 - (epa1*epa1)/(ep*(a*a - 2.0));
 	} while(rnno02 > rejf);
 
 	/* Set-up energies. */
@@ -4607,7 +4619,7 @@ void annih() {
 	transferProperties(np, np);
 
 	double costhe = fmin(1.0, (esg1 - RM)*pot/esg1);
-	double sinthe = sqrt(1.0 - pow(costhe, 2.0));
+	double sinthe = sqrt(1.0 - costhe*costhe);
 
 	/* The following variables are for azimuthal angle sampling */
 	double sphi; double cphi;   // sine and cosine of the azimuthal angle
@@ -4635,7 +4647,7 @@ void annih() {
 	transferProperties(np, np-1);
 
 	costhe = fmin(1.0, (esg2 - RM)*pot/esg2);
-	sinthe = -sqrt(1.0 - pow(costhe, 2.0));
+	sinthe = -sqrt(1.0 - costhe*costhe);
 
 	if(sinpsi >= 1.0E-10) { 
 		us = sinthe*cphi;
@@ -4969,7 +4981,7 @@ void electron() {
 				double blccl = rhof*electron_data.blcc[imed];
 				double xccl = rhof*electron_data.xcc[imed];
 				p2 = eke*(eke+2.0*RM);
-				beta2 = p2/(p2 + pow(RM, 2.0));
+				beta2 = p2/(p2 + RM*RM);
 
 				/* Now calculate the elastic scattering MFP, based on PWA
 				cross sections */
@@ -5043,7 +5055,8 @@ void electron() {
                     /* Calculate number of mean free paths (elastic scattering cross-section)*/
 					double lambda = (-1.0)*log(1.0 - rnno); 
 					double lambda_max = 0.5*blccl*RM/dedx;
-					lambda_max *= (eke/RM + 1.0)*(eke/RM + 1.0)*(eke/RM + 1.0);
+					double gamma_e = eke/RM + 1.0;
+					lambda_max *= gamma_e*gamma_e*gamma_e;
                                         
                     if (lambda >= 0.0 && lambda_max > 0.0) {
                         if (lambda < lambda_max) {
@@ -5213,7 +5226,7 @@ void electron() {
 					double ekems = fmax(ekef, region.ecut[irl] - RM);
 					
                     p2 = ekems*(ekems + 2.0*RM);
-					beta2 = p2/(p2 + pow(RM, 2.0));
+					beta2 = p2/(p2 + RM*RM);
 					
                     /* Multiple scattering screening angle */
                     double chia2 = electron_data.xcc[imed]/

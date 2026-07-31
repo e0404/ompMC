@@ -219,15 +219,20 @@ void howfar(int *idisc, int *irnew, double *ustep) {
     }
     
     /* If here, the particle is in the geometry, do transport checks */
-    int ijmax = geometry.isize*geometry.jsize;
     int imax = geometry.isize;
-    
+    int jmax = geometry.jsize;
+    int ijmax = imax*jmax;
+
     /* First we need to decode the region number of the particle in terms of
-     the region indices in each direction */
-    int irx = (irl - 1)%imax;
-    int irz = (irl - 1 - irx)/ijmax;
-    int iry = ((irl - 1 - irx) - irz*ijmax)/imax;
-    
+     the region indices in each direction. Reusing the quotient of the first
+     division keeps this at two integer divisions instead of three; each pairs
+     with its own remainder into a single machine instruction. */
+    int ir0 = irl - 1;
+    int irxy = ir0/imax;
+    int irx = ir0 - irxy*imax;
+    int irz = irxy/jmax;
+    int iry = irxy - irz*jmax;
+
     /* Check in z-direction */
     if (stack.w[np] > 0.0) {
         /* Going towards outer plane */
@@ -330,15 +335,18 @@ double hownear(void) {
     }
     else {
         /* In the geometry, do transport checks */
-        int ijmax = geometry.isize*geometry.jsize;
         int imax = geometry.isize;
-        
+        int jmax = geometry.jsize;
+
         /* First we need to decode the region number of the particle in terms
-         of the region indices in each direction */
-        int irx = (irl - 1)%imax;
-        int irz = (irl - 1 - irx)/ijmax;
-        int iry = ((irl - 1 - irx) - irz*ijmax)/imax;
-        
+         of the region indices in each direction. See howfar() for why this is
+         written with two divisions rather than three. */
+        int ir0 = irl - 1;
+        int irxy = ir0/imax;
+        int irx = ir0 - irxy*imax;
+        int irz = irxy/jmax;
+        int iry = irxy - irz*jmax;
+
         /* Check in x-direction */
         tperp = fmin(tperp, geometry.xbounds[irx+1] - stack.x[np]);
         tperp = fmin(tperp, stack.x[np] - geometry.xbounds[irx]);

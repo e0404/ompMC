@@ -34,9 +34,15 @@
 * initRandom(). 
 *******************************************************************************/
 
-#define NRANDOM 128     // number of random numbers generated in each call 
+#define NRANDOM 128     // number of random numbers generated in each call
                         // to setRandom().
 #define BUFF_SIZE 256
+
+/* Scale factor turning the 24 bit integers held by the RNG into reals in
+ [0,1). Exact in binary floating point. Kept as a macro rather than a struct
+ member so that setRandom() does not load it from thread-local storage on every
+ single call. */
+#define TWOM24 (1.0/16777216.0)
 
 struct Random {
     int crndm;
@@ -47,7 +53,6 @@ struct Random {
     int rng_seed;
     int *urndm;
     int *rng_array;
-    double twom24;
 };
 
 #if defined(_MSC_VER)
