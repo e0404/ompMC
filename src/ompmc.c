@@ -61,52 +61,37 @@ void initStack() {
     
     /* Allocate memory for particle stack */
     stack.np = 0;
-    stack.iq = malloc(MXSTACK*sizeof(int));
-    stack.ir = malloc(MXSTACK*sizeof(int));
-    stack.e = malloc(MXSTACK*sizeof(double));
-    stack.x = malloc(MXSTACK*sizeof(double));
-    stack.y = malloc(MXSTACK*sizeof(double));
-    stack.z = malloc(MXSTACK*sizeof(double));
-    stack.u = malloc(MXSTACK*sizeof(double));
-    stack.v = malloc(MXSTACK*sizeof(double));
-    stack.w = malloc(MXSTACK*sizeof(double));
-    stack.wt = malloc(MXSTACK*sizeof(double));
-    stack.dnear = malloc(MXSTACK*sizeof(double));
-    
+    stack.p = malloc(MXSTACK*sizeof(struct Particle));
+
+    if (!stack.p) {
+        printf("Could not allocate the particle stack.\n");
+        exit(EXIT_FAILURE);
+    }
+
     return;
 }
 
 void cleanStack() {
     
-    free(stack.iq);
-    free(stack.ir);
-    free(stack.e);
-    free(stack.x);
-    free(stack.y);
-    free(stack.z);
-    free(stack.u);
-    free(stack.v);
-    free(stack.w);
-    free(stack.wt);
-    free(stack.dnear);
-    
+    free(stack.p);
+
     return;
 }
 
 void transferProperties(int npnew, int npold) {
     /* The following function transfer phase space properties from particle
      npold on stack to particle np */
-    stack.x[npnew] = stack.x[npold];
-    stack.y[npnew] = stack.y[npold];
-    stack.z[npnew] = stack.z[npold];
+    stack.p[npnew].x = stack.p[npold].x;
+    stack.p[npnew].y = stack.p[npold].y;
+    stack.p[npnew].z = stack.p[npold].z;
 
-    stack.u[npnew] = stack.u[npold];
-    stack.v[npnew] = stack.v[npold];
-    stack.w[npnew] = stack.w[npold];
+    stack.p[npnew].u = stack.p[npold].u;
+    stack.p[npnew].v = stack.p[npold].v;
+    stack.p[npnew].w = stack.p[npold].w;
 
-    stack.ir[npnew] = stack.ir[npold];
-    stack.wt[npnew] = stack.wt[npold];
-    stack.dnear[npnew] = stack.dnear[npold];
+    stack.p[npnew].ir = stack.p[npold].ir;
+    stack.p[npnew].wt = stack.p[npold].wt;
+    stack.p[npnew].dnear = stack.p[npold].dnear;
     
     return;
 }
@@ -149,17 +134,17 @@ void uphi21(struct Uphi *uphi,
     /* The following section is used for the second of two particles when it is
     known that there is a relationship in their corrections. In this version
     it is worked on the old particle */
-    uphi->A = stack.u[np];
-    uphi->B = stack.v[np];
-    uphi->C = stack.w[np];
+    uphi->A = stack.p[np].u;
+    uphi->B = stack.p[np].v;
+    uphi->C = stack.p[np].w;
     
     double sinps2 = uphi->A*uphi->A + uphi->B*uphi->B;
     
     /* Small polar change */
     if (sinps2 < 1.0E-20) {
-        stack.u[np] = sinthe*uphi->cosphi;
-        stack.v[np] = sinthe*uphi->sinphi;
-        stack.w[np] = uphi->C*costhe;
+        stack.p[np].u = sinthe*uphi->cosphi;
+        stack.p[np].v = sinthe*uphi->sinphi;
+        stack.p[np].w = uphi->C*costhe;
     }
     else {
         double sinpsi = sqrt(sinps2);
@@ -168,9 +153,9 @@ void uphi21(struct Uphi *uphi,
         double sindel = uphi->B/sinpsi;
         double cosdel = uphi->A/sinpsi;
         
-        stack.u[np] = uphi->C*cosdel*us - sindel*vs + uphi->A*costhe;
-        stack.v[np] = uphi->C*sindel*us + cosdel*vs + uphi->B*costhe;
-        stack.w[np] = -sinpsi*us + uphi->C*costhe;
+        stack.p[np].u = uphi->C*cosdel*us - sindel*vs + uphi->A*costhe;
+        stack.p[np].v = uphi->C*sindel*us + cosdel*vs + uphi->B*costhe;
+        stack.p[np].w = -sinpsi*us + uphi->C*costhe;
     }
     
     return;
@@ -194,9 +179,9 @@ void uphi32(struct Uphi *uphi,
     
     /* Small polar change */
     if (sinps2 < 1E-20) {
-        stack.u[np] = sinthe*uphi->cosphi;
-        stack.v[np] = sinthe*uphi->sinphi;
-        stack.w[np] = uphi->C*costhe;
+        stack.p[np].u = sinthe*uphi->cosphi;
+        stack.p[np].v = sinthe*uphi->sinphi;
+        stack.p[np].w = uphi->C*costhe;
     }
     else {
         double sinpsi = sqrt(sinps2);
@@ -205,9 +190,9 @@ void uphi32(struct Uphi *uphi,
         double sindel = uphi->B/sinpsi;
         double cosdel = uphi->A/sinpsi;
         
-        stack.u[np] = uphi->C*cosdel*us - sindel*vs + uphi->A*costhe;
-        stack.v[np] = uphi->C*sindel*us + cosdel*vs + uphi->B*costhe;
-        stack.w[np] = -sinpsi*us + uphi->C*costhe;
+        stack.p[np].u = uphi->C*cosdel*us - sindel*vs + uphi->A*costhe;
+        stack.p[np].v = uphi->C*sindel*us + cosdel*vs + uphi->B*costhe;
+        stack.p[np].w = -sinpsi*us + uphi->C*costhe;
     }
     
     return;
@@ -1481,7 +1466,7 @@ double setPairRejectionFunction(int imed, double xi, double esedei,
 void pair(int imed) {
     
     int np = stack.np;
-    double eig = stack.e[np];   /* energy of incident photon */
+    double eig = stack.p[np].e;   /* energy of incident photon */
     
     double ese1, ese2;          /* energy of "electrons" */
     int iq1, iq2;               /* charge of "electrons" */
@@ -1611,8 +1596,8 @@ void pair(int imed) {
     }
     
     /* Energy going to lower secondary has now been determined */
-    stack.e[np] = ese1;
-    stack.e[np+1] = ese2;
+    stack.p[np].e = ese1;
+    stack.p[np+1].e = ese2;
     
     /* Set pair angle and direction of charged particles. The angle is selected
      from the leading term of the angular distribution */
@@ -1714,8 +1699,8 @@ void pair(int imed) {
 
     /* Assign charge to new particles. The stack index was already updated,
      therefore the new particles correspond to np and np-1 indices */
-    stack.iq[np] = iq2;
-    stack.iq[np-1] = iq1;
+    stack.p[np].iq = iq2;
+    stack.p[np-1].iq = iq1;
 
     return;
 }
@@ -1724,8 +1709,8 @@ void pair(int imed) {
 void compton() {
     
     int np = stack.np;
-    double eig = stack.e[np];
-    double ko = stack.e[np]/RM;
+    double eig = stack.p[np].e;
+    double ko = stack.p[np].e/RM;
     double broi = 1.0 + 2.0*ko;
     double bro = 1.0/broi;
     
@@ -1802,7 +1787,7 @@ void compton() {
     
     double esg = br*eig;            /* new energy of the photon */
     double ese = eig - esg + RM;    /* energy of the electron */
-    stack.e[np] = esg;  /* change of energy */
+    stack.p[np].e = esg;  /* change of energy */
     
     /* Adjust direction of photon */
     struct Uphi uphi;    
@@ -1830,8 +1815,8 @@ void compton() {
     }
     
     uphi32(&uphi, costhe, sinthe);
-    stack.e[np] = ese;
-    stack.iq[np] = -1;
+    stack.p[np].e = ese;
+    stack.p[np].iq = -1;
     
     return;
 }
@@ -1843,13 +1828,13 @@ void photo() {
     stack.npold = np;   // set old stack counter before interaction
     
     /* Set energy and charge of the new electron */
-    stack.e[np] += RM;
-    stack.iq[np] = -1;
+    stack.p[np].e += RM;
+    stack.p[np].iq = -1;
     
     /* Now sample photo-electron direction */
-    double eelec = stack.e[np];
+    double eelec = stack.p[np].e;
     
-    if (eelec > regionEcut(stack.ir[np])){
+    if (eelec > regionEcut(stack.p[np].ir)){
         /* Velocity of electron in c units */
         double beta = sqrt((eelec - RM)*(eelec + RM))/eelec;
         
@@ -1904,7 +1889,7 @@ void photo() {
 void photon() {
     
     int np = stack.np;              // stack pointer
-    int irl = stack.ir[np];         // region index
+    int irl = stack.p[np].ir;         // region index
     int irold, irnew;
     int imed = region.med[irl];     // medium index of current region
     int idisc;                      // to discard photon if requested
@@ -1913,7 +1898,7 @@ void photon() {
     double tstep;                   // distance to a discrete interaction               
     double ustep, vstep;                   
     double edep;                    // deposited energy by particle
-    double eig = stack.e[np];       // energy of incident gamma
+    double eig = stack.p[np].e;       // energy of incident gamma
 
     double dpmfp, dpmfp_old;
     double gmfpr0 = 0.0;    // photon mfp before density and coherent correction
@@ -1936,7 +1921,7 @@ void photon() {
     int irsave;
 
     /* First check for photon cutoff energy */
-    if (eig <= regionPcut(irl) || stack.wt[np] == 0) {
+    if (eig <= regionPcut(irl) || stack.p[np].wt == 0) {
         edep = eig;
         
         /* Deposit energy on the spot */
@@ -1962,10 +1947,10 @@ void photon() {
     d_eta = 1.0/(double)nsplit;
     eta_prime = 1.0 - rnno + d_eta;
 
-    xsave = stack.x[np]; ysave = stack.y[np]; zsave = stack.z[np];
-    usave = stack.u[np]; vsave = stack.v[np]; wsave = stack.w[np];
-    esave = stack.e[np]; wtsave = stack.wt[np]/(double)nsplit;
-    irsave = stack.ir[np];
+    xsave = stack.p[np].x; ysave = stack.p[np].y; zsave = stack.p[np].z;
+    usave = stack.p[np].u; vsave = stack.p[np].v; wsave = stack.p[np].w;
+    esave = stack.p[np].e; wtsave = stack.p[np].wt/(double)nsplit;
+    irsave = stack.p[np].ir;
 
     np -= 1;
 
@@ -1994,12 +1979,12 @@ void photon() {
             exit(EXIT_FAILURE);
         }
         
-        stack.x[np] = xsave; stack.y[np] = ysave; stack.z[np] = zsave;
-        stack.u[np] = usave; stack.v[np] = vsave; stack.w[np] = wsave;
-        stack.e[np] = esave; stack.wt[np] = wtsave;
-        stack.ir[np] = irsave; stack.iq[np] = 0;
+        stack.p[np].x = xsave; stack.p[np].y = ysave; stack.p[np].z = zsave;
+        stack.p[np].u = usave; stack.p[np].v = vsave; stack.p[np].w = wsave;
+        stack.p[np].e = esave; stack.p[np].wt = wtsave;
+        stack.p[np].ir = irsave; stack.p[np].iq = 0;
 
-        irl = stack.ir[np];
+        irl = stack.p[np].ir;
         irold = irl;
         imed = region.med[irl];
 
@@ -2038,9 +2023,9 @@ void photon() {
             edep = 0.0;
 
             /* Transport the photon */
-            stack.x[np] += ustep*stack.u[np];
-            stack.y[np] += ustep*stack.v[np];
-            stack.z[np] += ustep*stack.w[np];
+            stack.p[np].x += ustep*stack.p[np].u;
+            stack.p[np].y += ustep*stack.p[np].v;
+            stack.p[np].z += ustep*stack.p[np].w;
 
             if (idisc > 0) {
                 /* User requested inmediate discard */
@@ -2060,7 +2045,7 @@ void photon() {
 
             if (irnew != irold) {
                 /* Region change */
-                stack.ir[np] = irnew;
+                stack.p[np].ir = irnew;
                 irl = irnew;
                 irold = irnew;
                 imed = region.med[irl];
@@ -2073,8 +2058,8 @@ void photon() {
             }                
         } while (ptrans); /* end of "transport" loop */
 
-        xsave = stack.x[np]; ysave = stack.y[np]; zsave = stack.z[np];
-        irsave = stack.ir[np];
+        xsave = stack.p[np].x; ysave = stack.p[np].y; zsave = stack.p[np].z;
+        irsave = stack.p[np].ir;
         
         /* Time for an interaction */
         
@@ -2088,7 +2073,7 @@ void photon() {
                 continue;   // go to beginning of "photon splitting" loop
             }
             else {
-                stack.wt[np] *= nsplit;
+                stack.p[np].wt *= nsplit;
                 rayleigh(imed, eig, gle, lgle);
                 continue;   // go to beginning of "photon splitting" loop
             }
@@ -2126,17 +2111,17 @@ void photon() {
         carries the weigth of the original photon */
         ip = stack.npold;
         do {
-            if (stack.iq[ip] == 0) {
+            if (stack.p[ip].iq == 0) {
                 if (isplit != i_survive_s) {
                     if (ip < np) {
-                        stack.e[ip] = stack.e[np]; stack.iq[ip] = stack.iq[np];
-                        stack.u[ip] = stack.u[np]; stack.v[ip] = stack.v[np];
-                        stack.w[ip] = stack.w[np]; stack.wt[ip] = stack.wt[np];
+                        stack.p[ip].e = stack.p[np].e; stack.p[ip].iq = stack.p[np].iq;
+                        stack.p[ip].u = stack.p[np].u; stack.p[ip].v = stack.p[np].v;
+                        stack.p[ip].w = stack.p[np].w; stack.p[ip].wt = stack.p[np].wt;
                     }
                     np -= 1;
                 }
                 else {
-                    stack.wt[ip] *= nsplit;
+                    stack.p[ip].wt *= nsplit;
                     ip += 1;
                 }
             }
@@ -2154,10 +2139,10 @@ void photon() {
         return;
     }
     
-    if (stack.iq[np] == 0) {
+    if (stack.p[np].iq == 0) {
         /* Split photon again if energy > pcut */
-        eig = stack.e[np];
-        irl = stack.ir[np];
+        eig = stack.p[np].e;
+        irl = stack.p[np].ir;
         imed = region.med[irl];
 
         if (eig <= regionPcut(irl)) {
@@ -3991,12 +3976,12 @@ double msdist(int imed, int iq, double rhof, double de, double tustep,
 	/* Rotate into the final direction of motion and transport relative to 
     original direction of motion */
     int np = stack.np;
-    double x0 = stack.x[np];
-    double y0 = stack.y[np];
-    double z0 = stack.z[np];
-    double u0 = stack.u[np];
-    double v0 = stack.v[np];
-    double w0 = stack.w[np];    
+    double x0 = stack.p[np].x;
+    double y0 = stack.p[np].y;
+    double z0 = stack.p[np].z;
+    double u0 = stack.p[np].u;
+    double v0 = stack.p[np].v;
+    double w0 = stack.p[np].w;    
 	double sint02 = u0*u0 + v0*v0;
 
     if (sint02 > 1.0E-20) {
@@ -4185,20 +4170,20 @@ void rannih() {
     selectAzimuthalAngle(&cosphi, &sinphi);
     
     /* First photon */
-    stack.e[np] = RM;
-    stack.iq[np] = 0;
-    stack.u[np] = sinthe*cosphi;
-    stack.v[np] = sinthe*sinphi;
-    stack.w[np] = costhe;
+    stack.p[np].e = RM;
+    stack.p[np].iq = 0;
+    stack.p[np].u = sinthe*cosphi;
+    stack.p[np].v = sinthe*sinphi;
+    stack.p[np].w = costhe;
     
     /* Second photon */
     np +=1;
-    stack.e[np] = RM;
-    stack.iq[np] = 0;
+    stack.p[np].e = RM;
+    stack.p[np].iq = 0;
     transferProperties(np, np-1);
-    stack.u[np] = -1.0*stack.u[np-1];
-    stack.v[np] = -1.0*stack.v[np-1];
-    stack.w[np] = -1.0*stack.w[np-1];
+    stack.p[np].u = -1.0*stack.p[np-1].u;
+    stack.p[np].v = -1.0*stack.p[np-1].v;
+    stack.p[np].w = -1.0*stack.p[np-1].w;
     
     /* Update stack */
     stack.np = np;
@@ -4207,14 +4192,14 @@ void rannih() {
     photons */
     if(vrt.nsplit > 1) {
         for (int ip = stack.npold; ip <= stack.np; ip++) {
-            if (stack.iq[ip] == 0) {
+            if (stack.p[ip].iq == 0) {
                 rnno = setRandom();
                 if (rnno*(double)vrt.nsplit > 1.0) {
-                    stack.wt[ip] = 0.0;
-                    stack.e[ip] = 0.0;
+                    stack.p[ip].wt = 0.0;
+                    stack.p[ip].e = 0.0;
                 }
                 else {
-                    stack.wt[ip] *= vrt.nsplit;
+                    stack.p[ip].wt *= vrt.nsplit;
                 }
             }            
         }        
@@ -4230,10 +4215,10 @@ void brems() {
 	corresponds to ibr_nist = 0 in the EGSnrc platform */
 
 	int np = stack.np;	
-	int irl = stack.ir[np];
+	int irl = stack.p[np].ir;
 	int imed = region.med[irl];
 	
-    double eie = stack.e[np];   // energy of incident electron
+    double eie = stack.p[np].e;   // energy of incident electron
 	double phi1; double phi2;   // screening function
 
     stack.npold = np;   // set old stack counter before interaction
@@ -4263,9 +4248,9 @@ void brems() {
 
 	// We will sample the photon emmision angle from KM-2BS (ibrdst=1) or 
     // from the leading term (ibrdst=0).
-    a = stack.u[np];
-    b = stack.v[np];
-    c = stack.w[np];
+    a = stack.p[np].u;
+    b = stack.p[np].v;
+    c = stack.p[np].w;
 
     sinpsi = a*a + b*b;
     if(sinpsi > 1.0E-20) {
@@ -4320,8 +4305,8 @@ void brems() {
 
 	/* Setup the new photon */
 	np += 1;
-	stack.e[np] = esg;
-	stack.iq[np] = 0;
+	stack.p[np].e = esg;
+	stack.p[np].iq = 0;
 	transferProperties(np, np-1);
 
 	/* Now we need to decide the direction of the photon */
@@ -4378,18 +4363,18 @@ void brems() {
         double us = sinthe*cphi;
         double vs = sinthe*sphi;
 
-        stack.u[np] = c*cosdel*us - sindel*vs + a*costhe;
-        stack.v[np] = c*sindel*us + cosdel*vs + b*costhe;
-        stack.w[np] = c*costhe - sinpsi*us;
+        stack.p[np].u = c*cosdel*us - sindel*vs + a*costhe;
+        stack.p[np].v = c*sindel*us + cosdel*vs + b*costhe;
+        stack.p[np].w = c*costhe - sinpsi*us;
     }
     else {
-        stack.u[np] = sinthe*cphi;
-        stack.v[np] = sinthe*sphi;
-        stack.w[np] = c*costhe;
+        stack.p[np].u = sinthe*cphi;
+        stack.p[np].v = sinthe*sphi;
+        stack.p[np].w = c*costhe;
     }
 
 	/* Set energy of the electron */
-	stack.e[np-1] = ese;
+	stack.p[np-1].e = ese;
 	
 	/* Update stack index */
 	stack.np = np;
@@ -4398,14 +4383,14 @@ void brems() {
     photons */
     if(vrt.nsplit > 1) {
         for (int ip = stack.npold; ip <= stack.np; ip++) {
-            if (stack.iq[ip] == 0) {
+            if (stack.p[ip].iq == 0) {
                 rnno06 = setRandom();
                 if (rnno06*(double)vrt.nsplit > 1.0) {
-                    stack.wt[ip] = 0.0;
-                    stack.e[ip] = 0.0;
+                    stack.p[ip].wt = 0.0;
+                    stack.p[ip].e = 0.0;
                 }
                 else {
-                    stack.wt[ip] *= vrt.nsplit;
+                    stack.p[ip].wt *= vrt.nsplit;
                 }
             }            
         }        
@@ -4425,9 +4410,9 @@ void moller() {
 	mechanics E. Akademischer Verlag Spektrum, Heidelberg 1998) */
 
     int np = stack.np;
-    int irl = stack.ir[np];
+    int irl = stack.p[np].ir;
     int imed = region.med[irl];
-    double eie = stack.e[np];   // total energy of incident electron
+    double eie = stack.p[np].e;   // total energy of incident electron
 	double ekin = eie - RM;	    // kinetic energy of incident electron
 
     stack.npold = np;   // set old stack counter before interaction
@@ -4471,8 +4456,8 @@ void moller() {
 	double ese1 = eie - ekse2;  // energy of secondary electron #1
 	double ese2 = ekse2 + RM;   // energy of secondary electron #2
 
-	stack.e[np] = ese1;
-	stack.e[np+1] = ese2;
+	stack.p[np].e = ese1;
+	stack.p[np+1].e = ese2;
 
 	double h1 = (eie + RM)/ekin;  // used for polar scattering angle calculation
 	double costh = h1*(ese1 - RM)/(ese1 + RM); // polar scattering angle squared
@@ -4485,7 +4470,7 @@ void moller() {
 	/* Related change and setup for "new" electron */
 	np += 1;
 	stack.np = np; // it is needed to update stack index for uphi32()
-	stack.iq[np] = -1;
+	stack.p[np].iq = -1;
 	costh = h1*(ese2 - RM)/(ese2 + RM);
 	sinthe = -sqrt(1.0 - costh);
 	costhe = sqrt(costh);
@@ -4504,9 +4489,9 @@ void bhabha() {
 	differential cross section is used */
 
 	int np = stack.np;
-    int irl = stack.ir[np];
+    int irl = stack.p[np].ir;
     int imed = region.med[irl];
-	double eip = stack.e[np];   // total energy of incident positron
+	double eip = stack.p[np].e;   // total energy of incident positron
 	double ekin = eip - RM;     // kinetic energy of incident positron		
 	double t0 = ekin/RM;        // kinetic energy of incident positron RM units
 	double e0 = t0 + 1.0;       // total energy of incident positron in RM units
@@ -4548,11 +4533,11 @@ void bhabha() {
 	/* If electron got more than positron, move positron pointer and 
     reflect br */
 	if(br < 0.5) { 
-		stack.iq[np+1] = -1;
+		stack.p[np+1].iq = -1;
 	}
 	else { 
-		stack.iq[np] = -1;
-		stack.iq[np+1] = 1;
+		stack.p[np].iq = -1;
+		stack.p[np+1].iq = 1;
 		br = 1.0 - br;
 		/* This puts positron on top of the stack if it has less energy */
 	}
@@ -4562,8 +4547,8 @@ void bhabha() {
 	double ekse2 = br*ekin;      // kinetic energy of secondary 'electron' 2
 	double ese1 = eip - ekse2;   // energy of secondary 'electron' 1
 	double ese2 = ekse2 + RM;    // energy of secondary 'electron' 2
-	stack.e[np] = ese1;
-	stack.e[np+1] = ese2;
+	stack.p[np].e = ese1;
+	stack.p[np+1].e = ese2;
 
 	/* Bhabha angles are uniquely determined by kinematics */
 	double h1 = (eip + RM)/ekin; // used in direction cosine calculations
@@ -4593,7 +4578,7 @@ void annih() {
     /* Gamma spectrum for two gamma in-flight positron annihilation using 
 	scheme based on Heitler's formulae */
 	int np = stack.np;
-	double avip = stack.e[np] + RM; // available energy of incident positron, 
+	double avip = stack.p[np].e + RM; // available energy of incident positron, 
 									// i.e. electron assumed to be at rest.
 	double a = avip/RM; // total energy in units of the electron's rest energy
 	double g, t, p; // energy, kinetic energy and momentum in units of RM
@@ -4608,9 +4593,9 @@ void annih() {
 	double wsamp = log((1.0 - ep0)/ep0);    // the logarithm is calculated
 										    // outside the loop
 
-	double aa = stack.u[np]; // for inline rotations
-	double bb = stack.v[np];
-    double cc = stack.w[np];
+	double aa = stack.p[np].u; // for inline rotations
+	double bb = stack.p[np].v;
+    double cc = stack.p[np].w;
     double sinpsi = aa*aa + bb*bb;
 	double sindel; double cosdel;   // for inline rotations
 
@@ -4636,8 +4621,8 @@ void annih() {
 
 	/* Set-up energies. */
 	double esg1 = avip*ep;   // energy of secondary gamma 1
-	stack.e[np] = esg1;
-	stack.iq[np] = 0;
+	stack.p[np].e = esg1;
+	stack.p[np].iq = 0;
 	transferProperties(np, np);
 
 	double costhe = fmin(1.0, (esg1 - RM)*pot/esg1);
@@ -4652,20 +4637,20 @@ void annih() {
 		us = sinthe*cphi;
 		vs = sinthe*sphi;
 		
-		stack.u[np] = cc*cosdel*us - sindel*vs + aa*costhe;
-        stack.v[np] = cc*sindel*us + cosdel*vs + bb*costhe; 
-	    stack.w[np] = cc*costhe - sinpsi*us;
+		stack.p[np].u = cc*cosdel*us - sindel*vs + aa*costhe;
+        stack.p[np].v = cc*sindel*us + cosdel*vs + bb*costhe; 
+	    stack.p[np].w = cc*costhe - sinpsi*us;
 	}
 	else { 
-        stack.u[np] = sinthe*cphi;
-        stack.v[np] = sinthe*sphi; 
-	    stack.w[np] = cc*costhe;
+        stack.p[np].u = sinthe*cphi;
+        stack.p[np].v = sinthe*sphi; 
+	    stack.p[np].w = cc*costhe;
 	}
 
 	np += 1;
 	double esg2 = avip - esg1;
-	stack.e[np] = esg2;
-	stack.iq[np] = 0;
+	stack.p[np].e = esg2;
+	stack.p[np].iq = 0;
 	transferProperties(np, np-1);
 
 	costhe = fmin(1.0, (esg2 - RM)*pot/esg2);
@@ -4675,14 +4660,14 @@ void annih() {
 		us = sinthe*cphi;
 		vs = sinthe*sphi;
 		
-        stack.u[np] = cc*cosdel*us - sindel*vs + aa*costhe;
-        stack.v[np] = cc*sindel*us + cosdel*vs + bb*costhe; 
-	    stack.w[np] = cc*costhe - sinpsi*us;
+        stack.p[np].u = cc*cosdel*us - sindel*vs + aa*costhe;
+        stack.p[np].v = cc*sindel*us + cosdel*vs + bb*costhe; 
+	    stack.p[np].w = cc*costhe - sinpsi*us;
 	}
 	else { 
-        stack.u[np] = sinthe*cphi;
-        stack.v[np] = sinthe*sphi; 
-	    stack.w[np] = cc*costhe;
+        stack.p[np].u = sinthe*cphi;
+        stack.p[np].v = sinthe*sphi; 
+	    stack.p[np].w = cc*costhe;
 	}
 
 	/* Update stack index */
@@ -4692,14 +4677,14 @@ void annih() {
     photons */
     if(vrt.nsplit > 1) {
         for (int ip = stack.npold; ip <= stack.np; ip++) {
-            if (stack.iq[ip] == 0) {
+            if (stack.p[ip].iq == 0) {
                 rnno01 = setRandom();
                 if (rnno01*(double)vrt.nsplit > 1.0) {
-                    stack.wt[ip] = 0.0;
-                    stack.e[ip] = 0.0;
+                    stack.p[ip].wt = 0.0;
+                    stack.p[ip].e = 0.0;
                 }
                 else {
-                    stack.wt[ip] *= vrt.nsplit;
+                    stack.p[ip].wt *= vrt.nsplit;
                 }
             }            
         }        
@@ -4712,14 +4697,14 @@ void annih() {
 void electron() {
     
     int np = stack.np;              // stack pointer
-    int irl = stack.ir[np];         // region index
+    int irl = stack.p[np].ir;         // region index
     int imed = region.med[irl];     // medium index of current region
     double rhof = region.rhof[irl]; // mass density ratio
     double edep = 0.0;              // deposited energy by particle
     
     struct Uphi uphi;
-    double eie = stack.e[np];       // energy of incident electron
-    int iq = stack.iq[np];          // charge of current particle.
+    double eie = stack.p[np].e;       // energy of incident electron
+    int iq = stack.p[np].iq;          // charge of current particle.
     int qel = (1 + iq)/2;           // = 0 for electrons, = 1 for positrons
     int medold = imed;               
 
@@ -4728,7 +4713,7 @@ void electron() {
     /* First check of electron cut-off energy */
     if(eie <= regionEcut(irl)) {
         
-        edep = stack.e[np] - RM;    // get energy deposition for user
+        edep = stack.p[np].e - RM;    // get energy deposition for user
 
         /* Call ausgab and drop energy on spot */
         ausgab(edep);
@@ -4996,7 +4981,7 @@ void electron() {
 
 				/* Obtain perpendicular distance to nearest boundary */
 				double tperp = hownear();
-				stack.dnear[np] = tperp;
+				stack.p[np].dnear = tperp;
 
 				/* Set the minimum step size for a CH step, due to efficiency 
 				considerations. It is calculated with eke and elke */
@@ -5113,8 +5098,8 @@ void electron() {
 				} // end of skindepth if-else
 			}   // end of non-vacuum if-else 
 			
-			int irold = stack.ir[np];   // region before transport
-            int irnew = stack.ir[np];   // default new region is old region
+			int irold = stack.p[np].ir;   // region before transport
+            int irnew = stack.p[np].ir;   // default new region is old region
 			int idisc = 0;		        // default is no discard
 			
 			if (call_howfar) {
@@ -5126,10 +5111,10 @@ void electron() {
 			if (idisc > 0) {
 				/* User requested electron discard */
                 if(iq > 0) {
-                    edep = stack.e[np] + RM;
+                    edep = stack.p[np].e + RM;
                 }
                 else {
-                    edep = stack.e[np] - RM;
+                    edep = stack.p[np].e - RM;
                 }
 
                 /* Call ausgab and drop energy on spot */
@@ -5168,15 +5153,15 @@ void electron() {
                                     // associated with vstep
 
 					/* Transport the particle */
-                    stack.x[np] += stack.u[np]*vstep;
-                    stack.y[np] += stack.v[np]*vstep;
-                    stack.z[np] += stack.w[np]*vstep;
-                    stack.dnear[np] -= vstep;
+                    stack.p[np].x += stack.p[np].u*vstep;
+                    stack.p[np].y += stack.p[np].v*vstep;
+                    stack.p[np].z += stack.p[np].w*vstep;
+                    stack.p[np].dnear -= vstep;
 				}   // end of vacuum step
 
 				/* Electron region change */
                 if(irnew != irold) {
-                    stack.ir[np] = irnew;
+                    stack.p[np].ir = irnew;
                     irl = irnew;
 				    imed = region.med[irl];
                 }			
@@ -5184,7 +5169,7 @@ void electron() {
                 /* First check of electron cut-off energy */
                 if(eie <= regionEcut(irl)) {
                     
-                    edep = stack.e[np] - RM;    // get energy deposition for user
+                    edep = stack.p[np].e - RM;    // get energy deposition for user
                     
                     /* Call ausgab and drop energy on spot */
                     ausgab(edep);
@@ -5286,22 +5271,22 @@ void electron() {
 			if (called_msdist == 0) {
 				/* Calculate deflection and scattering. This has not been done 
                 in msdist */
-				x_final = stack.x[np] + stack.u[np]*vstep;
-                y_final = stack.y[np] + stack.v[np]*vstep;
-                z_final = stack.z[np] + stack.w[np]*vstep;
+				x_final = stack.p[np].x + stack.p[np].u*vstep;
+                y_final = stack.p[np].y + stack.p[np].v*vstep;
+                z_final = stack.p[np].z + stack.p[np].w*vstep;
 
 				if (do_single) {
 					/* Apply the deflection, save call to uphi if no 
 					deflection in a single scattering mode */
 					uphi21(&uphi, costhe, sinthe);
-					u_final = stack.u[np];
-                    v_final = stack.v[np];
-                    w_final = stack.w[np];
+					u_final = stack.p[np].u;
+                    v_final = stack.p[np].v;
+                    w_final = stack.p[np].w;
 				}
 				else {
-					u_final = stack.u[np];
-                    v_final = stack.v[np];
-                    w_final = stack.w[np];
+					u_final = stack.p[np].u;
+                    v_final = stack.p[np].v;
+                    w_final = stack.p[np].w;
 				}
 			}
 
@@ -5310,23 +5295,23 @@ void electron() {
             ausgab(edep);
 
 			/* Transport the particle */
-			stack.x[np] = x_final;
-            stack.y[np] = y_final;
-            stack.z[np] = z_final;
-			stack.u[np] = u_final;
-            stack.v[np] = v_final;
-            stack.w[np] = w_final;
-			stack.dnear[np] -= vstep;
-			irold = stack.ir[np];		// save the previous region
+			stack.p[np].x = x_final;
+            stack.p[np].y = y_final;
+            stack.p[np].z = z_final;
+			stack.p[np].u = u_final;
+            stack.p[np].v = v_final;
+            stack.p[np].w = w_final;
+			stack.p[np].dnear -= vstep;
+			irold = stack.p[np].ir;		// save the previous region
 
 			/* Now done with multiple scattering, update energy and see if 
 			below cut below substracts only energy deposited */
 			eie -= edep;
-			stack.e[np] = eie;
+			stack.p[np].e = eie;
 
             if(irnew == irl && eie <= regionEcut(irl)) {
                     
-                    edep = stack.e[np] - RM;    // get energy deposition for user
+                    edep = stack.p[np].e - RM;    // get energy deposition for user
                     
                     /* Call ausgab and drop energy on spot */
                     ausgab(edep);
@@ -5360,7 +5345,7 @@ void electron() {
 
 			/* Electron region change */
             if(irnew != irold) {
-                stack.ir[np] = irnew;
+                stack.p[np].ir = irnew;
                 irl = irnew;
                 imed = region.med[irl];
             }
@@ -5368,7 +5353,7 @@ void electron() {
             /* Check electron cut-off energy */
 			if(eie <= regionEcut(irl)) {
         
-                edep = stack.e[np] - RM;    // get energy deposition for user
+                edep = stack.p[np].e - RM;    // get energy deposition for user
                 
                 /* Call ausgab and drop energy on spot */
                 ausgab(edep);
@@ -5451,7 +5436,7 @@ void electron() {
 			EII is on we should still permit an interaction, even if 
 			E < Moller threashold as EII interactions go down to the 
 			ionization threshold which may be less than thmoll */
-			if (stack.e[np] <= pegs_data.thmoll[imed]) {
+			if (stack.p[np].e <= pegs_data.thmoll[imed]) {
 				/* Not enough energy for Moller, so force it to be a 
 				Bremsstrahlung, provided ok kinematically */
 
@@ -5501,7 +5486,7 @@ void electron() {
 void shower() {
  
     while (stack.np >= 0) {
-        if (stack.iq[stack.np] == 0) {
+        if (stack.p[stack.np].iq == 0) {
             photon();
         } else {
             electron();

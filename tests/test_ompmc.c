@@ -423,8 +423,8 @@ static void test_find_voxel_index_on_boundaries_and_outside(void) {
 static void depositAt(int irl, double edep, double wt) {
 
     stack.np = 0;
-    stack.ir[0] = irl;
-    stack.wt[0] = wt;
+    stack.p[0].ir = irl;
+    stack.p[0].wt = wt;
 
     ausgab(edep);
 }

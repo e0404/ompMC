@@ -52,25 +52,32 @@ double hownear(void);
 
 //typedef struct Stack Stack;
 
+/* One entry of the particle stack. The transport code works on a single
+ particle at a time, indexed by stack.np, and never sweeps a field across
+ particles, so these live together rather than in eleven parallel arrays: a
+ particle is then two cache lines and one page instead of eleven of each. */
+struct Particle {
+    double x;       // particle coordinates
+    double y;
+    double z;
+
+    double u;       // particle direction cosines
+    double v;
+    double w;
+
+    double e;       // total particle energy
+    double wt;      // particle weight
+    double dnear;   // perpendicular distance to nearest boundary
+
+    int iq;         // particle charge
+    int ir;         // current region
+};
+
 struct Stack {
     int np;         // stack pointer
-    int npold;       // stack pointer before interactions
-    
-    int *iq;        // particle charge
-    int *ir;        // current region
-    
-    double *e;      // total particle energy
-    
-    double *x;      // particle coordinates
-    double *y;
-    double *z;
-    
-    double *u;      // particle direction cosines
-    double *v;
-    double *w;
-    
-    double *dnear;  // perpendicular distance to nearest boundary
-    double *wt;     // particle weight
+    int npold;      // stack pointer before interactions
+
+    struct Particle *p;
 };
 
 /*

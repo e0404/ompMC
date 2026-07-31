@@ -210,10 +210,10 @@ void cleanPhantom() {
 void howfar(int *idisc, int *irnew, double *ustep) {
     
     int np = stack.np;
-    int irl = stack.ir[np];
+    int irl = stack.p[np].ir;
     double dist = 0.0;
     
-    if (stack.ir[np] == 0) {
+    if (stack.p[np].ir == 0) {
         /* The particle is outside the geometry, terminate history */
         *idisc = 1;
         return;
@@ -230,9 +230,9 @@ void howfar(int *idisc, int *irnew, double *ustep) {
     omcDecodeRegion(irl, imax, jmax, &irx, &iry, &irz);
 
     /* Check in z-direction */
-    if (stack.w[np] > 0.0) {
+    if (stack.p[np].w > 0.0) {
         /* Going towards outer plane */
-        dist = (geometry.zbounds[irz+1] - stack.z[np])/stack.w[np];
+        dist = (geometry.zbounds[irz+1] - stack.p[np].z)/stack.p[np].w;
         if (dist < *ustep) {
             *ustep = dist;
             if (irz != (geometry.ksize - 1)) {
@@ -244,9 +244,9 @@ void howfar(int *idisc, int *irnew, double *ustep) {
         }
     }
     
-    else if (stack.w[np] < 0.0) {
+    else if (stack.p[np].w < 0.0) {
         /* Going towards inner plane */
-        dist = -(stack.z[np] - geometry.zbounds[irz])/stack.w[np];
+        dist = -(stack.p[np].z - geometry.zbounds[irz])/stack.p[np].w;
         if (dist < *ustep) {
             *ustep = dist;
             if (irz != 0) {
@@ -259,9 +259,9 @@ void howfar(int *idisc, int *irnew, double *ustep) {
     }
 
     /* Check in x-direction */
-    if (stack.u[np] > 0.0) {
+    if (stack.p[np].u > 0.0) {
         /* Going towards positive plane */
-        dist = (geometry.xbounds[irx+1] - stack.x[np])/stack.u[np];
+        dist = (geometry.xbounds[irx+1] - stack.p[np].x)/stack.p[np].u;
         if (dist < *ustep) {
             *ustep = dist;
             if (irx != (geometry.isize - 1)) {
@@ -273,9 +273,9 @@ void howfar(int *idisc, int *irnew, double *ustep) {
         }
     }
     
-    else if (stack.u[np] < 0.0) {
+    else if (stack.p[np].u < 0.0) {
         /* Going towards negative plane */
-        dist = -(stack.x[np] - geometry.xbounds[irx])/stack.u[np];
+        dist = -(stack.p[np].x - geometry.xbounds[irx])/stack.p[np].u;
         if (dist < *ustep) {
             *ustep = dist;
             if (irx != 0) {
@@ -288,9 +288,9 @@ void howfar(int *idisc, int *irnew, double *ustep) {
     }
     
     /* Check in y-direction */
-    if (stack.v[np] > 0.0) {
+    if (stack.p[np].v > 0.0) {
         /* Going towards positive plane */
-        dist = (geometry.ybounds[iry+1] - stack.y[np])/stack.v[np];
+        dist = (geometry.ybounds[iry+1] - stack.p[np].y)/stack.p[np].v;
         if (dist < *ustep) {
             *ustep = dist;
             if (iry != (geometry.jsize - 1)) {
@@ -302,9 +302,9 @@ void howfar(int *idisc, int *irnew, double *ustep) {
         }
     }
     
-    else if (stack.v[np] < 0.0) {
+    else if (stack.p[np].v < 0.0) {
         /* Going towards negative plane */
-        dist = -(stack.y[np] - geometry.ybounds[iry])/stack.v[np];
+        dist = -(stack.p[np].y - geometry.ybounds[iry])/stack.p[np].v;
         if (dist < *ustep) {
             *ustep = dist;
             if (iry != 0) {
@@ -322,7 +322,7 @@ void howfar(int *idisc, int *irnew, double *ustep) {
 double hownear(void) {
     
     int np = stack.np;
-    int irl = stack.ir[np];
+    int irl = stack.p[np].ir;
     double tperp = 1.0E10;  /* perpendicular distance to closest boundary */
     
     if (irl == 0) {
@@ -338,16 +338,16 @@ double hownear(void) {
         omcDecodeRegion(irl, geometry.isize, geometry.jsize, &irx, &iry, &irz);
 
         /* Check in x-direction */
-        tperp = fmin(tperp, geometry.xbounds[irx+1] - stack.x[np]);
-        tperp = fmin(tperp, stack.x[np] - geometry.xbounds[irx]);
+        tperp = fmin(tperp, geometry.xbounds[irx+1] - stack.p[np].x);
+        tperp = fmin(tperp, stack.p[np].x - geometry.xbounds[irx]);
         
         /* Check in y-direction */
-        tperp = fmin(tperp, geometry.ybounds[iry+1] - stack.y[np]);
-        tperp = fmin(tperp, stack.y[np] - geometry.ybounds[iry]);
+        tperp = fmin(tperp, geometry.ybounds[iry+1] - stack.p[np].y);
+        tperp = fmin(tperp, stack.p[np].y - geometry.ybounds[iry]);
         
         /* Check in z-direction */
-        tperp = fmin(tperp, geometry.zbounds[irz+1] - stack.z[np]);
-        tperp = fmin(tperp, stack.z[np] - geometry.zbounds[irz]);
+        tperp = fmin(tperp, geometry.zbounds[irz+1] - stack.p[np].z);
+        tperp = fmin(tperp, stack.p[np].z - geometry.zbounds[irz]);
     }
     
     return tperp;
@@ -930,7 +930,7 @@ void initHistory() {
     
     /* Initialize first particle of the stack from source data */
     stack.np = 0;
-    stack.iq[stack.np] = source.charge;
+    stack.p[stack.np].iq = source.charge;
     
     /* Get primary particle energy */
     double ein = 0.0;
@@ -950,13 +950,13 @@ void initHistory() {
     
     /* Check if the particle is an electron, in such a case add electron
      rest mass energy */
-    if (stack.iq[stack.np] != 0) {
+    if (stack.p[stack.np].iq != 0) {
         /* Electron or positron */
-        stack.e[stack.np] = ein + RM;
+        stack.p[stack.np].e = ein + RM;
     }
     else {
         /* Photon */
-        stack.e[stack.np] = ein;
+        stack.p[stack.np].e = ein;
     }
     
     /* Accumulate sampled kinetic energy for fraction of deposited energy
@@ -968,40 +968,40 @@ void initHistory() {
      defined by the collimator */
     double rxyz = 0.0;
     if (source.xsize == 0.0 || source.ysize == 0.0) {
-        stack.x[stack.np] = source.xinl;
-        stack.y[stack.np] = source.yinl;
+        stack.p[stack.np].x = source.xinl;
+        stack.p[stack.np].y = source.yinl;
         
-        rxyz = sqrt(pow(source.ssd, 2.0) + pow(stack.x[stack.np], 2.0) +
-                    pow(stack.y[stack.np], 2.0));
+        rxyz = sqrt(pow(source.ssd, 2.0) + pow(stack.p[stack.np].x, 2.0) +
+                    pow(stack.p[stack.np].y, 2.0));
         
         /* Get direction along z-axis */
-        stack.w[stack.np] = source.ssd/rxyz;
+        stack.p[stack.np].w = source.ssd/rxyz;
         
     } else {
         double fw;
         double rnno3;
         do { /* rejection sampling of the initial position */
             rnno3 = setRandom();
-            stack.x[stack.np] = rnno3*source.xsize + source.xinl;
+            stack.p[stack.np].x = rnno3*source.xsize + source.xinl;
             rnno3 = setRandom();
-            stack.y[stack.np] = rnno3*source.ysize + source.yinl;
+            stack.p[stack.np].y = rnno3*source.ysize + source.yinl;
             rnno3 = setRandom();
             rxyz = sqrt(source.ssd*source.ssd + 
-				stack.x[stack.np]*stack.x[stack.np] +
-				stack.y[stack.np]*stack.y[stack.np]);
+				stack.p[stack.np].x*stack.p[stack.np].x +
+				stack.p[stack.np].y*stack.p[stack.np].y);
             
             /* Get direction along z-axis */
-            stack.w[stack.np] = source.ssd/rxyz;
-            fw = stack.w[stack.np]*stack.w[stack.np]*stack.w[stack.np];
+            stack.p[stack.np].w = source.ssd/rxyz;
+            fw = stack.p[stack.np].w*stack.p[stack.np].w*stack.p[stack.np].w;
         } while(rnno3 >= fw);
     }
     /* Set position of the particle in front of the geometry */
-    stack.z[stack.np] = geometry.zbounds[0];
+    stack.p[stack.np].z = geometry.zbounds[0];
     
     /* At this point the position has been found, calculate particle
      direction */
-    stack.u[stack.np] = stack.x[stack.np]/rxyz;
-    stack.v[stack.np] = stack.y[stack.np]/rxyz;
+    stack.p[stack.np].u = stack.p[stack.np].x/rxyz;
+    stack.p[stack.np].v = stack.p[stack.np].y/rxyz;
     
     /* Determine region index of source particle */
     int ix, iy;
@@ -1009,7 +1009,7 @@ void initHistory() {
         ix = source.ixinl;
     } else {
         ix = source.ixinl - 1;
-        while ((geometry.xbounds[ix+1] < stack.x[stack.np]) && ix < geometry.isize-1) {
+        while ((geometry.xbounds[ix+1] < stack.p[stack.np].x) && ix < geometry.isize-1) {
             ix++;
         }
     }
@@ -1017,15 +1017,15 @@ void initHistory() {
         iy = source.iyinl;
     } else {
         iy = source.iyinl - 1;
-        while ((geometry.ybounds[iy+1] < stack.y[stack.np]) && iy < geometry.jsize-1) {
+        while ((geometry.ybounds[iy+1] < stack.p[stack.np].y) && iy < geometry.jsize-1) {
             iy++;
         }
     }
-    stack.ir[stack.np] = 1 + ix + iy*geometry.isize;
+    stack.p[stack.np].ir = 1 + ix + iy*geometry.isize;
     
     /* Set statistical weight and distance to closest boundary*/
-    stack.wt[stack.np] = 1.0;
-    stack.dnear[stack.np] = 0.0;
+    stack.p[stack.np].wt = 1.0;
+    stack.p[stack.np].dnear = 0.0;
         
     return;
 }

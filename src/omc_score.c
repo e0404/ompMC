@@ -139,8 +139,8 @@ static inline void markDirty(int irl) {
 void ausgab(double edep) {
 
     int np = stack.np;
-    int irl = stack.ir[np];
-    double endep = stack.wt[np]*edep;
+    int irl = stack.p[np].ir;
+    double endep = stack.p[np].wt*edep;
 
     #pragma omp atomic
     score.endep[irl] += endep;

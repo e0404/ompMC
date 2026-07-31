@@ -193,16 +193,16 @@ static double meanRayleighCosine(int imed, double eig, int nsample) {
 
     for (int i = 0; i < nsample; i++) {
         stack.np = 0;
-        stack.iq[0] = 0;
-        stack.e[0] = eig;
-        stack.wt[0] = 1.0;
-        stack.ir[0] = 1;
-        stack.x[0] = 0.0; stack.y[0] = 0.0; stack.z[0] = 0.0;
-        stack.u[0] = 0.0; stack.v[0] = 0.0; stack.w[0] = 1.0;
+        stack.p[0].iq = 0;
+        stack.p[0].e = eig;
+        stack.p[0].wt = 1.0;
+        stack.p[0].ir = 1;
+        stack.p[0].x = 0.0; stack.p[0].y = 0.0; stack.p[0].z = 0.0;
+        stack.p[0].u = 0.0; stack.p[0].v = 0.0; stack.p[0].w = 1.0;
 
         rayleigh(imed, eig, gle, lgle);
 
-        sum += stack.w[0];
+        sum += stack.p[0].w;
     }
 
     return sum/nsample;
