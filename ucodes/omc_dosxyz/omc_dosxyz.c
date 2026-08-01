@@ -1258,23 +1258,24 @@ int main (int argc, char **argv) {
     for (int ibatch=0; ibatch<nbatch; ibatch++) {
         if (ibatch == 0) {
             /* Print header for information during simulation */
-            printf("%-10s\t%-15s\t%-10s\n", "Batch #", "Elapsed time",
-                   "RNG state");
-            printf("%-10d\t%-15.2f\t%-5d%-5d\n", ibatch,
-                   (omc_get_time() - tbegin), rng.ixx, rng.jxx);
+            printf("%-10s\t%-15s\t%-15s\n", "Batch #", "Elapsed time",
+                   "First history");
         }
-        else {
-            /* Print state of current batch */
-            printf("%-10d\t%-15.2f\t%-5d%-5d\n", ibatch,
-                   (omc_get_time() - tbegin), rng.ixx, rng.jxx);
-            
-        }
+        printf("%-10d\t%-15.2f\t%-15llu\n", ibatch,
+               (omc_get_time() - tbegin),
+               (unsigned long long)ibatch*(unsigned long long)nperbatch);
+
         int ihist;
         #pragma omp parallel for schedule(dynamic)
         for (ihist=0; ihist<nperbatch; ihist++) {
+            /* Point the RNG at this history's stream; the index is unique
+             across batches, so results do not depend on the scheduling */
+            setRandomHistory((uint64_t)ibatch*(uint64_t)nperbatch
+                             + (uint64_t)ihist);
+
             /* Initialize particle history */
             initHistory();
-            
+
             /* Start electromagnetic shower simulation */
             shower();
         }

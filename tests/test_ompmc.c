@@ -191,7 +191,7 @@ static void test_heap_sort_orders_values_and_indices(void) {
 }
 
 /*******************************************************************************
-* RANMAR random number generator (omc_random.c)
+* Philox4x32-10 random number generator (omc_random.c)
 *******************************************************************************/
 
 /* initRandom() reads its seeds through getInputValue(), so stage them the way
@@ -204,16 +204,46 @@ static void seedRandom(const char *seeds) {
     strcpy(input_items[0].value, seeds);
     input_idx = 1;
     initRandom();
+    setRandomHistory(0);
+}
+
+/* Published Philox4x32-10 test vectors from the Random123 known-answer
+ tests, so the round function is checked against the reference and not just
+ against itself */
+static void test_philox_matches_reference_vectors(void) {
+
+    uint32_t out[4];
+
+    const uint32_t zeros[4] = {0u, 0u, 0u, 0u};
+    const uint32_t zero_key[2] = {0u, 0u};
+    philox4x32(zeros, zero_key, out);
+    CHECK(out[0] == 0x6627e8d5u && out[1] == 0xe169c58du &&
+          out[2] == 0xbc57ac4cu && out[3] == 0x9b00dbd8u);
+
+    const uint32_t ones[4] = {0xffffffffu, 0xffffffffu,
+                              0xffffffffu, 0xffffffffu};
+    const uint32_t ones_key[2] = {0xffffffffu, 0xffffffffu};
+    philox4x32(ones, ones_key, out);
+    CHECK(out[0] == 0x408f276du && out[1] == 0x41c83b0eu &&
+          out[2] == 0xa20bc7c6u && out[3] == 0x6d5451fdu);
+
+    const uint32_t pi_ctr[4] = {0x243f6a88u, 0x85a308d3u,
+                                0x13198a2eu, 0x03707344u};
+    const uint32_t pi_key[2] = {0xa4093822u, 0x299f31d0u};
+    philox4x32(pi_ctr, pi_key, out);
+    CHECK(out[0] == 0xd16cfe09u && out[1] == 0x94fdccebu &&
+          out[2] == 0x5001e420u && out[3] == 0x24126ea1u);
 }
 
 static void test_random_stays_in_unit_interval(void) {
 
     seedRandom("97 33");
 
-    /* Well past the NRANDOM refill boundary so the array wrap is covered */
-    for (int i = 0; i < 20*NRANDOM + 7; i++) {
+    /* Well past the four-value refill boundary so the wrap is covered; the
+     endpoints are excluded by construction */
+    for (int i = 0; i < 4096 + 3; i++) {
         double r = setRandom();
-        CHECK(r >= 0.0 && r < 1.0);
+        CHECK(r > 0.0 && r < 1.0);
     }
 
     cleanRandom();
@@ -221,7 +251,7 @@ static void test_random_stays_in_unit_interval(void) {
 
 static void test_random_is_reproducible_for_a_seed(void) {
 
-    enum { N = 3*NRANDOM };
+    enum { N = 512 };
     double first[N];
 
     seedRandom("97 33");
@@ -260,18 +290,45 @@ static void test_random_differs_between_seeds(void) {
     CHECK(!identical);
 }
 
-static void test_random_is_a_multiple_of_two_to_the_minus_24(void) {
+static void test_random_history_streams_are_independent(void) {
+
+    enum { N = 37 };    /* not a multiple of the block size on purpose */
+    double first[N];
+    int identical = 1;
 
     seedRandom("97 33");
 
-    /* The generator works on 24 bit integers and only scales at the end, so
-     every value must land exactly on the 2^-24 grid */
-    for (int i = 0; i < 4*NRANDOM; i++) {
-        double r = setRandom();
-        double scaled = r/TWOM24;
-        CHECK_CLOSE(scaled, floor(scaled + 0.5), 0.0);
-        CHECK(scaled < 16777216.0);
+    setRandomHistory(42);
+    for (int i = 0; i < N; i++) {
+        first[i] = setRandom();
     }
+
+    /* A different history must give a different stream */
+    setRandomHistory(43);
+    for (int i = 0; i < N; i++) {
+        if (setRandom() != first[i]) {
+            identical = 0;
+        }
+    }
+    CHECK(!identical);
+
+    /* Returning to a history replays its stream exactly, no matter what ran
+     in between -- this is what makes results scheduling-independent */
+    setRandomHistory(42);
+    for (int i = 0; i < N; i++) {
+        CHECK_CLOSE(setRandom(), first[i], 0.0);
+    }
+
+    /* Histories whose indices only differ in the high 32 bits must also be
+     distinct streams */
+    setRandomHistory(42u + (1ULL << 32));
+    identical = 1;
+    for (int i = 0; i < N; i++) {
+        if (setRandom() != first[i]) {
+            identical = 0;
+        }
+    }
+    CHECK(!identical);
 
     cleanRandom();
 }
@@ -598,10 +655,11 @@ int main(void) {
 
     RUN(test_heap_sort_orders_values_and_indices);
 
+    RUN(test_philox_matches_reference_vectors);
     RUN(test_random_stays_in_unit_interval);
     RUN(test_random_is_reproducible_for_a_seed);
     RUN(test_random_differs_between_seeds);
-    RUN(test_random_is_a_multiple_of_two_to_the_minus_24);
+    RUN(test_random_history_streams_are_independent);
     RUN(test_random_mean_is_plausible);
 
     RUN(test_azimuthal_angle_is_on_the_unit_circle);

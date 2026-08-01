@@ -1630,9 +1630,16 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
 
             #pragma omp parallel for schedule(guided)
             for (ihist=0; ihist<nperbatch; ihist++) {
+                /* Point the RNG at this history's stream; the index is
+                 unique across batches and beamlets, so results do not
+                 depend on the scheduling */
+                setRandomHistory(((uint64_t)ibeamlet*(uint64_t)nbatch
+                                  + (uint64_t)ibatch)*(uint64_t)nperbatch
+                                 + (uint64_t)ihist);
+
                 /* Initialize particle history */
                 initHistory(ibeamlet);
-                
+
                 /* Start electromagnetic shower simulation */
                 shower();
             }

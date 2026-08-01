@@ -1,7 +1,7 @@
 /******************************************************************************
  ompMC - An OpenMP parallel implementation for Monte Carlo particle transport
  simulations
- 
+
  Copyright (C) 2020 Edgardo Doerner (edoerner@fis.puc.cl)
 
 
@@ -20,15 +20,10 @@
 *****************************************************************************/
 
 /*******************************************************************************
-* Implementation, based on the EGSnrc one, of the RANMAR random number 
-* generator (RNG), proposed by Marsaglia and Zaman. 
-* 
-* Following the EGSnrc implementation, it uses integers to store the state of 
-* the RNG and to generate the next number in the sequence. Only at the end the 
-* random numbers are converted to reals, due to performance reasons. 
-* 
-* Before using the RNG, it is needed to initialize the RNG by a call to 
-* initRandom(). 
+* Counter-based random number generator built on Philox4x32-10. See
+* omc_random.h for the stream layout. The implementation follows the
+* reference in Salmon et al., SC'11 (the Random123 library) and reproduces
+* its published test vectors, which the unit tests check.
 *******************************************************************************/
 
 #include "omc_random.h"
@@ -48,7 +43,7 @@
 
 /* Common functions and definitions */
 #if defined(_MSC_VER)
-	/* use __declspec(thread) instead of threadprivate to avoid 
+	/* use __declspec(thread) instead of threadprivate to avoid
 	error C3053. More information in:
 	https://stackoverflow.com/questions/12560243/using-threadprivate-directive-in-visual-studio */
 	__declspec(thread) struct Random rng;
@@ -57,136 +52,111 @@
 	struct Random rng;
 #endif
 
-/* Initialization function for the RANMAR random number generator (RNG) 
-proposed by Marsaglia and Zaman and adapted from the EGSnrc version to be 
-used in ompMC. */
+/* Philox4x32 round multipliers and key schedule constants */
+#define PHILOX_M0 0xD2511F53u
+#define PHILOX_M1 0xCD9E8D57u
+#define PHILOX_W0 0x9E3779B9u
+#define PHILOX_W1 0xBB67AE85u
+
+void philox4x32(const uint32_t ctr[4], const uint32_t key[2],
+                uint32_t out[4]) {
+
+    uint32_t c0 = ctr[0], c1 = ctr[1], c2 = ctr[2], c3 = ctr[3];
+    uint32_t k0 = key[0], k1 = key[1];
+
+    for (int round = 0; round < 10; round++) {
+        uint64_t p0 = (uint64_t)PHILOX_M0*c0;
+        uint64_t p1 = (uint64_t)PHILOX_M1*c2;
+
+        c0 = (uint32_t)(p1 >> 32) ^ c1 ^ k0;
+        c1 = (uint32_t)p1;
+        c2 = (uint32_t)(p0 >> 32) ^ c3 ^ k1;
+        c3 = (uint32_t)p0;
+
+        k0 += PHILOX_W0;
+        k1 += PHILOX_W1;
+    }
+
+    out[0] = c0;
+    out[1] = c1;
+    out[2] = c2;
+    out[3] = c3;
+
+    return;
+}
+
+/* Read the seeds and initialize the thread-local generator state. Unlike the
+ RANMAR version there is no thread-dependent seeding: streams are separated
+ by history index, so every thread carries the same key. */
 void initRandom() {
 
     int ixx, jxx;
-    
+
     /* Get initial seeds from input */
     char buffer[BUFF_SIZE];
     if (getInputValue(buffer, "rng seeds") != 1) {
         printf("Can not find 'rng seeds' key on input file.\n");
         exit(EXIT_FAILURE);
     }
-    sscanf(buffer, "%d %d", &ixx, &jxx);
-
-    /* Modify jxx seed depending on OpenMP thread id */
-    #ifdef _OPENMP
-        jxx = jxx + omp_get_thread_num();
-    #endif
-    
-    if (ixx <= 0 || ixx > 31328) {
-        printf("Warning!, setting Marsaglia default for ixx\n");
-        ixx = 1802; /* sets Marsaglia default */
-    }
-    if (jxx <= 0 || jxx > 31328) {
-        printf("Warning!, setting Marsaglia default for jxx\n");
-        jxx = 9373; /* sets Marsaglia default */
+    if (sscanf(buffer, "%d %d", &ixx, &jxx) != 2) {
+        printf("Could not parse two integers from 'rng seeds'.\n");
+        exit(EXIT_FAILURE);
     }
 
-    /* Save seeds to rng state struct and print information to console */
-    rng.ixx = ixx;
-    rng.jxx = jxx;
+    rng.key[0] = (uint32_t)ixx;
+    rng.key[1] = (uint32_t)jxx;
 
-    printf("RNG seeds : ixx = %d, jxx = %d\n", rng.ixx, rng.jxx);
-    
-    int i = (rng.ixx/177 % 177) + 2;
-    int j = (rng.ixx % 177) + 2;
-    int k = (rng.jxx/169 % 178) + 1;
-    int l = (rng.jxx % 169);
-    
-    int s, t, m;
-    rng.urndm = malloc(97*sizeof(int));
-    for (int ii = 0; ii<97; ii++) {
-        s = 0;
-        t = 8388608;    /* t is 2^23, half of the maximum allowed. Note that
-                         only 24 bits are used */
-        for (int jj=0; jj<24; jj++) {
-            m = ((i*j % 179)*k) % 179;
-            i = j;
-            j = k;
-            k = m;
-            l = (53*l + 1) % 169;
-            
-            if (l*m % 64 >= 32) {
-                s += t;
-            }
-            t /=2;
-        }
-        rng.urndm[ii] = s;
-    }
-    
-    rng.crndm = 362436;
-    rng.cdrndm = 7654321;
-    rng.cmrndm = 16777213;
-    
-    rng.ixx = 97;
-    rng.jxx = 33;
-    
-    /* Allocate memory for random array and set seed to start calculation of
-     random numbers */
-    rng.rng_array = malloc(NRANDOM*sizeof(int));
-    rng.rng_seed = NRANDOM;
-    
+    /* Park the generator on the all-ones history index, which no real
+     history can own, so that any draw made before the first
+     setRandomHistory() call still comes from a well defined stream */
+    rng.ctr[0] = 0;
+    rng.ctr[1] = 0;
+    rng.ctr[2] = 0xFFFFFFFFu;
+    rng.ctr[3] = 0xFFFFFFFFu;
+    rng.buf_pos = 4;
+
+#ifdef _OPENMP
+    if (omp_get_thread_num() == 0)
+#endif
+    printf("RNG : Philox4x32-10, key = %d %d\n", ixx, jxx);
+
     return;
 }
 
-/* Generation function for the RANMAR random number generator (RNG) proposed 
-by Marsaglia and Zaman. It generates NRANDOM floating point numbers in 
-each call */
-void getRandom() {
-    
-    int iopt;
-    
-    for (int i=0; i<NRANDOM; i++) {
-        iopt = rng.urndm[rng.ixx - 1] - rng.urndm[rng.jxx - 1]; /* C index */
-        if (iopt < 0) {
-            iopt += 16777216;
-        }
-        
-        rng.urndm[rng.ixx - 1] = iopt;
+void setRandomHistory(uint64_t ihist) {
 
-        rng.ixx -= 1;
-        rng.jxx -= 1;
-        if (rng.ixx == 0) {
-            rng.ixx = 97;
-        }
-        else if (rng.jxx == 0) {
-            rng.jxx = 97;
-        }
-        
-        rng.crndm -= rng.cdrndm;
-        if (rng.crndm < 0) {
-            rng.crndm += rng.cmrndm;
-        }
-        
-        iopt -= rng.crndm;
-        if (iopt < 0) {
-            iopt += 16777216;
-        }
-        rng.rng_array[i] = iopt;
-    }
-    
-    rng.rng_seed = 0; /* index in C starts at 0 */
-    
+    rng.ctr[0] = 0;
+    rng.ctr[1] = 0;
+    rng.ctr[2] = (uint32_t)ihist;
+    rng.ctr[3] = (uint32_t)(ihist >> 32);
+    rng.buf_pos = 4;
+
     return;
 }
 
-/* Get a single floating random number in [0,1) using the RANMAR RNG */
+/* Get a single floating random number in (0,1) using the Philox RNG */
 double setRandom() {
-    
-    double rnno = 0.0;
-    
-    if (rng.rng_seed >= NRANDOM) {
-        getRandom();
+
+    if (rng.buf_pos > 3) {
+        uint32_t out[4];
+        philox4x32(rng.ctr, rng.key, out);
+
+        /* 2^64 draws per history; the carry never reaches the history words */
+        if (++rng.ctr[0] == 0) {
+            ++rng.ctr[1];
+        }
+
+        /* The half offset centers each value in its 2^-32 cell, keeping the
+         mean at 1/2 and excluding the exact endpoints, so callers may take
+         log(r) or log(1-r) without a zero guard */
+        rng.buf[0] = ((double)out[0] + 0.5)*TWOM32;
+        rng.buf[1] = ((double)out[1] + 0.5)*TWOM32;
+        rng.buf[2] = ((double)out[2] + 0.5)*TWOM32;
+        rng.buf[3] = ((double)out[3] + 0.5)*TWOM32;
+        rng.buf_pos = 0;
     }
-    
-    rnno = rng.rng_array[rng.rng_seed]*TWOM24;
-    rng.rng_seed += 1;
-    
-    return rnno;
+
+    return rng.buf[rng.buf_pos++];
 }
 
 double erfinv_approx(double x) {
@@ -204,7 +174,7 @@ double erfinv_approx(double x) {
 
 double setStandardNormalRandom(const double mu, const double sigma) {
     double rnno = setRandom();
-    rnno = sqrt(2.0) * erfinv_approx(2.0*rnno - 1.0); 
+    rnno = sqrt(2.0) * erfinv_approx(2.0*rnno - 1.0);
     rnno = mu + sigma * rnno;
     return rnno;
 }
@@ -222,10 +192,9 @@ void boxMuller(double rndnormal[2])
 }
 
 void cleanRandom() {
-    
-    free(rng.urndm);
-    free(rng.rng_array);
-    
+
+    /* The counter-based generator holds no allocations; kept so user codes
+     need not special-case the teardown */
     return;
 }
 
