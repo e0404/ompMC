@@ -61,6 +61,17 @@ machine running MATLAB already has.
 `libgcc_s_seh-1.dll` and `libwinpthread-1.dll` from your MinGW installation to
 run outside of the build environment.
 
+Performance note: MinGW **GCC** binaries run about twice as slow as the other
+Windows toolchains on this code — GCC emulates thread-local storage on Windows
+with a function call per access, and the RNG and particle stack are thread
+local. [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (clang for the
+same MinGW target, non-proprietary) uses native TLS and comes within ~20% of
+MSVC. Unzip a release, then configure with
+`-DCMAKE_C_COMPILER=<llvm-mingw>/bin/x86_64-w64-mingw32-clang.exe` and
+`-DOMPMC_WITH_OPENLIBM=ON`; the binaries need `libomp.dll` from the toolchain's
+`bin/` next to them. Either way, build with `OMPMC_WITH_OPENLIBM` — MinGW's
+bundled math routines are several times slower than the UCRT ones.
+
 **macOS.** Apple's clang needs a separate OpenMP runtime:
 
 ```sh

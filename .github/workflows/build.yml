@@ -45,6 +45,16 @@ jobs:
             # MinGW's bundled software log/exp are several times slower than
             # the UCRT ones MSVC uses; openlibm recovers most of that.
             openlibm: true
+          # llvm-mingw is the fastest non-proprietary Windows toolchain for
+          # this code: clang uses native TLS where MinGW GCC emulates it with
+          # a function call per thread-local access (and the RNG state is
+          # thread local), which measured about 2x on the smoke case.
+          - name: windows-x64-llvm-mingw
+            os: windows-2022
+            generator: MinGW Makefiles
+            llvm_mingw: '20260616'
+            openlibm: true
+            matlab: true
           - name: linux-x64-gcc
             os: ubuntu-22.04
             generator: Unix Makefiles
@@ -103,6 +113,23 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "MINGW_BIN=$bin"
           & (Join-Path $bin 'gcc.exe') --version
 
+      - name: Set up llvm-mingw
+        if: matrix.llvm_mingw
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ matrix.llvm_mingw }}"
+          curl -fsSL -o llvm-mingw.zip \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/$version/llvm-mingw-$version-ucrt-x86_64.zip"
+          unzip -q llvm-mingw.zip -d "$RUNNER_TEMP"
+          rm llvm-mingw.zip
+          bin="$RUNNER_TEMP/llvm-mingw-$version-ucrt-x86_64/bin"
+          # The toolchain ships its own mingw32-make, which the prepended PATH
+          # entry makes the one the MinGW Makefiles generator picks up.
+          cygpath -w "$bin" >> "$GITHUB_PATH"
+          echo "LLVM_MINGW_BIN=$(cygpath -m "$bin")" >> "$GITHUB_ENV"
+          "$bin/x86_64-w64-mingw32-clang.exe" --version
+
       - name: Set up MATLAB
         if: matrix.matlab
         uses: matlab-actions/setup-matlab@v3
@@ -140,6 +167,11 @@ jobs:
           args+=(-DCMAKE_BUILD_TYPE=Release)
           args+=(-DOMPMC_BUILD_MATRAD_MEX=${{ matrix.matlab && 'ON' || 'OFF' }})
           args+=(-DOMPMC_WITH_OPENLIBM=${{ matrix.openlibm && 'ON' || 'OFF' }})
+          # The MinGW Makefiles generator would pick up whatever gcc is on the
+          # image; point it at the llvm-mingw clang explicitly.
+          if [ -n "${LLVM_MINGW_BIN:-}" ]; then
+            args+=("-DCMAKE_C_COMPILER=$LLVM_MINGW_BIN/x86_64-w64-mingw32-clang.exe")
+          fi
           if [ -n "${MATLAB_ROOT:-}" ]; then
             args+=("-DMatlab_ROOT_DIR=$MATLAB_ROOT")
           fi
@@ -192,6 +224,10 @@ jobs:
             for dll in libgomp-1.dll libgcc_s_seh-1.dll libwinpthread-1.dll; do
               cp "$(cygpath -u "$MINGW_BIN")/$dll" artifacts/ 2>/dev/null || true
             done
+          fi
+          if [ -n "${LLVM_MINGW_BIN:-}" ]; then
+            # The only non-system dependency of the llvm-mingw binaries.
+            cp "$(cygpath -u "$LLVM_MINGW_BIN")/libomp.dll" artifacts/
           fi
           ls -l artifacts
 
