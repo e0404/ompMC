@@ -910,16 +910,21 @@ void accumulateResults(int iout, int nhist, int nbatch)
         /* First calculate mean deposited energy across batches and its
          uncertainty */
         endep /= (double) nbatch;
-        endep2 /= (double) (nbatch - 1);
+        endep2 /= (double) nbatch;
 
         double unc_endep;
 
-        /* Batch approach uncertainty calculation */
+        /* Batch approach uncertainty calculation: sample variance of the
+         batch means over (nbatch - 1) gives the variance of the mean. The
+         divisors here must not be swapped -- dividing endep2 by (nbatch - 1)
+         instead leaves a spurious mean^2/(nbatch*(nbatch - 1)) term that puts
+         a floor of ~10% relative uncertainty under every voxel regardless of
+         the statistics. */
         if (endep != 0.0) {
-            unc_endep = endep2 - endep * endep;
+            unc_endep = endep2 - endep*endep;
 
             //Variance of the mean
-            unc_endep /= nbatch;
+            unc_endep /= (double) (nbatch - 1);
         }
         else {
             endep = 0.0;
@@ -1309,26 +1314,36 @@ void initHistory(int ibeamlet) {
     stack.p[stack.np].v = -v;
     stack.p[stack.np].w = -w;
 
-    /* For numerical stability, make sure that points are really inside the phantom */
+    /* For numerical stability, make sure that points are really inside the
+     phantom. nextafter() moves one representable step towards the opposite
+     face; the 2.0*DBL_MIN offset used before is denormal-small and was
+     absorbed entirely when added to any normal boundary coordinate, leaving
+     the particle exactly on the boundary. */
     if(stack.p[stack.np].x < geometry.xbounds[0]) {
-        stack.p[stack.np].x = geometry.xbounds[0] + 2.0*DBL_MIN;
+        stack.p[stack.np].x = nextafter(geometry.xbounds[0],
+                                        geometry.xbounds[geometry.isize]);
     }
     if(stack.p[stack.np].x > geometry.xbounds[geometry.isize]) {
-        stack.p[stack.np].x = geometry.xbounds[geometry.isize] - 2.0*DBL_MIN;
+        stack.p[stack.np].x = nextafter(geometry.xbounds[geometry.isize],
+                                        geometry.xbounds[0]);
     }
 
     if(stack.p[stack.np].y < geometry.ybounds[0]) {
-        stack.p[stack.np].y = geometry.ybounds[0] + 2.0*DBL_MIN;
+        stack.p[stack.np].y = nextafter(geometry.ybounds[0],
+                                        geometry.ybounds[geometry.jsize]);
     }
     if(stack.p[stack.np].y > geometry.ybounds[geometry.jsize]) {
-        stack.p[stack.np].y = geometry.ybounds[geometry.jsize] - 2.0*DBL_MIN;
+        stack.p[stack.np].y = nextafter(geometry.ybounds[geometry.jsize],
+                                        geometry.ybounds[0]);
     }
 
     if(stack.p[stack.np].z < geometry.zbounds[0]) {
-        stack.p[stack.np].z = geometry.ybounds[0] + 2.0*DBL_MIN;
+        stack.p[stack.np].z = nextafter(geometry.zbounds[0],
+                                        geometry.zbounds[geometry.ksize]);
     }
     if(stack.p[stack.np].z > geometry.zbounds[geometry.ksize]) {
-      stack.p[stack.np].z = geometry.zbounds[geometry.ksize] - 2.0*DBL_MIN;
+        stack.p[stack.np].z = nextafter(geometry.zbounds[geometry.ksize],
+                                        geometry.zbounds[0]);
     }
     
     /* Determine region index of source particle */

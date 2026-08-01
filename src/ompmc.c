@@ -1655,8 +1655,9 @@ void pair(int imed) {
                                                  eseder, tteig);
         
         /* Estimate maximum of the rejection function for later use by the
-         rejection technique */
-        double rejtop = 1.0*fmax(rejmin, rejmid);
+         rejection technique. The 1.02 covers the estimate being taken at only
+         two probe points, as in EGSnrc */
+        double rejtop = 1.02*fmax(rejmin, rejmid);
         
         double theta;
         double rejtst;
@@ -1675,9 +1676,12 @@ void pair(int imed) {
             /* Convert the successful candidate xitst to an angle */
             theta = sqrt(1.0/xitst - 1.0)/ttese;
             
-            /* Loop until rejection technique accepts xitst */
+            /* Loop until rejection technique accepts xitst: a candidate is
+             kept only when it passes the rejection test AND maps to a
+             physical angle. EGSnrc exits on (rtest <= rejfactor) & (theta <
+             pi); the negation of that conjunction is an OR */
             rejfactor = rejtst/rejtop;
-        } while((rtest > rejfactor) && (theta >= M_PI));
+        } while((rtest > rejfactor) || (theta >= M_PI));
         
         sinthe = sin(theta);
         costhe = cos(theta);
@@ -2822,7 +2826,7 @@ void initSpinData(int nmed) {
         electron_data.q1ce_ms1[MXEKE*imed + neke - 1] =
             electron_data.q1ce_ms1[MXEKE*imed + neke - 2];
         electron_data.q1ce_ms0[MXEKE*imed + neke - 1] =
-            electron_data.q1ce_ms1[MXEKE*imed + neke - 2];
+            electron_data.q1ce_ms0[MXEKE*imed + neke - 2];
         
         /* Now positrons */
         for (int i=0; i<=MXE_SPIN; i++){
