@@ -27,6 +27,7 @@ whether OpenMP and MATLAB were picked up.
 | `OMPMC_BUILD_DOSXYZ` | `ON` | Build the `omc_dosxyz` command line user code |
 | `OMPMC_BUILD_MATRAD_MEX` | `AUTO` | Build the MEX file. `AUTO` skips it when no MATLAB is found, `ON` makes a missing MATLAB a hard error, `OFF` never builds it |
 | `OMPMC_WITH_OPENMP` | `ON` | Multi threaded execution. Falls back to a serial build with a warning if no OpenMP runtime is available |
+| `OMPMC_WITH_OPENLIBM` | `OFF` | Fetch [openlibm](https://github.com/JuliaMath/openlibm) (MIT licensed) at configure time and resolve the `log`/`exp`/`sin`/`cos` calls from it, statically. Recommended for MinGW GCC, whose bundled software math routines are several times slower than the UCRT ones MSVC uses — the transport samples `-log(rng)` for every photon flight segment. Measured ~15% faster overall on MinGW; pointless with MSVC or glibc. Needs CMake 3.25+ and network access at configure time |
 | `OMPMC_NATIVE_TUNING` | `OFF` | Add `-mtune=native`. Do not use for binaries you intend to distribute |
 
 ## Selecting the MATLAB installation

@@ -41,6 +41,10 @@ option(OMPMC_NATIVE_TUNING
 option(OMPMC_LTO
     "Enable link time optimization on optimized builds" ON)
 option(OMPMC_BUILD_TESTS "Build the unit tests and register them with CTest" ON)
+option(OMPMC_WITH_OPENLIBM
+    "Fetch openlibm and resolve the libm calls from it instead of the \
+toolchain's math library. Worthwhile with MinGW GCC, whose bundled software \
+log/exp are several times slower; pointless with MSVC or glibc." OFF)
 
 set(OMPMC_BUILD_MATRAD_MEX "AUTO" CACHE STRING
     "Build the omc_matrad MEX file: ON (fail if MATLAB is missing), OFF, or AUTO")
@@ -228,6 +232,43 @@ function(ompmc_enable_lto target)
 endfunction()
 
 ompmc_enable_lto(ompmc_core)
+
+################################################################################
+# openlibm
+################################################################################
+
+# MinGW GCC does not use the fast UCRT math routines: log(), exp() and friends
+# come from its own bundled software implementations, measured about 5x slower
+# here -- and the transport samples -log(rng) for every photon flight segment.
+# Linking openlibm in front of the toolchain's math library recovers most of
+# that. The archive is linked PUBLIC on the core so that every user code
+# resolves the symbols the same way, before the implicit toolchain libraries.
+if(OMPMC_WITH_OPENLIBM)
+    # openlibm's own CMake build asks for this
+    if(CMAKE_VERSION VERSION_LESS 3.25)
+        message(FATAL_ERROR
+            "OMPMC_WITH_OPENLIBM needs CMake 3.25 or newer to configure "
+            "openlibm; found ${CMAKE_VERSION}. Update CMake or disable the "
+            "option.")
+    endif()
+
+    include(FetchContent)
+    FetchContent_Declare(openlibm
+        GIT_REPOSITORY https://github.com/JuliaMath/openlibm.git
+        GIT_TAG        v0.8.7
+        GIT_SHALLOW    TRUE)
+
+    # Build openlibm as a static archive: the binaries and the MEX file must
+    # not depend on shipping an extra DLL, and a static archive is what lets
+    # the linker satisfy log/exp ahead of the toolchain's own math library.
+    set(_ompmc_saved_shared ${BUILD_SHARED_LIBS})
+    set(BUILD_SHARED_LIBS OFF)
+    FetchContent_MakeAvailable(openlibm)
+    set(BUILD_SHARED_LIBS ${_ompmc_saved_shared})
+
+    target_link_libraries(ompmc_core PUBLIC openlibm)
+    message(STATUS "Using openlibm for the math library calls")
+endif()
 
 ################################################################################
 # omc_dosxyz - command line user code
@@ -452,6 +493,7 @@ else()
 endif()
 message(STATUS "  OpenMP           : ${OMPMC_OPENMP_ENABLED}")
 message(STATUS "  LTO              : ${OMPMC_LTO_ENABLED}")
+message(STATUS "  openlibm         : ${OMPMC_WITH_OPENLIBM}")
 message(STATUS "  Tests            : ${OMPMC_BUILD_TESTS}")
 message(STATUS "  omc_dosxyz       : ${OMPMC_BUILD_DOSXYZ}")
 message(STATUS "  omc_matrad (mex) : ${OMPMC_MEX_ENABLED}")

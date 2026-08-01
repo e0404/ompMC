@@ -42,6 +42,9 @@ jobs:
             generator: MinGW Makefiles
             mingw: true
             matlab: true
+            # MinGW's bundled software log/exp are several times slower than
+            # the UCRT ones MSVC uses; openlibm recovers most of that.
+            openlibm: true
           - name: linux-x64-gcc
             os: ubuntu-22.04
             generator: Unix Makefiles
@@ -136,6 +139,7 @@ jobs:
           fi
           args+=(-DCMAKE_BUILD_TYPE=Release)
           args+=(-DOMPMC_BUILD_MATRAD_MEX=${{ matrix.matlab && 'ON' || 'OFF' }})
+          args+=(-DOMPMC_WITH_OPENLIBM=${{ matrix.openlibm && 'ON' || 'OFF' }})
           if [ -n "${MATLAB_ROOT:-}" ]; then
             args+=("-DMatlab_ROOT_DIR=$MATLAB_ROOT")
           fi
