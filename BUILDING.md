@@ -88,10 +88,22 @@ absolute path, so libomp has to be present on the machine that runs them.
 
 MATLAB loads its own OpenMP runtime (`libiomp5`, plus `libmwompwrapper`) at
 startup, so a MEX file compiled with `-fopenmp` or `/openmp` puts a *second*
-OpenMP runtime into the process — `libgomp` for GCC/MinGW, `vcomp140` for MSVC,
-`libomp` for clang. Measured on Windows with MATLAB R2025b, the two runtimes
-coexist happily and parallel regions produce correct results with the full
-thread count.
+OpenMP runtime into the process — `libgomp` for GCC/MinGW, `vcomp140` for MSVC.
+Measured on Windows with MATLAB R2025b, those two coexist with MATLAB's
+runtime — they share no symbol names — and parallel regions produce correct
+results with the full thread count.
+
+**Clang on Windows is the exception, in a good way**: clang emits the same
+`__kmpc_*` calls that MATLAB's Intel runtime implements (LLVM's `libomp` is a
+fork of it), and MATLAB ships the import library `bin/win64/libiomp5md.lib`
+right next to the DLL. The build therefore links the MEX file against MATLAB's
+own runtime automatically when compiling with clang — one OpenMP runtime in
+the process, no `libomp.dll` to ship, no risk of Intel's duplicate-runtime
+abort ("OMP: Error #15"). One newer runtime entry point clang emits that
+MATLAB's runtime predates is provided as a documented no-op shim
+([omc_kmp_compat.c](ucodes/omc_matrad/omc_kmp_compat.c)). Verified against
+MATLAB R2025b. GCC cannot do the same: it emits `GOMP_*` calls and Intel's
+Windows runtime has no GOMP compatibility layer.
 
 What is *not* safe is unloading the MEX file afterwards. Once a parallel region
 has run, the OpenMP worker threads outlive the MEX file, and dropping the last
@@ -114,13 +126,10 @@ test_omc_matrad_mex
 ```
 
 Only structural properties of the result are asserted (shape, sparsity, finite
-non-negative dose, every beamlet scoring). ompMC seeds its RNG per thread, so
-the numbers depend on the thread count and are not comparable across machines.
-
-Do not try to remove the duplicate by linking the MEX file against MATLAB's own
-`libiomp5`: MATLAB routes OpenMP through `libmwompwrapper`, and a MEX file
-linked straight to `libiomp5` crashes inside `__kmp_launch_worker` on its first
-parallel region.
+non-negative dose, every beamlet scoring). The counter-based RNG makes results
+independent of the thread count, but the exact numbers still differ across
+platforms with the last-ulp rounding of the math library, so the test does not
+pin them.
 
 macOS needs its own arrangement, and it differs by architecture.
 

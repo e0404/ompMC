@@ -318,6 +318,12 @@ if(OMPMC_MEX_ENABLED)
         LINK_TO ompmc_core
         MODULE)
 
+    if(WIN32 AND NOT MSVC)
+        # See the comment in the .def file; without it the MEX file can lose
+        # its mexFunction export as soon as openlibm joins the link.
+        target_sources(omc_matrad PRIVATE ucodes/omc_matrad/omc_matrad.def)
+    endif()
+
     set(OMPMC_MEX_OPENMP_SOURCE "none")
 
     if(OMPMC_OPENMP_ENABLED)
@@ -390,6 +396,36 @@ if(OMPMC_MEX_ENABLED)
                 # though every ompMC translation unit is C.
                 target_link_libraries(omc_matrad "${OMPMC_LIBOMP_STATIC}" c++)
                 set(OMPMC_MEX_OPENMP_SOURCE "static ${OMPMC_LIBOMP_STATIC}")
+            endif()
+        elseif(WIN32 AND CMAKE_C_COMPILER_ID STREQUAL "Clang")
+            # MATLAB on Windows ships the Intel OpenMP runtime, libiomp5md.dll,
+            # with an import library right next to it -- and LLVM's libomp is a
+            # fork of that very runtime, so the __kmpc_* calls clang emits bind
+            # to it directly. Link the MEX file against MATLAB's copy instead
+            # of bringing libomp.dll into the process: two KMP-family runtimes
+            # in one process trip Intel's duplicate-runtime check ("OMP: Error
+            # #15") or, worse, interleave their thread pools.
+            #
+            # This stays clang-only. GCC emits GOMP_* calls and the Intel
+            # runtime on Windows exports no GOMP compatibility layer, so the
+            # GCC MEX file keeps its own libgomp; the two coexist because they
+            # share no symbols.
+            # Unlike on macOS the extension (mexw64) does not name the bin
+            # subdirectory (win64), and win64 is the only Windows platform
+            # MATLAB still supports.
+            set(_ompmc_iomp5 "${Matlab_ROOT_DIR}/bin/win64/libiomp5md.lib")
+
+            if(EXISTS "${_ompmc_iomp5}")
+                target_link_libraries(omc_matrad "${_ompmc_iomp5}")
+                # Newer clang emits one runtime call MATLAB's older Intel
+                # runtime does not export; see the shim for why a no-op is the
+                # faithful translation.
+                target_sources(omc_matrad PRIVATE
+                    ucodes/omc_matrad/omc_kmp_compat.c)
+                set(OMPMC_MEX_OPENMP_SOURCE "MATLAB's libiomp5md, bound at load time")
+            else()
+                target_link_libraries(omc_matrad ${OMPMC_OPENMP_RUNTIME})
+                set(OMPMC_MEX_OPENMP_SOURCE "linked shared runtime")
             endif()
         else()
             target_link_libraries(omc_matrad ${OMPMC_OPENMP_RUNTIME})
