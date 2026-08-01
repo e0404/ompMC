@@ -113,7 +113,9 @@ void selectAzimuthalAngle(double *costhe, double *sinthe);
 void uphi21(struct Uphi *uphi, double costhe, double sinthe);
 void uphi32(struct Uphi *uphi, double costhe, double sinthe);
 int pwlfInterval(int idx, double lvar, double *coef1, double *coef0);
-double pwlfEval(int idx, double lvar, double *coef1, double *coef0);
+/* coef holds interleaved {slope, intercept} pairs: entry idx at coef[2*idx]
+ and coef[2*idx + 1] */
+double pwlfEval(int idx, double lvar, const double *coef);
 
 /*******************************************************************************
 * Photon physical processes definitions
@@ -122,12 +124,17 @@ double pwlfEval(int idx, double lvar, double *coef1, double *coef0);
 #define MXGE 2000       // gamma mapped energy intervals
 #define SGMFP 1.0E-05   // smallest gamma mean free path
 
+/* The per-energy pwlf tables hold their {slope, intercept} coefficient
+ pairs interleaved -- entry i lives at [2*i] and [2*i + 1] -- so one lookup
+ touches one cache line instead of two. The per-medium mapping pairs
+ (ge0/ge1, eke0/eke1) stay separate: they are indexed by medium only and
+ always cache-resident. */
 struct Photon {
     double *ge0, *ge1;
-    double *gmfp0, *gmfp1;
-    double *gbr10, *gbr11;
-    double *gbr20, *gbr21;
-    double *cohe0, *cohe1;
+    double *gmfp;
+    double *gbr1;
+    double *gbr2;
+    double *cohe;
 };
 
 void readXsecData(char *file, int *ndat,
@@ -156,8 +163,7 @@ struct Rayleigh {
     double *fcum;
     double *b_array;
     double *c_array;
-    double *pmax0;
-    double *pmax1;
+    double *pmax;       /* interleaved pwlf pairs, see struct Photon */
     int *i_array;
 };
 
@@ -211,49 +217,37 @@ void photon(void);
 #define EPSEMFP 1.0E-5      // smallest electron mean free path
 #define SKIN_DEPTH_FOR_BCA 3
 
+/* All per-energy tables hold interleaved {slope, intercept} pwlf pairs,
+ see struct Photon. eke0/eke1 are the per-medium mapping coefficients and
+ stay separate. */
 struct Electron {
-    double *esig0;
-    double *esig1;
-    double *psig0;
-    double *psig1;
-    
-    double *ededx0;
-    double *ededx1;
-    double *pdedx0;
-    double *pdedx1;
-    
-    double *ebr10;
-    double *ebr11;
-    double *pbr10;
-    double *pbr11;
-    
-    double *pbr20;
-    double *pbr21;
-    
-    double *tmxs0;
-    double *tmxs1;
-    
-    double *blcce0;
-    double *blcce1;
-    
-    double *etae_ms0;
-    double *etae_ms1;
-    double *etap_ms0;
-    double *etap_ms1;
-    
-    double *q1ce_ms0;
-    double *q1ce_ms1;
-    double *q1cp_ms0;
-    double *q1cp_ms1;
-    
-    double *q2ce_ms0;
-    double *q2ce_ms1;
-    double *q2cp_ms0;
-    double *q2cp_ms1;
-    
+    double *esig;
+    double *psig;
+
+    double *ededx;
+    double *pdedx;
+
+    double *ebr1;
+    double *pbr1;
+
+    double *pbr2;
+
+    double *tmxs;
+
+    double *blcce;
+
+    double *etae_ms;
+    double *etap_ms;
+
+    double *q1ce_ms;
+    double *q1cp_ms;
+
+    double *q2ce_ms;
+    double *q2cp_ms;
+
     double *range_ep;
     double *e_array;
-    
+
     double *eke0;
     double *eke1;
     

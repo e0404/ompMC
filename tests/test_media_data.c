@@ -285,9 +285,9 @@ static void test_photon_energy_grids_differ_between_media(void) {
     /* Mean free paths certainly differ: air against bone is three orders of
      magnitude in density */
     double gmfp_air = pwlfEval(0*MXGE + 100, log(0.05),
-                               photon_data.gmfp1, photon_data.gmfp0);
+                               photon_data.gmfp);
     double gmfp_bone = pwlfEval(3*MXGE + 100, log(0.05),
-                                photon_data.gmfp1, photon_data.gmfp0);
+                                photon_data.gmfp);
 
     CHECK(gmfp_air > 0.0);
     CHECK(gmfp_bone > 0.0);

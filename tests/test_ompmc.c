@@ -95,21 +95,22 @@ static const char *current_test = "";
 *******************************************************************************/
 static void test_pwlf_eval_is_affine(void) {
 
-    double coef1[3] = {2.0, -1.5, 0.0};
-    double coef0[3] = {1.0,  4.0, 7.0};
+    /* Interleaved {slope, intercept} pairs */
+    double coef[6] = {2.0, 1.0, -1.5, 4.0, 0.0, 7.0};
 
-    CHECK_CLOSE(pwlfEval(0, 3.0, coef1, coef0), 7.0, 0.0);
-    CHECK_CLOSE(pwlfEval(1, 2.0, coef1, coef0), 1.0, 0.0);
+    CHECK_CLOSE(pwlfEval(0, 3.0, coef), 7.0, 0.0);
+    CHECK_CLOSE(pwlfEval(1, 2.0, coef), 1.0, 0.0);
 
     /* Index 2 has zero slope, so it is constant in lvar */
-    CHECK_CLOSE(pwlfEval(2, -100.0, coef1, coef0), 7.0, 0.0);
-    CHECK_CLOSE(pwlfEval(2,  100.0, coef1, coef0), 7.0, 0.0);
+    CHECK_CLOSE(pwlfEval(2, -100.0, coef), 7.0, 0.0);
+    CHECK_CLOSE(pwlfEval(2,  100.0, coef), 7.0, 0.0);
 }
 
 static void test_pwlf_interval_truncates(void) {
 
     double coef1[1] = {4.0};
     double coef0[1] = {0.5};
+    double coef[2] = {4.0, 0.5};
 
     /* 4*lvar + 0.5, truncated towards zero */
     CHECK(pwlfInterval(0, 1.0,  coef1, coef0) == 4);
@@ -121,7 +122,7 @@ static void test_pwlf_interval_truncates(void) {
     for (int i = 0; i < 50; i++) {
         double lvar = -3.0 + 0.17*i;
         CHECK(pwlfInterval(0, lvar, coef1, coef0) ==
-              (int)pwlfEval(0, lvar, coef1, coef0));
+              (int)pwlfEval(0, lvar, coef));
     }
 }
 

@@ -218,9 +218,9 @@ int pwlfInterval(int idx, double lvar, double *coef1, double *coef0) {
     return (int)(lvar*coef1[idx] + coef0[idx]);
 }
 
-double pwlfEval(int idx, double lvar, double *coef1, double *coef0) {
-    
-    return lvar*coef1[idx] + coef0[idx];
+double pwlfEval(int idx, double lvar, const double *coef) {
+
+    return lvar*coef[2*idx] + coef[2*idx + 1];
 }
 
 /*******************************************************************************
@@ -537,14 +537,10 @@ void initPhotonData() {
     
     photon_data.ge0 = malloc(media.nmed*sizeof(double));
     photon_data.ge1 = malloc(media.nmed*sizeof(double));
-    photon_data.gmfp0 = malloc(media.nmed*MXGE*sizeof(double));
-    photon_data.gmfp1 = malloc(media.nmed*MXGE*sizeof(double));
-    photon_data.gbr10 = malloc(media.nmed*MXGE*sizeof(double));
-    photon_data.gbr11 = malloc(media.nmed*MXGE*sizeof(double));
-    photon_data.gbr20 = malloc(media.nmed*MXGE*sizeof(double));
-    photon_data.gbr21 = malloc(media.nmed*MXGE*sizeof(double));
-    photon_data.cohe0 = malloc(media.nmed*MXGE*sizeof(double));
-    photon_data.cohe1 = malloc(media.nmed*MXGE*sizeof(double));
+        photon_data.gmfp = malloc(2*media.nmed*MXGE*sizeof(double));
+        photon_data.gbr1 = malloc(2*media.nmed*MXGE*sizeof(double));
+        photon_data.gbr2 = malloc(2*media.nmed*MXGE*sizeof(double));
+        photon_data.cohe = malloc(2*media.nmed*MXGE*sizeof(double));
     
     for (int i=0; i<media.nmed; i++) {
         photon_data.ge1[i] = (double)(MXGE - 1)/log(pegs_data.up[i]/pegs_data.ap[i]);
@@ -605,17 +601,17 @@ void initPhotonData() {
             
             if (j > 0) {
                 int idx = i*MXGE + (j-1); /* the -1 is not for C indexing! */
-                photon_data.gmfp1[idx] = (gmfp - gmfp_old)*photon_data.ge1[i];
-                photon_data.gmfp0[idx] = gmfp - photon_data.gmfp1[idx]*gle;
+                photon_data.gmfp[2*(idx)] = (gmfp - gmfp_old)*photon_data.ge1[i];
+                photon_data.gmfp[2*(idx) + 1] = gmfp - photon_data.gmfp[2*(idx)]*gle;
                 
-                photon_data.gbr11[idx] = (gbr1 - gbr1_old)*photon_data.ge1[i];
-                photon_data.gbr10[idx] = gbr1 - photon_data.gbr11[idx]*gle;
+                photon_data.gbr1[2*(idx)] = (gbr1 - gbr1_old)*photon_data.ge1[i];
+                photon_data.gbr1[2*(idx) + 1] = gbr1 - photon_data.gbr1[2*(idx)]*gle;
                 
-                photon_data.gbr21[idx] = (gbr2 - gbr2_old)*photon_data.ge1[i];
-                photon_data.gbr20[idx] = gbr2 - photon_data.gbr21[idx]*gle;
+                photon_data.gbr2[2*(idx)] = (gbr2 - gbr2_old)*photon_data.ge1[i];
+                photon_data.gbr2[2*(idx) + 1] = gbr2 - photon_data.gbr2[2*(idx)]*gle;
                 
-                photon_data.cohe1[idx] = (cohe - cohe_old)*photon_data.ge1[i];
-                photon_data.cohe0[idx] = cohe - photon_data.cohe1[idx]*gle;
+                photon_data.cohe[2*(idx)] = (cohe - cohe_old)*photon_data.ge1[i];
+                photon_data.cohe[2*(idx) + 1] = cohe - photon_data.cohe[2*(idx)]*gle;
             }
             
             gmfp_old = gmfp;
@@ -625,17 +621,17 @@ void initPhotonData() {
         }
         
         int idx = i*MXGE + MXGE - 1;
-        photon_data.gmfp1[idx] = photon_data.gmfp1[idx-1];
-        photon_data.gmfp0[idx] = gmfp - photon_data.gmfp1[idx]*gle;
+        photon_data.gmfp[2*(idx)] = photon_data.gmfp[2*(idx-1)];
+        photon_data.gmfp[2*(idx) + 1] = gmfp - photon_data.gmfp[2*(idx)]*gle;
         
-        photon_data.gbr11[idx] = photon_data.gbr11[idx-1];
-        photon_data.gbr10[idx] = gbr1 - photon_data.gbr11[idx]*gle;
+        photon_data.gbr1[2*(idx)] = photon_data.gbr1[2*(idx-1)];
+        photon_data.gbr1[2*(idx) + 1] = gbr1 - photon_data.gbr1[2*(idx)]*gle;
         
-        photon_data.gbr21[idx] = photon_data.gbr21[idx-1];
-        photon_data.gbr20[idx] = gbr2 - photon_data.gbr21[idx]*gle;
+        photon_data.gbr2[2*(idx)] = photon_data.gbr2[2*(idx-1)];
+        photon_data.gbr2[2*(idx) + 1] = gbr2 - photon_data.gbr2[2*(idx)]*gle;
         
-        photon_data.cohe1[idx] = photon_data.cohe1[idx-1];
-        photon_data.cohe0[idx] = cohe - photon_data.cohe1[idx]*gle;
+        photon_data.cohe[2*(idx)] = photon_data.cohe[2*(idx-1)];
+        photon_data.cohe[2*(idx) + 1] = cohe - photon_data.cohe[2*(idx)]*gle;
         
         /* Cleaning */
         free(z_sorted);
@@ -681,14 +677,10 @@ void cleanPhoton() {
     
     free(photon_data.ge0);
     free(photon_data.ge1);
-    free(photon_data.gmfp0);
-    free(photon_data.gmfp1);
-    free(photon_data.gbr10);
-    free(photon_data.gbr11);
-    free(photon_data.gbr20);
-    free(photon_data.gbr21);
-    free(photon_data.cohe0);
-    free(photon_data.cohe1);
+        free(photon_data.gmfp);
+        free(photon_data.gbr1);
+        free(photon_data.gbr2);
+        free(photon_data.cohe);
     
     return;
 }
@@ -727,8 +719,8 @@ void listPhoton() {
         for (int j=0; j<MXGE; j++) {
             int idx = i*MXGE + j;
             fprintf(fp, "gmfp0[%d][%d] = %15.5f, gmfp1[%d][%d] = %15.5f\n",
-                    j, i, photon_data.gmfp0[idx],
-                    j, i, photon_data.gmfp1[idx]);
+                    j, i, photon_data.gmfp[2*(idx) + 1],
+                    j, i, photon_data.gmfp[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -736,8 +728,8 @@ void listPhoton() {
         for (int j=0; j<MXGE; j++) {
             int idx = i*MXGE + j;
             fprintf(fp, "gbr10[%d][%d] = %15.5f, gbr11[%d][%d] = %15.5f\n",
-                    j, i, photon_data.gbr10[idx],
-                    j, i, photon_data.gbr11[idx]);
+                    j, i, photon_data.gbr1[2*(idx) + 1],
+                    j, i, photon_data.gbr1[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -745,8 +737,8 @@ void listPhoton() {
         for (int j=0; j<MXGE; j++) {
             int idx = i*MXGE + j;
             fprintf(fp, "gbr20[%d][%d] = %15.5f, gbr21[%d][%d] = %15.5f\n",
-                    j, i, photon_data.gbr20[idx],
-                    j, i, photon_data.gbr21[idx]);
+                    j, i, photon_data.gbr2[2*(idx) + 1],
+                    j, i, photon_data.gbr2[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -754,8 +746,8 @@ void listPhoton() {
         for (int j=0; j<MXGE; j++) {
             int idx = i*MXGE + j;
             fprintf(fp, "cohe0[%d][%d] = %15.5f, cohe1[%d][%d] = %15.5f\n",
-                    j, i, photon_data.cohe0[idx],
-                    j, i, photon_data.cohe1[idx]);
+                    j, i, photon_data.cohe[2*(idx) + 1],
+                    j, i, photon_data.cohe[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -850,8 +842,7 @@ void initRayleighData(void) {
     rayleigh_data.b_array = malloc(media.nmed*MXRAYFF*sizeof(double));
     rayleigh_data.c_array = malloc(media.nmed*MXRAYFF*sizeof(double));
     rayleigh_data.i_array = malloc(media.nmed*RAYCDFSIZE*sizeof(int));
-    rayleigh_data.pmax0 = malloc(media.nmed*MXGE*sizeof(double));
-    rayleigh_data.pmax1 = malloc(media.nmed*MXGE*sizeof(double));
+        rayleigh_data.pmax = malloc(2*media.nmed*MXGE*sizeof(double));
     
     for (int i=0; i<media.nmed; i++) {
         /* Calculate form factor using independent atom model */
@@ -1015,13 +1006,13 @@ void initRayleighData(void) {
         /* Prepare coefficients for pmax interpolation */
         for (int j=0; j<MXGE-1; j++) {
             double gle = ((j+1) - photon_data.ge0[i])/photon_data.ge1[i];
-            rayleigh_data.pmax1[i*MXGE + j] = (pe_array[i*MXGE + j + 1] -
+            rayleigh_data.pmax[2*(i*MXGE + j)] = (pe_array[i*MXGE + j + 1] -
                 pe_array[i * MXGE + j])*photon_data.ge1[i];
-            rayleigh_data.pmax0[i*MXGE + j] = pe_array[i*MXGE + j] -
-                rayleigh_data.pmax1[i * MXGE + j]*gle;
+            rayleigh_data.pmax[2*(i*MXGE + j) + 1] = pe_array[i*MXGE + j] -
+                rayleigh_data.pmax[2*(i * MXGE + j)]*gle;
         }
-        rayleigh_data.pmax0[i*MXGE + MXGE - 1] = rayleigh_data.pmax0[i*MXGE + MXGE - 2];
-        rayleigh_data.pmax1[i*MXGE + MXGE - 1] = rayleigh_data.pmax1[i*MXGE + MXGE - 2];
+        rayleigh_data.pmax[2*(i*MXGE + MXGE - 1) + 1] = rayleigh_data.pmax[2*(i*MXGE + MXGE - 2) + 1];
+        rayleigh_data.pmax[2*(i*MXGE + MXGE - 1)] = rayleigh_data.pmax[2*(i*MXGE + MXGE - 2)];
     }
     
     /* Cleaning */
@@ -1043,8 +1034,7 @@ void cleanRayleigh() {
     free(rayleigh_data.c_array);
     free(rayleigh_data.fcum);
     free(rayleigh_data.i_array);
-    free(rayleigh_data.pmax0);
-    free(rayleigh_data.pmax1);
+        free(rayleigh_data.pmax);
     
     return;
 }
@@ -1112,8 +1102,8 @@ void listRayleigh() {
         for (int j=0; j<MXGE; j++) {
             int idx = i*MXGE + j;
             fprintf(fp, "pmax0[%d][%d] = %10.5f, pmax1[%d][%d] = %10.5f\n",
-                    j, i, rayleigh_data.pmax0[idx],
-                    j, i, rayleigh_data.pmax1[idx]);
+                    j, i, rayleigh_data.pmax[2*(idx) + 1],
+                    j, i, rayleigh_data.pmax[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -1135,7 +1125,7 @@ void rayleigh(int imed, double eig, double gle, int lgle) {
     double xv, costhe, csqthe, sinthe;
     double rnno0, rnno1;
     double pmax = pwlfEval(imed*MXGE + lgle, gle,
-                           rayleigh_data.pmax1, rayleigh_data.pmax0);
+                           rayleigh_data.pmax);
     double xmax = HC_INVERSE*eig;
     double dwi = (double)RAYCDFSIZE - 1.0;
 
@@ -1983,9 +1973,9 @@ void photon() {
         /* Adjust the interval to C indexing */
         int lg = pwlfInterval(m, gle, photon_data.ge1, photon_data.ge0) - 1;
         double g0 = pwlfEval(m*MXGE + lg, gle,
-                             photon_data.gmfp1, photon_data.gmfp0);
+                             photon_data.gmfp);
         double cf = pwlfEval(m*MXGE + lg, gle,
-                             photon_data.cohe1, photon_data.cohe0);
+                             photon_data.cohe);
 
         lgle_med[m] = lg;
         cohfac_med[m] = cf;
@@ -2107,7 +2097,7 @@ void photon() {
 
             /* gbr1 = pair/(pair + compton + photo) = pair/gtotal */
             gbr1 = pwlfEval(imed*MXGE + lgle_med[imed], gle,
-                                photon_data.gbr11, photon_data.gbr10);
+                                photon_data.gbr1);
             if (rnno <= gbr1 && eig>2.0*RM) {
                 /* It was pair production */
                 pair(imed);
@@ -2116,7 +2106,7 @@ void photon() {
             else {
                 /* gbr2 = (pair + compton)/gtotal */
                 gbr2 = pwlfEval(imed*MXGE + lgle_med[imed], gle,
-                                    photon_data.gbr21, photon_data.gbr20);
+                                    photon_data.gbr2);
                 if (rnno < gbr2) {
                     /* It was compton */
                     compton();
@@ -2191,43 +2181,28 @@ void photon() {
 void cleanElectron() {
     
     free(electron_data.blcc);
-    free(electron_data.blcce0);
-    free(electron_data.blcce1);
+        free(electron_data.blcce);
     free(electron_data.e_array);
-    free(electron_data.ebr10);
-    free(electron_data.ebr11);
-    free(electron_data.ededx0);
-    free(electron_data.ededx1);
+        free(electron_data.ebr1);
+        free(electron_data.ededx);
     free(electron_data.eke0);
     free(electron_data.eke1);
-    free(electron_data.esig0);
-    free(electron_data.esig1);
+        free(electron_data.esig);
     free(electron_data.esig_e);
-    free(electron_data.etae_ms0);
-    free(electron_data.etae_ms1);
-    free(electron_data.etap_ms0);
-    free(electron_data.etap_ms1);
+        free(electron_data.etae_ms);
+        free(electron_data.etap_ms);
     free(electron_data.expeke1);
-    free(electron_data.pbr10);
-    free(electron_data.pbr11);
-    free(electron_data.pbr20);
-    free(electron_data.pbr21);
-    free(electron_data.pdedx0);
-    free(electron_data.pdedx1);
-    free(electron_data.psig0);
-    free(electron_data.psig1);
+        free(electron_data.pbr1);
+        free(electron_data.pbr2);
+        free(electron_data.pdedx);
+        free(electron_data.psig);
     free(electron_data.psig_e);
-    free(electron_data.q1ce_ms0);
-    free(electron_data.q1ce_ms1);
-    free(electron_data.q1cp_ms0);
-    free(electron_data.q1cp_ms1);
-    free(electron_data.q2ce_ms0);
-    free(electron_data.q2ce_ms1);
-    free(electron_data.q2cp_ms0);
-    free(electron_data.q2cp_ms1);
+        free(electron_data.q1ce_ms);
+        free(electron_data.q1cp_ms);
+        free(electron_data.q2ce_ms);
+        free(electron_data.q2cp_ms);
     free(electron_data.range_ep);
-    free(electron_data.tmxs0);
-    free(electron_data.tmxs1);
+        free(electron_data.tmxs);
     free(electron_data.xcc);
     free(electron_data.sig_ismonotone);
     
@@ -2282,8 +2257,8 @@ void listElectron(void) {
         for (int j=0; j<MXEKE; j++) {
             int idx = i*MXEKE + j;
             fprintf(fp, "esig0[%d][%d] = %15.5f, esig1[%d][%d] = %15.5f\n",
-                    j, i, electron_data.esig0[idx],
-                    j, i, electron_data.esig1[idx]);
+                    j, i, electron_data.esig[2*(idx) + 1],
+                    j, i, electron_data.esig[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -2291,8 +2266,8 @@ void listElectron(void) {
         for (int j=0; j<MXEKE; j++) {
             int idx = i*MXEKE + j;
             fprintf(fp, "psig0[%d][%d] = %15.5f, psig1[%d][%d] = %15.5f\n",
-                    j, i, electron_data.psig0[idx],
-                    j, i, electron_data.psig1[idx]);
+                    j, i, electron_data.psig[2*(idx) + 1],
+                    j, i, electron_data.psig[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -2300,8 +2275,8 @@ void listElectron(void) {
         for (int j=0; j<MXEKE; j++) {
             int idx = i*MXEKE + j;
             fprintf(fp, "ededx0[%d][%d] = %15.5f, ededx1[%d][%d] = %15.5f\n",
-                    j, i, electron_data.ededx0[idx],
-                    j, i, electron_data.ededx1[idx]);
+                    j, i, electron_data.ededx[2*(idx) + 1],
+                    j, i, electron_data.ededx[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -2309,8 +2284,8 @@ void listElectron(void) {
         for (int j=0; j<MXEKE; j++) {
             int idx = i*MXEKE + j;
             fprintf(fp, "pdedx0[%d][%d] = %15.5f, pdedx1[%d][%d] = %15.5f\n",
-                    j, i, electron_data.pdedx0[idx],
-                    j, i, electron_data.pdedx1[idx]);
+                    j, i, electron_data.pdedx[2*(idx) + 1],
+                    j, i, electron_data.pdedx[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -2318,8 +2293,8 @@ void listElectron(void) {
         for (int j=0; j<MXEKE; j++) {
             int idx = i*MXEKE + j;
             fprintf(fp, "ebr10[%d][%d] = %15.5f, ebr11[%d][%d] = %15.5f\n",
-                    j, i, electron_data.ebr10[idx],
-                    j, i, electron_data.ebr11[idx]);
+                    j, i, electron_data.ebr1[2*(idx) + 1],
+                    j, i, electron_data.ebr1[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -2327,8 +2302,8 @@ void listElectron(void) {
         for (int j=0; j<MXEKE; j++) {
             int idx = i*MXEKE + j;
             fprintf(fp, "pbr10[%d][%d] = %15.5f, pbr11[%d][%d] = %15.5f\n",
-                    j, i, electron_data.pbr10[idx],
-                    j, i, electron_data.pbr11[idx]);
+                    j, i, electron_data.pbr1[2*(idx) + 1],
+                    j, i, electron_data.pbr1[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -2336,8 +2311,8 @@ void listElectron(void) {
         for (int j=0; j<MXEKE; j++) {
             int idx = i*MXEKE + j;
             fprintf(fp, "pbr20[%d][%d] = %15.5f, pbr21[%d][%d] = %15.5f\n",
-                    j, i, electron_data.pbr20[idx],
-                    j, i, electron_data.pbr21[idx]);
+                    j, i, electron_data.pbr2[2*(idx) + 1],
+                    j, i, electron_data.pbr2[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -2345,8 +2320,8 @@ void listElectron(void) {
         for (int j=0; j<MXEKE; j++) {
             int idx = i*MXEKE + j;
             fprintf(fp, "tmxs0[%d][%d] = %15.5f, tmxs1[%d][%d] = %15.5f\n",
-                    j, i, electron_data.tmxs0[idx],
-                    j, i, electron_data.tmxs1[idx]);
+                    j, i, electron_data.tmxs[2*(idx) + 1],
+                    j, i, electron_data.tmxs[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -2371,8 +2346,8 @@ void listElectron(void) {
         for (int j=0; j<MXEKE; j++) {
             int idx = i*MXEKE + j;
             fprintf(fp,"etae_ms0[%d][%d] = %15.5f, etae_ms1[%d][%d] = %15.5f\n",
-                    j, i, electron_data.etae_ms0[idx],
-                    j, i, electron_data.etae_ms1[idx]);
+                    j, i, electron_data.etae_ms[2*(idx) + 1],
+                    j, i, electron_data.etae_ms[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -2380,8 +2355,8 @@ void listElectron(void) {
         for (int j=0; j<MXEKE; j++) {
             int idx = i*MXEKE + j;
             fprintf(fp,"etap_ms0[%d][%d] = %15.5f, etap_ms1[%d][%d] = %15.5f\n",
-                    j, i, electron_data.etap_ms0[idx],
-                    j, i, electron_data.etap_ms1[idx]);
+                    j, i, electron_data.etap_ms[2*(idx) + 1],
+                    j, i, electron_data.etap_ms[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -2389,8 +2364,8 @@ void listElectron(void) {
         for (int j=0; j<MXEKE; j++) {
             int idx = i*MXEKE + j;
             fprintf(fp,"q1ce_ms0[%d][%d] = %15.5f, q1ce_ms1[%d][%d] = %15.5f\n",
-                    j, i, electron_data.q1ce_ms0[idx],
-                    j, i, electron_data.q1ce_ms1[idx]);
+                    j, i, electron_data.q1ce_ms[2*(idx) + 1],
+                    j, i, electron_data.q1ce_ms[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -2398,8 +2373,8 @@ void listElectron(void) {
         for (int j=0; j<MXEKE; j++) {
             int idx = i*MXEKE + j;
             fprintf(fp,"q1cp_ms0[%d][%d] = %15.5f, q1cp_ms1[%d][%d] = %15.5f\n",
-                    j, i, electron_data.q1cp_ms0[idx],
-                    j, i, electron_data.q1cp_ms1[idx]);
+                    j, i, electron_data.q1cp_ms[2*(idx) + 1],
+                    j, i, electron_data.q1cp_ms[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -2407,8 +2382,8 @@ void listElectron(void) {
         for (int j=0; j<MXEKE; j++) {
             int idx = i*MXEKE + j;
             fprintf(fp,"q2ce_ms0[%d][%d] = %15.5f, q2ce_ms1[%d][%d] = %15.5f\n",
-                    j, i, electron_data.q2ce_ms0[idx],
-                    j, i, electron_data.q2ce_ms1[idx]);
+                    j, i, electron_data.q2ce_ms[2*(idx) + 1],
+                    j, i, electron_data.q2ce_ms[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -2416,8 +2391,8 @@ void listElectron(void) {
         for (int j=0; j<MXEKE; j++) {
             int idx = i*MXEKE + j;
             fprintf(fp,"q2cp_ms0[%d][%d] = %15.5f, q2cp_ms1[%d][%d] = %15.5f\n",
-                    j, i, electron_data.q2cp_ms0[idx],
-                    j, i, electron_data.q2cp_ms1[idx]);
+                    j, i, electron_data.q2cp_ms[2*(idx) + 1],
+                    j, i, electron_data.q2cp_ms[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -2425,8 +2400,8 @@ void listElectron(void) {
         for (int j=0; j<MXEKE; j++) {
             int idx = i*MXEKE + j;
             fprintf(fp,"blcce0[%d][%d] = %15.5f, blcce1[%d][%d] = %15.5f\n",
-                    j, i, electron_data.blcce0[idx],
-                    j, i, electron_data.blcce1[idx]);
+                    j, i, electron_data.blcce[2*(idx) + 1],
+                    j, i, electron_data.blcce[2*(idx)]);
         }
         fprintf(fp, "\n");
         
@@ -2586,36 +2561,22 @@ void initSpinData(int nmed) {
     double *df = (double*) malloc((MXE_SPIN1+1)*sizeof(double));
     
     /* Allocate memory for electron data */
-    electron_data.etae_ms0 = malloc(nmed*MXEKE*sizeof(double));
-    electron_data.etae_ms1 = malloc(nmed*MXEKE*sizeof(double));
-    electron_data.etap_ms0 = malloc(nmed*MXEKE*sizeof(double));
-    electron_data.etap_ms1 = malloc(nmed*MXEKE*sizeof(double));
-    electron_data.q1ce_ms0 = malloc(nmed*MXEKE*sizeof(double));
-    electron_data.q1ce_ms1 = malloc(nmed*MXEKE*sizeof(double));
-    electron_data.q1cp_ms0 = malloc(nmed*MXEKE*sizeof(double));
-    electron_data.q1cp_ms1 = malloc(nmed*MXEKE*sizeof(double));
-    electron_data.q2ce_ms0 = malloc(nmed*MXEKE*sizeof(double));
-    electron_data.q2ce_ms1 = malloc(nmed*MXEKE*sizeof(double));
-    electron_data.q2cp_ms0 = malloc(nmed*MXEKE*sizeof(double));
-    electron_data.q2cp_ms1 = malloc(nmed*MXEKE*sizeof(double));
-    electron_data.blcce0 = malloc(nmed*MXEKE*sizeof(double));
-    electron_data.blcce1 = malloc(nmed*MXEKE*sizeof(double));
+        electron_data.etae_ms = malloc(2*nmed*MXEKE*sizeof(double));
+        electron_data.etap_ms = malloc(2*nmed*MXEKE*sizeof(double));
+        electron_data.q1ce_ms = malloc(2*nmed*MXEKE*sizeof(double));
+        electron_data.q1cp_ms = malloc(2*nmed*MXEKE*sizeof(double));
+        electron_data.q2ce_ms = malloc(2*nmed*MXEKE*sizeof(double));
+        electron_data.q2cp_ms = malloc(2*nmed*MXEKE*sizeof(double));
+        electron_data.blcce = malloc(2*nmed*MXEKE*sizeof(double));
     
     /* Zero the following arrays, as they are surely not totally used. */
-    memset(electron_data.etae_ms0, 0.0, nmed*MXEKE*sizeof(double));
-    memset(electron_data.etae_ms1, 0.0, nmed*MXEKE*sizeof(double));
-    memset(electron_data.etap_ms0, 0.0, nmed*MXEKE*sizeof(double));
-    memset(electron_data.etap_ms1, 0.0, nmed*MXEKE*sizeof(double));
-    memset(electron_data.q1ce_ms0, 0.0, nmed*MXEKE*sizeof(double));
-    memset(electron_data.q1ce_ms1, 0.0, nmed*MXEKE*sizeof(double));
-    memset(electron_data.q1cp_ms0, 0.0, nmed*MXEKE*sizeof(double));
-    memset(electron_data.q1cp_ms1, 0.0, nmed*MXEKE*sizeof(double));
-    memset(electron_data.q2ce_ms0, 0.0, nmed*MXEKE*sizeof(double));
-    memset(electron_data.q2ce_ms1, 0.0, nmed*MXEKE*sizeof(double));
-    memset(electron_data.q2cp_ms0, 0.0, nmed*MXEKE*sizeof(double));
-    memset(electron_data.q2cp_ms1, 0.0, nmed*MXEKE*sizeof(double));
-    memset(electron_data.blcce0, 0.0, nmed*MXEKE*sizeof(double));
-    memset(electron_data.blcce1, 0.0, nmed*MXEKE*sizeof(double));
+        memset(electron_data.etae_ms, 0, 2*nmed*MXEKE*sizeof(double));
+        memset(electron_data.etap_ms, 0, 2*nmed*MXEKE*sizeof(double));
+        memset(electron_data.q1ce_ms, 0, 2*nmed*MXEKE*sizeof(double));
+        memset(electron_data.q1cp_ms, 0, 2*nmed*MXEKE*sizeof(double));
+        memset(electron_data.q2ce_ms, 0, 2*nmed*MXEKE*sizeof(double));
+        memset(electron_data.q2cp_ms, 0, 2*nmed*MXEKE*sizeof(double));
+        memset(electron_data.blcce, 0, 2*nmed*MXEKE*sizeof(double));
     
     for (int imed = 0; imed<nmed; imed++) {
         double sum_Z2 = 0.0, sum_A = 0.0, sum_pz = 0.0, sum_Z = 0.0;
@@ -2819,25 +2780,25 @@ void initSpinData(int nmed) {
                 
             }
             
-            electron_data.etae_ms1[MXEKE*imed + i - 1] =
+            electron_data.etae_ms[2*(MXEKE*imed + i - 1)] =
                 (si2e - si1e)*electron_data.eke1[imed];
-            electron_data.etae_ms0[MXEKE*imed + i - 1] =
-                (si2e - electron_data.etae_ms1[MXEKE*imed + i - 1]*eil);
-            electron_data.etap_ms1[MXEKE*imed + i - 1] =
+            electron_data.etae_ms[2*(MXEKE*imed + i - 1) + 1] =
+                (si2e - electron_data.etae_ms[2*(MXEKE*imed + i - 1)]*eil);
+            electron_data.etap_ms[2*(MXEKE*imed + i - 1)] =
                 (si2p - si1p)*electron_data.eke1[imed];
-            electron_data.etap_ms0[MXEKE*imed + i - 1] =
-                (si2p - electron_data.etap_ms1[MXEKE*imed + i - 1]*eil);
+            electron_data.etap_ms[2*(MXEKE*imed + i - 1) + 1] =
+                (si2p - electron_data.etap_ms[2*(MXEKE*imed + i - 1)]*eil);
             si1e = si2e; si1p = si2p;
         }
         
-        electron_data.etae_ms1[MXEKE*imed + neke - 1] =
-            electron_data.etae_ms1[MXEKE*imed + neke - 2];
-        electron_data.etae_ms0[MXEKE*imed + neke - 1] =
-            electron_data.etae_ms0[MXEKE*imed + neke - 2];
-        electron_data.etap_ms1[MXEKE*imed + neke - 1] =
-            electron_data.etap_ms1[MXEKE*imed + neke - 2];
-        electron_data.etap_ms0[MXEKE*imed + neke - 1] =
-            electron_data.etap_ms0[MXEKE*imed + neke - 2];
+        electron_data.etae_ms[2*(MXEKE*imed + neke - 1)] =
+            electron_data.etae_ms[2*(MXEKE*imed + neke - 2)];
+        electron_data.etae_ms[2*(MXEKE*imed + neke - 1) + 1] =
+            electron_data.etae_ms[2*(MXEKE*imed + neke - 2) + 1];
+        electron_data.etap_ms[2*(MXEKE*imed + neke - 1)] =
+            electron_data.etap_ms[2*(MXEKE*imed + neke - 2)];
+        electron_data.etap_ms[2*(MXEKE*imed + neke - 1) + 1] =
+            electron_data.etap_ms[2*(MXEKE*imed + neke - 2) + 1];
 
         /* Prepare correction to the first MS moment due to spin effects */
         /* First electrons */
@@ -2866,16 +2827,16 @@ void initSpinData(int nmed) {
         for(int i=1; i<=neke - 1; i++){
             eil = (i + 1 - electron_data.eke0[imed])/electron_data.eke1[imed];
             si2e = spline(eil, elarray, af, bf, cf, df, ndata);
-            electron_data.q1ce_ms1[MXEKE*imed + i - 1] =
+            electron_data.q1ce_ms[2*(MXEKE*imed + i - 1)] =
                 (si2e - si1e)*electron_data.eke1[imed];
-            electron_data.q1ce_ms0[MXEKE*imed + i - 1]=
-                si2e - electron_data.q1ce_ms1[MXEKE*imed + i - 1]*eil;
+            electron_data.q1ce_ms[2*(MXEKE*imed + i - 1) + 1]=
+                si2e - electron_data.q1ce_ms[2*(MXEKE*imed + i - 1)]*eil;
             si1e = si2e;
         }
-        electron_data.q1ce_ms1[MXEKE*imed + neke - 1] =
-            electron_data.q1ce_ms1[MXEKE*imed + neke - 2];
-        electron_data.q1ce_ms0[MXEKE*imed + neke - 1] =
-            electron_data.q1ce_ms0[MXEKE*imed + neke - 2];
+        electron_data.q1ce_ms[2*(MXEKE*imed + neke - 1)] =
+            electron_data.q1ce_ms[2*(MXEKE*imed + neke - 2)];
+        electron_data.q1ce_ms[2*(MXEKE*imed + neke - 1) + 1] =
+            electron_data.q1ce_ms[2*(MXEKE*imed + neke - 2) + 1];
         
         /* Now positrons */
         for (int i=0; i<=MXE_SPIN; i++){
@@ -2892,16 +2853,16 @@ void initSpinData(int nmed) {
         for (int i=1; i<=neke-1; i++){
             eil = (i + 1 - electron_data.eke0[imed])/electron_data.eke1[imed];
             si2e = spline(eil, elarray, af, bf, cf, df, ndata);
-            electron_data.q1cp_ms1[MXEKE*imed + i - 1] =
+            electron_data.q1cp_ms[2*(MXEKE*imed + i - 1)] =
                 (si2e - si1e)*electron_data.eke1[imed];
-            electron_data.q1cp_ms0[MXEKE*imed + i - 1]=
-                si2e - electron_data.q1cp_ms1[MXEKE*imed + i - 1]*eil;
+            electron_data.q1cp_ms[2*(MXEKE*imed + i - 1) + 1]=
+                si2e - electron_data.q1cp_ms[2*(MXEKE*imed + i - 1)]*eil;
             si1e = si2e;
         }
-        electron_data.q1cp_ms1[MXEKE*imed + neke - 1] =
-            electron_data.q1cp_ms1[MXEKE*imed + neke - 2];
-        electron_data.q1cp_ms0[MXEKE*imed + neke - 1] =
-            electron_data.q1cp_ms0[MXEKE*imed + neke - 2];
+        electron_data.q1cp_ms[2*(MXEKE*imed + neke - 1)] =
+            electron_data.q1cp_ms[2*(MXEKE*imed + neke - 2)];
+        electron_data.q1cp_ms[2*(MXEKE*imed + neke - 1) + 1] =
+            electron_data.q1cp_ms[2*(MXEKE*imed + neke - 2) + 1];
         
         /* Prepare interpolation table for the second MS moment correction */
         /* First electrons */
@@ -2919,16 +2880,16 @@ void initSpinData(int nmed) {
         for (int i=1; i<=neke-1; i++){
             eil = (i + 1 - electron_data.eke0[imed])/electron_data.eke1[imed];
             si2e = spline(eil, elarray, af, bf, cf, df, ndata);
-            electron_data.q2ce_ms1[MXEKE*imed + i - 1] =
+            electron_data.q2ce_ms[2*(MXEKE*imed + i - 1)] =
                 (si2e - si1e)*electron_data.eke1[imed];
-            electron_data.q2ce_ms0[MXEKE*imed + i - 1] =
-                si2e - electron_data.q2ce_ms1[MXEKE*imed + i - 1]*eil;
+            electron_data.q2ce_ms[2*(MXEKE*imed + i - 1) + 1] =
+                si2e - electron_data.q2ce_ms[2*(MXEKE*imed + i - 1)]*eil;
             si1e = si2e;
         }
-        electron_data.q2ce_ms1[MXEKE*imed + neke - 1] =
-            electron_data.q2ce_ms1[MXEKE*imed + neke - 2];
-        electron_data.q2ce_ms0[MXEKE*imed + neke - 1] =
-            electron_data.q2ce_ms0[MXEKE*imed + neke - 2];
+        electron_data.q2ce_ms[2*(MXEKE*imed + neke - 1)] =
+            electron_data.q2ce_ms[2*(MXEKE*imed + neke - 2)];
+        electron_data.q2ce_ms[2*(MXEKE*imed + neke - 1) + 1] =
+            electron_data.q2ce_ms[2*(MXEKE*imed + neke - 2) + 1];
         
         /* Now positrons */
         for (int i=0; i<=MXE_SPIN; i++){
@@ -2945,16 +2906,16 @@ void initSpinData(int nmed) {
         for (int i=1; i<=neke - 1; i++){
             eil = (i + 1 - electron_data.eke0[imed])/electron_data.eke1[imed];
             si2e = spline(eil, elarray, af, bf, cf, df, ndata);
-            electron_data.q2cp_ms1[MXEKE*imed + i - 1] =
+            electron_data.q2cp_ms[2*(MXEKE*imed + i - 1)] =
                 (si2e - si1e)*electron_data.eke1[imed];
-            electron_data.q2cp_ms0[MXEKE*imed + i - 1] =
-                si2e - electron_data.q2cp_ms1[MXEKE*imed + i - 1]*eil;
+            electron_data.q2cp_ms[2*(MXEKE*imed + i - 1) + 1] =
+                si2e - electron_data.q2cp_ms[2*(MXEKE*imed + i - 1)]*eil;
             si1e = si2e;
         }
-        electron_data.q2cp_ms1[MXEKE*imed + neke - 1] =
-            electron_data.q2cp_ms1[MXEKE*imed + neke - 2];
-        electron_data.q2cp_ms0[MXEKE*imed + neke - 1] =
-            electron_data.q2cp_ms0[MXEKE*imed + neke - 2];
+        electron_data.q2cp_ms[2*(MXEKE*imed + neke - 1)] =
+            electron_data.q2cp_ms[2*(MXEKE*imed + neke - 2)];
+        electron_data.q2cp_ms[2*(MXEKE*imed + neke - 1) + 1] =
+            electron_data.q2cp_ms[2*(MXEKE*imed + neke - 2) + 1];
         
         /* Now substract scattering power that is already taken into account in
          discrete Moller/Bhabha events */
@@ -2970,15 +2931,15 @@ void initSpinData(int nmed) {
             tau = e/RM;
             
             if (tau > 2.0*tauc){
-                sig = electron_data.esig1[MXEKE*imed + leil]*eil +
-                    electron_data.esig0[MXEKE*imed + leil];
-                dedx = electron_data.ededx1[MXEKE*imed + leil]*eil +
-                    electron_data.ededx0[MXEKE*imed + leil];
+                sig = electron_data.esig[2*(MXEKE*imed + leil)]*eil +
+                    electron_data.esig[2*(MXEKE*imed + leil) + 1];
+                dedx = electron_data.ededx[2*(MXEKE*imed + leil)]*eil +
+                    electron_data.ededx[2*(MXEKE*imed + leil) + 1];
                 sig /= dedx;
                 
                 if (sig>1.0E-6) { /* to be sure that this is not a CSDA calc. */
-                    etap = electron_data.etae_ms1[MXEKE*imed + leil]*eil +
-                        electron_data.etae_ms0[MXEKE*imed + leil];
+                    etap = electron_data.etae_ms[2*(MXEKE*imed + leil)]*eil +
+                        electron_data.etae_ms[2*(MXEKE*imed + leil) + 1];
                     eta = 0.25*etap*(electron_data.xcc[imed])/
                         (electron_data.blcc[imed])/tau/(tau+2);
                     g_r = (1.0 + 2.0*eta)*log(1.0 + 1.0/eta) - 2.0;
@@ -3007,16 +2968,16 @@ void initSpinData(int nmed) {
                 si2e = 1.0;
             }
             
-            electron_data.blcce1[MXEKE*imed + i - 1] =
+            electron_data.blcce[2*(MXEKE*imed + i - 1)] =
                 (si2e - si1e)*electron_data.eke1[imed];
-            electron_data.blcce0[MXEKE*imed + i - 1] =
-                si2e - electron_data.blcce1[MXEKE*imed + i - 1]*eil;
+            electron_data.blcce[2*(MXEKE*imed + i - 1) + 1] =
+                si2e - electron_data.blcce[2*(MXEKE*imed + i - 1)]*eil;
             si1e = si2e;
         }
-        electron_data.blcce1[MXEKE*imed + neke - 1] =
-            electron_data.blcce1[MXEKE*imed + neke - 2];
-        electron_data.blcce0[MXEKE*imed + neke - 1] =
-            electron_data.blcce0[MXEKE*imed + neke - 2];
+        electron_data.blcce[2*(MXEKE*imed + neke - 1)] =
+            electron_data.blcce[2*(MXEKE*imed + neke - 2)];
+        electron_data.blcce[2*(MXEKE*imed + neke - 1) + 1] =
+            electron_data.blcce[2*(MXEKE*imed + neke - 2) + 1];
         
     }
     
@@ -3427,10 +3388,10 @@ void initMscatData() {
             eil  = log(ei);
             leil = i - 1; /* Consider C indexing */
             
-            ededx = electron_data.ededx1[imed*MXEKE + leil]*eil +
-                electron_data.ededx0[imed*MXEKE + leil];
-            sig = electron_data.esig1[imed*MXEKE + leil]*eil +
-                electron_data.esig0[imed*MXEKE + leil];
+            ededx = electron_data.ededx[2*(imed*MXEKE + leil)]*eil +
+                electron_data.ededx[2*(imed*MXEKE + leil) + 1];
+            sig = electron_data.esig[2*(imed*MXEKE + leil)]*eil +
+                electron_data.esig[2*(imed*MXEKE + leil) + 1];
             
             sig /= ededx;
             if (sig > sigee) {
@@ -3441,10 +3402,10 @@ void initMscatData() {
             }
             sige_old = sig;
             
-            ededx = electron_data.pdedx1[imed*MXEKE + leil]*eil +
-                electron_data.pdedx0[imed*MXEKE + leil];
-            sig = electron_data.psig1[imed*MXEKE + leil]*eil +
-                electron_data.psig0[imed*MXEKE + leil];
+            ededx = electron_data.pdedx[2*(imed*MXEKE + leil)]*eil +
+                electron_data.pdedx[2*(imed*MXEKE + leil) + 1];
+            sig = electron_data.psig[2*(imed*MXEKE + leil)]*eil +
+                electron_data.psig[2*(imed*MXEKE + leil) + 1];
             
             sig /= ededx;
             if (sig>sigep) {
@@ -3496,18 +3457,18 @@ void initMscatData() {
             elke = log(eke);
             lelke = (int)(electron_data.eke1[imed]*elke +
                           electron_data.eke0[imed]) - 1;
-            ededx = electron_data.pdedx1[imed*MXEKE + lelke]*elke +
-                electron_data.pdedx0[imed*MXEKE + lelke];
-            aux = electron_data.pdedx1[imed*MXEKE + i - 1]/ededx;
+            ededx = electron_data.pdedx[2*(imed*MXEKE + lelke)]*elke +
+                electron_data.pdedx[2*(imed*MXEKE + lelke) + 1];
+            aux = electron_data.pdedx[2*(imed*MXEKE + i - 1)]/ededx;
             
             electron_data.range_ep[1*nmed*MXEKE + imed*MXEKE + i] =
                 electron_data.range_ep[1*nmed*MXEKE + imed*MXEKE + i - 1] +
                     (eip1-ei)/ededx*(1.0 +
                         aux*(1.0 + 2.0*aux)*pow((eip1-ei)/eke, 2.0)/24.0);
             
-            ededx = electron_data.ededx1[imed*MXEKE + lelke]*elke +
-                electron_data.ededx0[imed*MXEKE + lelke];
-            aux = electron_data.ededx1[imed*MXEKE + i - 1]/ededx;
+            ededx = electron_data.ededx[2*(imed*MXEKE + lelke)]*elke +
+                electron_data.ededx[2*(imed*MXEKE + lelke) + 1];
+            aux = electron_data.ededx[2*(imed*MXEKE + i - 1)]/ededx;
             
             electron_data.range_ep[0*nmed*MXEKE + imed*MXEKE + i] =
                 electron_data.range_ep[0*nmed*MXEKE + imed*MXEKE + i - 1] +
@@ -3523,8 +3484,8 @@ void initMscatData() {
         p2  = ei*(ei + 2.0*RM);
         beta2 = p2/(p2 + pow(RM, 2.0));
         chi_a2 = electron_data.xcc[imed]/(4.0*p2*electron_data.blcc[imed]);
-        dedx0 = electron_data.ededx1[imed*MXEKE + leil]*eil +
-            electron_data.ededx0[imed*MXEKE + leil];
+        dedx0 = electron_data.ededx[2*(imed*MXEKE + leil)]*eil +
+            electron_data.ededx[2*(imed*MXEKE + leil) + 1];
         estepx = 2.0*p2*beta2*dedx0/ei/electron_data.xcc[imed]/
             (log(1.0 + 1.0/chi_a2)*(1.0 + chi_a2) - 1.0);
         estepx *= XIMAX;
@@ -3542,8 +3503,8 @@ void initMscatData() {
             p2 = eke*(eke + 2.0*RM);
             beta2 = p2/(p2 + pow(RM, 2.0));
             chi_a2 = electron_data.xcc[imed]/(4.0*p2*electron_data.blcc[imed]);
-            ededx = electron_data.ededx1[imed*MXEKE + lelke]*elke +
-                electron_data.ededx0[imed*MXEKE + lelke];
+            ededx = electron_data.ededx[2*(imed*MXEKE + lelke)]*elke +
+                electron_data.ededx[2*(imed*MXEKE + lelke) + 1];
             estepx = 2.0*p2*beta2*ededx/eke/(electron_data.xcc[imed])/
             (log(1.0 + 1.0/chi_a2)*(1.0 + chi_a2) - 1.0);
             estepx = estepx*XIMAX;
@@ -3574,9 +3535,9 @@ void initMscatData() {
                                                     aux*(1.0 + 0.875*aux)));
                 ektmp  = 0.5*(ekef+eip1);
                 lelktmp = lelkef;
-                ededx = electron_data.ededx1[imed*MXEKE + lelktmp]*elktmp +
-                    electron_data.ededx0[imed*MXEKE + lelktmp];
-                aux = electron_data.ededx1[imed*MXEKE + lelktmp]/ededx;
+                ededx = electron_data.ededx[2*(imed*MXEKE + lelktmp)]*elktmp +
+                    electron_data.ededx[2*(imed*MXEKE + lelktmp) + 1];
+                aux = electron_data.ededx[2*(imed*MXEKE + lelktmp)]/ededx;
                 sip1 = (eip1 - ekef)/ededx*(1.0 + aux*(1.0 + 2.0*aux)*
                             (pow(((eip1-ekef)/ektmp),2.0)/24.0));
             }
@@ -3587,17 +3548,17 @@ void initMscatData() {
             /* Now solve these equations
              si   = tmxs1 * eil   + tmxs0
              sip1 = tmxs1 * eip1l + tmxs0 */
-            electron_data.tmxs1[imed*MXEKE + i - 1] =
+            electron_data.tmxs[2*(imed*MXEKE + i - 1)] =
                 (sip1 - si)*electron_data.eke1[imed];
-            electron_data.tmxs0[imed*MXEKE + i - 1] = sip1 -
-                electron_data.tmxs1[imed*MXEKE + i - 1]*elke;
+            electron_data.tmxs[2*(imed*MXEKE + i - 1) + 1] = sip1 -
+                electron_data.tmxs[2*(imed*MXEKE + i - 1)]*elke;
             si  = sip1;
             
         }
-        electron_data.tmxs0[imed*MXEKE + neke - 1] =
-            electron_data.tmxs0[imed*MXEKE + neke - 2];
-        electron_data.tmxs1[imed*MXEKE + neke - 1] =
-            electron_data.tmxs1[imed*MXEKE + neke - 2];
+        electron_data.tmxs[2*(imed*MXEKE + neke - 1) + 1] =
+            electron_data.tmxs[2*(imed*MXEKE + neke - 2) + 1];
+        electron_data.tmxs[2*(imed*MXEKE + neke - 1)] =
+            electron_data.tmxs[2*(imed*MXEKE + neke - 2)];
     }
     
     return;
@@ -3936,23 +3897,22 @@ double msdist(int imed, int iq, double rhof, double de, double tustep,
 
 	if (qel == 0) {
 		etap = pwlfEval(MXEKE*imed+lelke, elke, 
-            electron_data.etae_ms1, electron_data.etae_ms0);
+            electron_data.etae_ms);
 		xi_corr = pwlfEval(MXEKE*imed+lelke, elke, 
-            electron_data.q1ce_ms1, electron_data.q1ce_ms0);
-		gamma = pwlfEval(MXEKE*imed+lelke, elke, electron_data.q2ce_ms1, 
-            electron_data.q2ce_ms0);
+            electron_data.q1ce_ms);
+		gamma = pwlfEval(MXEKE*imed+lelke, elke, electron_data.q2ce_ms);
 	}
 	else {
 		etap = pwlfEval(MXEKE*imed+lelke, elke, 
-            electron_data.etap_ms1, electron_data.etap_ms0);
+            electron_data.etap_ms);
 		xi_corr = pwlfEval(MXEKE*imed+lelke, elke, 
-            electron_data.q1cp_ms1, electron_data.q1cp_ms0);
+            electron_data.q1cp_ms);
 		gamma = pwlfEval(MXEKE*imed+lelke, elke, 
-            electron_data.q2cp_ms1, electron_data.q2cp_ms0);
+            electron_data.q2cp_ms);
 	}
 
     double ms_corr = pwlfEval(MXEKE*imed+lelke, elke, 
-        electron_data.blcce1, electron_data.blcce0);    // correction to the 
+        electron_data.blcce);    // correction to the 
                                                         // first MS moments due 
                                                         // to spin
 	chia2 *= etap;
@@ -4092,15 +4052,15 @@ double computeDrange(int imed, int iq, int lelke, double ekei, double ekef,
 
 	if (iq < 0) {
 		dedxmid = pwlfEval(MXEKE*imed+lelke, elktmp, 
-            electron_data.ededx1, electron_data.ededx0);
+            electron_data.ededx);
 		dedxmid = 1.0/dedxmid;
-		aux = electron_data.ededx1[MXEKE*imed+lelke]*dedxmid;
+		aux = electron_data.ededx[2*(MXEKE*imed+lelke)]*dedxmid;
 	}
 	else {
 		dedxmid = pwlfEval(MXEKE*imed+lelke, elktmp, 
-            electron_data.pdedx1, electron_data.pdedx0);
+            electron_data.pdedx);
 		dedxmid = 1.0/dedxmid;
-		aux = electron_data.pdedx1[MXEKE*imed+lelke]*dedxmid;
+		aux = electron_data.pdedx[2*(MXEKE*imed+lelke)]*dedxmid;
 	}
 
 	aux = aux*(1.0 + 2.0*aux)*fedep*fedep/(6.0*(2.0 - fedep)*(2.0 - fedep));
@@ -4135,13 +4095,13 @@ double computeEloss(int imed, int iq, int irl, double rhof,
 
 		if (iq < 0) {
 			dedxmid = pwlfEval(imed*MXEKE+lelke, elke, 
-                electron_data.ededx1, electron_data.ededx0);
-			aux = electron_data.ededx1[imed*MXEKE+lelke]/dedxmid;
+                electron_data.ededx);
+			aux = electron_data.ededx[2*(imed*MXEKE+lelke)]/dedxmid;
 		}
 		else {
 			dedxmid = pwlfEval(imed*MXEKE+lelke, elke, 
-                electron_data.pdedx1, electron_data.pdedx0);
-			aux = electron_data.pdedx1[imed*MXEKE+lelke]/dedxmid;
+                electron_data.pdedx);
+			aux = electron_data.pdedx[2*(imed*MXEKE+lelke)]/dedxmid;
 		}
 
 		de = dedxmid*tustep*rhof;
@@ -4182,13 +4142,13 @@ double computeEloss(int imed, int iq, int irl, double rhof,
 
 			if (iq < 0) {
 				dedxmid = pwlfEval(MXEKE*imed+lelktmp, elktmp, 
-                    electron_data.ededx1, electron_data.ededx0);
-				aux = electron_data.ededx1[MXEKE*imed+lelktmp]/dedxmid;
+                    electron_data.ededx);
+				aux = electron_data.ededx[2*(MXEKE*imed+lelktmp)]/dedxmid;
 			}
 			else {
 				dedxmid = pwlfEval(MXEKE*imed+lelktmp, elktmp, 
-                    electron_data.pdedx1, electron_data.pdedx0);
-				aux = electron_data.pdedx1[MXEKE*imed+lelktmp]/dedxmid;
+                    electron_data.pdedx);
+				aux = electron_data.pdedx[2*(MXEKE*imed+lelktmp)]/dedxmid;
 			}
 			de = dedxmid*tuss*rhof;
 			fedep = de / eketmp;
@@ -4844,16 +4804,16 @@ void electron() {
             if(electron_data.sig_ismonotone[qel*media.nmed+imed]) {
                 if(iq < 0) {
                     sig0 = pwlfEval(imed*MXEKE+lelke, elke, 
-                        electron_data.esig1, electron_data.esig0);
+                        electron_data.esig);
                     dedx0 = pwlfEval(imed*MXEKE+lelke, elke, 
-                        electron_data.ededx1, electron_data.ededx0);
+                        electron_data.ededx);
                     sig0 /= dedx0;
                 }
                 else {
                     sig0 = pwlfEval(imed*MXEKE+lelke, elke, 
-                        electron_data.psig1, electron_data.psig0);
+                        electron_data.psig);
                     dedx0 = pwlfEval(imed*MXEKE+lelke, elke, 
-                        electron_data.pdedx1, electron_data.pdedx0);
+                        electron_data.pdedx);
                     sig0 /= dedx0;
                 }
             }
@@ -5006,18 +4966,18 @@ void electron() {
 				/* Calculate stopping power */
 				if (iq < 0) {   // electron
 					dedx0 = pwlfEval(imed*MXEKE+lelke, elke, 
-                        electron_data.ededx1, electron_data.ededx0);
+                        electron_data.ededx);
 				}
 				else {  // positron
 					dedx0 = pwlfEval(imed*MXEKE+lelke, elke, 
-                        electron_data.pdedx1, electron_data.pdedx0);
+                        electron_data.pdedx);
 				}
 				double dedx = rhof*dedx0;   // stopping power after density 
                                             // scaling
 
 				/* Determine maximum step-size */
 				double tmxs = pwlfEval(imed*MXEKE+lelke, elke, 
-                    electron_data.tmxs1, electron_data.tmxs0);
+                    electron_data.tmxs);
 				tmxs /= rhof;
 
 				/* Compute the range to E_min(med), where e_min is the 
@@ -5084,15 +5044,15 @@ void electron() {
 				cross sections */
 				if (iq < 0) {
 					etap = pwlfEval(MXEKE*imed+lelke, elke, 
-                        electron_data.etae_ms1, electron_data.etae_ms0);
+                        electron_data.etae_ms);
 				}
 				else {
 					etap = pwlfEval(MXEKE*imed+lelke, elke, 
-                        electron_data.etap_ms1, electron_data.etap_ms0);
+                        electron_data.etap_ms);
 				}
 
 				double ms_corr = pwlfEval(MXEKE*imed+lelke, elke, 
-                    electron_data.blcce1, electron_data.blcce0);
+                    electron_data.blcce);
 				blccl = blccl/etap/(1.0 + 0.25*etap*xccl/blccl/p2)*ms_corr;
 
 				double ssmfp = beta2/blccl;   // mean free path to one single 
@@ -5336,11 +5296,11 @@ void electron() {
 
 					if (iq < 0) {
 						etap = pwlfEval(MXEKE*imed+lelkems, elkems, 
-                            electron_data.etae_ms1, electron_data.etae_ms0);
+                            electron_data.etae_ms);
 					}
 					else {
 						etap = pwlfEval(MXEKE*imed+lelkems, elkems, 
-                            electron_data.etap_ms1, electron_data.etap_ms0);
+                            electron_data.etap_ms);
 					}
 					chia2 *= etap;
 
@@ -5493,16 +5453,16 @@ void electron() {
 		fictitious sigma method */
 		if (iq < 0) {
 			sigf = pwlfEval(imed*MXEKE+lelke, elke, 
-                electron_data.esig1, electron_data.esig0);
+                electron_data.esig);
 			dedx0 = pwlfEval(imed*MXEKE+lelke, elke, 
-                electron_data.ededx1, electron_data.ededx0);
+                electron_data.ededx);
 			sigf /= dedx0;
 		}
 		else {
 			sigf = pwlfEval(imed*MXEKE+lelke, elke, 
-                electron_data.psig1, electron_data.psig0);
+                electron_data.psig);
 			dedx0 = pwlfEval(imed*MXEKE+lelke, elke, 
-                electron_data.pdedx1, electron_data.pdedx0);
+                electron_data.pdedx);
 			sigf /= dedx0;
 		}
 		
@@ -5515,7 +5475,7 @@ void electron() {
     if (iq < 0) {
 		/* electron. Check branching ratio */
 		double ebr1 = pwlfEval(imed*MXEKE+lelke, elke,  // e- branching ratio 
-            electron_data.ebr11, electron_data.ebr10);  // into brem
+            electron_data.ebr1);  // into brem
 		rnno = setRandom();
 		if (rnno <= ebr1) {
 			/* It was Bremsstrahlung */
@@ -5546,7 +5506,7 @@ void electron() {
 	else {
 		/* Positron interaction. pbr1 = brems/(brems + bhabha + annih) */
 		double pbr1 = pwlfEval(imed*MXEKE+lelke, elke,  // e+ branching ratio
-            electron_data.pbr11, electron_data.pbr10);	// into brem.
+            electron_data.pbr1);	// into brem.
 		rnno = setRandom();
 		if (rnno < pbr1) {
 			/* It was bremsstrahlung */
@@ -5556,7 +5516,7 @@ void electron() {
 			/* Decide between bhabha and annihilation. 
 			pbr2 = (brems + bhabha)/(brems + bhabha + annih) */
 			double pbr2 = pwlfEval(imed*MXEKE+lelke, elke,  //e+ branching ratio
-                electron_data.pbr21, electron_data.pbr20);  // into brem or Bha.	
+                electron_data.pbr2);  // into brem or Bha.	
 			if (rnno < pbr2) {
 				/* It is bhabha */
 				bhabha();
@@ -5656,40 +5616,24 @@ int readPegsFile(int *media_found) {
     electron_data.xcc = malloc(media.nmed*sizeof(double));
     electron_data.eke0 = malloc(media.nmed*sizeof(double));
     electron_data.eke1 = malloc(media.nmed*sizeof(double));
-    electron_data.esig0 = malloc(media.nmed*MXEKE*sizeof(double));
-    electron_data.esig1 = malloc(media.nmed*MXEKE*sizeof(double));
-    electron_data.psig0 = malloc(media.nmed*MXEKE*sizeof(double));
-    electron_data.psig1 = malloc(media.nmed*MXEKE*sizeof(double));
-    electron_data.ededx0 = malloc(media.nmed*MXEKE*sizeof(double));
-    electron_data.ededx1 = malloc(media.nmed*MXEKE*sizeof(double));
-    electron_data.pdedx0 = malloc(media.nmed*MXEKE*sizeof(double));
-    electron_data.pdedx1 = malloc(media.nmed*MXEKE*sizeof(double));
-    electron_data.ebr10 = malloc(media.nmed*MXEKE*sizeof(double));
-    electron_data.ebr11 = malloc(media.nmed*MXEKE*sizeof(double));
-    electron_data.pbr10 = malloc(media.nmed*MXEKE*sizeof(double));
-    electron_data.pbr11 = malloc(media.nmed*MXEKE*sizeof(double));
-    electron_data.pbr20 = malloc(media.nmed*MXEKE*sizeof(double));
-    electron_data.pbr21 = malloc(media.nmed*MXEKE*sizeof(double));
-    electron_data.tmxs0 = malloc(media.nmed*MXEKE*sizeof(double));
-    electron_data.tmxs1 = malloc(media.nmed*MXEKE*sizeof(double));
+        electron_data.esig = malloc(2*media.nmed*MXEKE*sizeof(double));
+        electron_data.psig = malloc(2*media.nmed*MXEKE*sizeof(double));
+        electron_data.ededx = malloc(2*media.nmed*MXEKE*sizeof(double));
+        electron_data.pdedx = malloc(2*media.nmed*MXEKE*sizeof(double));
+        electron_data.ebr1 = malloc(2*media.nmed*MXEKE*sizeof(double));
+        electron_data.pbr1 = malloc(2*media.nmed*MXEKE*sizeof(double));
+        electron_data.pbr2 = malloc(2*media.nmed*MXEKE*sizeof(double));
+        electron_data.tmxs = malloc(2*media.nmed*MXEKE*sizeof(double));
     
     /* Zero the following arrays, as they are surely not totally used. */
-    memset(electron_data.esig0, 0.0, media.nmed*MXEKE*sizeof(double));
-    memset(electron_data.esig1, 0.0, media.nmed*MXEKE*sizeof(double));
-    memset(electron_data.psig0, 0.0, media.nmed*MXEKE*sizeof(double));
-    memset(electron_data.psig1, 0.0, media.nmed*MXEKE*sizeof(double));
-    memset(electron_data.ededx0, 0.0, media.nmed*MXEKE*sizeof(double));
-    memset(electron_data.ededx1, 0.0, media.nmed*MXEKE*sizeof(double));
-    memset(electron_data.pdedx0, 0.0, media.nmed*MXEKE*sizeof(double));
-    memset(electron_data.pdedx1, 0.0, media.nmed*MXEKE*sizeof(double));
-    memset(electron_data.ebr10, 0.0, media.nmed*MXEKE*sizeof(double));
-    memset(electron_data.ebr11, 0.0, media.nmed*MXEKE*sizeof(double));
-    memset(electron_data.pbr10, 0.0, media.nmed*MXEKE*sizeof(double));
-    memset(electron_data.pbr11, 0.0, media.nmed*MXEKE*sizeof(double));
-    memset(electron_data.pbr20, 0.0, media.nmed*MXEKE*sizeof(double));
-    memset(electron_data.pbr21, 0.0, media.nmed*MXEKE*sizeof(double));
-    memset(electron_data.tmxs0, 0.0, media.nmed*MXEKE*sizeof(double));
-    memset(electron_data.tmxs1, 0.0, media.nmed*MXEKE*sizeof(double));
+        memset(electron_data.esig, 0, 2*media.nmed*MXEKE*sizeof(double));
+        memset(electron_data.psig, 0, 2*media.nmed*MXEKE*sizeof(double));
+        memset(electron_data.ededx, 0, 2*media.nmed*MXEKE*sizeof(double));
+        memset(electron_data.pdedx, 0, 2*media.nmed*MXEKE*sizeof(double));
+        memset(electron_data.ebr1, 0, 2*media.nmed*MXEKE*sizeof(double));
+        memset(electron_data.pbr1, 0, 2*media.nmed*MXEKE*sizeof(double));
+        memset(electron_data.pbr2, 0, 2*media.nmed*MXEKE*sizeof(double));
+        memset(electron_data.tmxs, 0, 2*media.nmed*MXEKE*sizeof(double));
     
     do {
         /* Read a line of pegs file */
@@ -6001,38 +5945,38 @@ int readPegsFile(int *media_found) {
             int neke = pegs_data.meke[imed];
             for (int k = 0; k<neke; k++) {
                 fscanf(fp, "%lf %lf %lf %lf %lf %lf %lf %lf ",
-                       &electron_data.esig0[imed*MXEKE + k],
-                       &electron_data.esig1[imed*MXEKE + k],
-                       &electron_data.psig0[imed*MXEKE + k],
-                       &electron_data.psig1[imed*MXEKE + k],
-                       &electron_data.ededx0[imed*MXEKE + k],
-                       &electron_data.ededx1[imed*MXEKE + k],
-                       &electron_data.pdedx0[imed*MXEKE + k],
-                       &electron_data.pdedx1[imed*MXEKE + k]);
+                       &electron_data.esig[2*(imed*MXEKE + k) + 1],
+                       &electron_data.esig[2*(imed*MXEKE + k)],
+                       &electron_data.psig[2*(imed*MXEKE + k) + 1],
+                       &electron_data.psig[2*(imed*MXEKE + k)],
+                       &electron_data.ededx[2*(imed*MXEKE + k) + 1],
+                       &electron_data.ededx[2*(imed*MXEKE + k)],
+                       &electron_data.pdedx[2*(imed*MXEKE + k) + 1],
+                       &electron_data.pdedx[2*(imed*MXEKE + k)]);
                 
                 fscanf(fp, "%lf %lf %lf %lf %lf %lf %lf %lf ",
-                       &electron_data.ebr10[imed*MXEKE + k],
-                       &electron_data.ebr11[imed*MXEKE + k],
-                       &electron_data.pbr10[imed*MXEKE + k],
-                       &electron_data.pbr11[imed*MXEKE + k],
-                       &electron_data.pbr20[imed*MXEKE + k],
-                       &electron_data.pbr21[imed*MXEKE + k],
-                       &electron_data.tmxs0[imed*MXEKE + k],
-                       &electron_data.tmxs1[imed*MXEKE + k]);
+                       &electron_data.ebr1[2*(imed*MXEKE + k) + 1],
+                       &electron_data.ebr1[2*(imed*MXEKE + k)],
+                       &electron_data.pbr1[2*(imed*MXEKE + k) + 1],
+                       &electron_data.pbr1[2*(imed*MXEKE + k)],
+                       &electron_data.pbr2[2*(imed*MXEKE + k) + 1],
+                       &electron_data.pbr2[2*(imed*MXEKE + k)],
+                       &electron_data.tmxs[2*(imed*MXEKE + k) + 1],
+                       &electron_data.tmxs[2*(imed*MXEKE + k)]);
             }
             
             /* length units, only for cm */
             double DFACTI = 1.0 / (pegs_data.rlc[imed]);
             electron_data.blcc[imed] *= DFACTI;
             for (int k = 0; k<neke; k++) {
-                electron_data.esig0[imed*MXEKE + k] *= DFACTI;
-                electron_data.psig0[imed*MXEKE + k] *= DFACTI;
-                electron_data.ededx0[imed*MXEKE + k] *= DFACTI;
-                electron_data.pdedx0[imed*MXEKE + k] *= DFACTI;
-                electron_data.pdedx1[imed*MXEKE + k] *= DFACTI;
-                electron_data.esig1[imed*MXEKE + k] *= DFACTI;
-                electron_data.psig1[imed*MXEKE + k] *= DFACTI;
-                electron_data.ededx1[imed*MXEKE + k] *= DFACTI;
+                electron_data.esig[2*(imed*MXEKE + k) + 1] *= DFACTI;
+                electron_data.psig[2*(imed*MXEKE + k) + 1] *= DFACTI;
+                electron_data.ededx[2*(imed*MXEKE + k) + 1] *= DFACTI;
+                electron_data.pdedx[2*(imed*MXEKE + k) + 1] *= DFACTI;
+                electron_data.pdedx[2*(imed*MXEKE + k)] *= DFACTI;
+                electron_data.esig[2*(imed*MXEKE + k)] *= DFACTI;
+                electron_data.psig[2*(imed*MXEKE + k)] *= DFACTI;
+                electron_data.ededx[2*(imed*MXEKE + k)] *= DFACTI;
             }
             electron_data.xcc[imed] *= sqrt(DFACTI);
             
