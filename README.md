@@ -137,7 +137,13 @@ addpath('build/bin');
 - `mcOpt` — run settings: `nHistories`, `nBatches`, `nSplit`, `charge`, `global_ecut`,
   `global_pcut`, `randomSeeds`, `pegsFile`, `pgs4formFile`, `dataFolder`, `outputFolder`, and
   optionally `spectrumFile`, `monoEnergy`, `sourceGeometry` (`'point'` or `'gaussian'`),
-  `sourceGaussianWidth`, `relDoseThreshold`, `verbose`, and the variance-reduction keys below
+  `sourceGaussianWidth`, `relDoseThreshold`, `verbose`, `progressCallback`, and the
+  variance-reduction keys below
+
+`progressCallback`, if given, is a function handle called with a single scalar in `[0,1]` once
+per batch and once per finished beamlet; it replaces the built-in `waitbar` and owns any
+handle/window lifecycle itself, e.g. `mcOpt.progressCallback = @(p) waitbar(p, h, msg);`. Without
+it, a `waitbar` is shown automatically when `verbose >= 2`.
 
 Both outputs are sparse, with one column per beamlet and one row per dose-grid voxel; the
 second output is only computed if requested. Entries below `relDoseThreshold` (relative to the

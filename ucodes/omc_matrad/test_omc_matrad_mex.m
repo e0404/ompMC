@@ -120,6 +120,50 @@ if ~isequal(size(dijVar), expectedSize) || nnz(dijVar) == 0
 end
 fprintf('Variance output: %d nonzeros.\n', nnz(dijVar));
 
+%% mcOpt.progressCallback replaces the built-in waitbar
+
+% verbose = 2 would normally pop up a waitbar; a progressCallback should
+% take over that reporting instead and no figure should be created for it.
+global progressLog; %#ok<GVMIS>
+progressLog = [];
+
+mcOptCb = mcOpt;
+mcOptCb.verbose = 2;
+mcOptCb.progressCallback = @recordProgressCallback;
+
+figuresBefore = findall(0, 'Type', 'figure');
+dijCb = omc_matrad(fixture.cubeRho, fixture.cubeMatIx, ...
+    fixture.mcGeo, fixture.mcSrc, mcOptCb);
+figuresAfter = findall(0, 'Type', 'figure');
+
+if numel(figuresAfter) > numel(figuresBefore)
+    error('ompMC:test:waitbarNotSuppressed', ...
+        'A figure was created even though a progressCallback was supplied; the built-in waitbar was not suppressed.');
+end
+if isempty(progressLog)
+    error('ompMC:test:callbackNotCalled', 'progressCallback was never invoked.');
+end
+if any(progressLog < 0 | progressLog > 1)
+    error('ompMC:test:callbackOutOfRange', 'progressCallback received a value outside [0,1].');
+end
+if ~issorted(progressLog)
+    error('ompMC:test:callbackNotMonotonic', 'progressCallback values are not non-decreasing.');
+end
+if progressLog(end) ~= 1
+    error('ompMC:test:callbackDidNotFinish', ...
+        'Last progressCallback value was %.4f, expected 1.', progressLog(end));
+end
+if ~isequal(size(dijCb), expectedSize)
+    error('ompMC:test:callbackWrongSize', ...
+        'Dose influence matrix computed with a progressCallback is %s, expected %s.', ...
+        mat2str(size(dijCb)), mat2str(expectedSize));
+end
+
+fprintf('progressCallback invoked %d times, from %.4f to %.4f, no waitbar figure created.\n', ...
+    numel(progressLog), progressLog(1), progressLog(end));
+
+clear global progressLog;
+
 %% Releasing the MEX file after a parallel region
 
 % This is the part that used to bring MATLAB down. Once an OpenMP parallel
@@ -139,3 +183,12 @@ end
 fprintf('MEX file stayed locked across "clear mex".\n');
 
 fprintf('omc_matrad MEX smoke test passed.\n');
+
+function recordProgressCallback(p)
+%RECORDPROGRESSCALLBACK Append a progress value reported by omc_matrad.
+%   Passed to omc_matrad as mcOpt.progressCallback in the test above; logs
+%   to a global because the MEX file invokes it outside this script's
+%   workspace, so an ordinary local variable would not be reachable.
+global progressLog; %#ok<GVMIS>
+progressLog(end+1) = p;
+end

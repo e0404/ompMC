@@ -63,6 +63,12 @@ const mxArray *mcOpt;
 //verbose flag
 int verbose_flag;
 
+/* Optional progress callback: a MATLAB function handle taking a single
+ scalar progress argument in [0,1]. Points into mcOpt (an input array), so
+ it must not be destroyed. NULL when the caller did not supply one, in
+ which case progress falls back to the built-in waitbar. */
+mxArray *progressCallback;
+
 #if defined(_MSC_VER)
 	//use __declspec(thread) instead of threadprivate to avoid 
 	//error C3053. More information in:
@@ -222,6 +228,15 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
         mexPrintf("ompMC output Option: Verbose flag is set to %d!\n",verbose_flag);
     else
         mexPrintf("ompMC logging disabled.\n");
+
+    /* Optional caller-supplied progress callback, e.g.
+     options.progressCallback = @(p) waitbar(p, h, msg); replaces the
+     built-in waitbar when given. */
+    progressCallback = mxGetField(mcOpt,0,"progressCallback");
+    if (progressCallback && !mxIsClass(progressCallback,"function_handle")) {
+        mexPrintf("ompMC option 'progressCallback' is not a function handle, ignoring it.\n");
+        progressCallback = NULL;
+    }
 
     mxArray* tmp2;
     int status;
@@ -1459,6 +1474,51 @@ void initHistory(int ibeamlet) {
     return;
 }
 
+/* Progress reporting for the main simulation loop. If the caller supplied
+ options.progressCallback, report through it (progress in [0,1]) and let
+ the MATLAB side own any waitbar/handle lifecycle. Otherwise fall back to
+ the built-in waitbar, lazily opened on first use, when verbose_flag > 1. */
+static mxArray *builtinWaitbarHandle = NULL;
+
+static void reportProgress(double progress, const char *message) {
+    if (progressCallback != NULL) {
+        mxArray *progressArg = mxCreateDoubleScalar(progress);
+        mxArray *cbArgs[2] = { progressCallback, progressArg };
+        mexCallMATLAB(0, NULL, 2, cbArgs, "feval");
+        mxDestroyArray(progressArg);
+        return;
+    }
+
+    if (verbose_flag <= 1)
+        return;
+
+    mxArray *progressArg = mxCreateDoubleScalar(progress);
+    mxArray *messageArg = mxCreateString(message);
+    mxArray *waitbarOutput[1];
+
+    if (builtinWaitbarHandle == NULL) {
+        mxArray *waitbarInputs[2] = { progressArg, messageArg };
+        mexCallMATLAB(1, waitbarOutput, 2, waitbarInputs, "waitbar");
+        builtinWaitbarHandle = waitbarOutput[0];
+    } else {
+        mxArray *waitbarInputs[3] = { progressArg, builtinWaitbarHandle, messageArg };
+        mexCallMATLAB(0, waitbarOutput, 3, waitbarInputs, "waitbar");
+    }
+
+    mxDestroyArray(progressArg);
+    mxDestroyArray(messageArg);
+}
+
+static void closeProgress(void) {
+    if (builtinWaitbarHandle != NULL) {
+        mxArray *waitbarOutput[1];
+        mxArray *waitbarInputs[1] = { builtinWaitbarHandle };
+        mexCallMATLAB(0, waitbarOutput, 1, waitbarInputs, "close");
+        mxDestroyArray(builtinWaitbarHandle);
+        builtinWaitbarHandle = NULL;
+    }
+}
+
 /******************************************************************************/
 /* omc_matrad main function */
 void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
@@ -1569,23 +1629,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     if (verbose_flag > 2)
         mexPrintf("Using a relative dose cut-off of %f\n",relDoseThreshold);
     
-    /* Use Matlab waitbar to show execution progress */
-    mxArray* waitbarHandle = NULL;                             // the waitbar handle does not exist yet
-	mxArray* waitbarProgress = mxCreateDoubleScalar(0.0);   // allocate a double scalar for the progress
-	mxArray* waitbarMessage = mxCreateString("calculate dose influence matrix for photons (ompMC) ...");    // allocate a string for the message
-	
-	mxArray* waitbarInputs[3];  // array of waitbar inputs
-    mxArray* waitbarOutput[1];  // pointer to waitbar output
-
-	waitbarInputs[0] = waitbarProgress; 
-	waitbarInputs[1] = waitbarMessage;	
-	
-    /* Create the waitbar with h = waitbar(progress,message); */
-    int matlabCallStatus = 0;
-    if (verbose_flag > 1) {
-        matlabCallStatus = mexCallMATLAB(1, waitbarOutput, 2, waitbarInputs, "waitbar");
-        waitbarHandle = waitbarOutput[0];
-    }
+    const char *progressMessage = "calculate dose influence matrix for photons (ompMC) ...";
 
 
     /* Create output matrix */
@@ -1655,14 +1699,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
             accumEndep(1.0/(double)nperbatch);
 
             progress = ((double)ibeamlet + (double)(ibatch+1)/nbatch)/source.nbeamlets;
-            (*mxGetPr(waitbarProgress)) = progress;
-
-            if (waitbarHandle != NULL && waitbarOutput != NULL) {              
-                waitbarInputs[0] = waitbarProgress;
-                waitbarInputs[1] = waitbarHandle;
-                waitbarInputs[2] = waitbarMessage;
-                matlabCallStatus = mexCallMATLAB(0, waitbarOutput, 2, waitbarInputs, "waitbar");
-            }
+            reportProgress(progress, progressMessage);
         }
 
         /* Output of results for current beamlet */
@@ -1776,31 +1813,16 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
          accum_endep2 as well, which the memset it replaces did not, so the
          variance of one beamlet no longer leaks into the next. */
         resetBeamScore();
-		progress = (double) (ibeamlet+1) / (double) source.nbeamlets;		
-        (*mxGetPr(waitbarProgress)) = progress;
-
-		/* Update the waitbar with waitbar(hWaitbar,progress); */
-        if (waitbarHandle != NULL && waitbarOutput != NULL) {
-            waitbarInputs[0] = waitbarProgress;
-            waitbarInputs[1] = waitbarHandle;		
-            waitbarInputs[2] = waitbarMessage;
-            matlabCallStatus = mexCallMATLAB(0, waitbarOutput, 2, waitbarInputs, "waitbar");
-        }
+		progress = (double) (ibeamlet+1) / (double) source.nbeamlets;
+        reportProgress(progress, progressMessage);
     }
 
     /* Print some output and execution time up to this point */
     if (verbose_flag > 0)
-        mexPrintf("Simulation finished!\nFinalizing output...\n"); 
-    
-    mxDestroyArray (waitbarProgress);
-    mxDestroyArray (waitbarMessage);
-    if (waitbarHandle != NULL && waitbarOutput != NULL) {
-        waitbarInputs[0] = waitbarHandle;		
-        matlabCallStatus = mexCallMATLAB(0,waitbarOutput,1, waitbarInputs,"close") ;
-        mxDestroyArray(waitbarHandle);
-    }
+        mexPrintf("Simulation finished!\nFinalizing output...\n");
 
-    
+    closeProgress();
+
     if (verbose_flag >= 3)
         mexPrintf("Sparse MC Dij has %d (%f percent) elements!\n", linIx, (double)linIx/((double)nCubeElements*(double)source.nbeamlets));
 
