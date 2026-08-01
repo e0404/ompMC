@@ -78,6 +78,21 @@ void cleanStack() {
     return;
 }
 
+/* The interaction routines push at most one particle each, writing into
+ stack.p[stack.np + 1] before the stack pointer moves. Each of them calls
+ this first, so the write can never run past the stack; the photon splitting
+ loop guards its own pushes the same way. */
+static void checkStackSpace(void) {
+
+    if (stack.np + 1 >= MXSTACK) {
+        printf("Stack overflow with np = %d. Increase MXSTACK!\n",
+               stack.np + 1);
+        exit(EXIT_FAILURE);
+    }
+
+    return;
+}
+
 void transferProperties(int npnew, int npold) {
     /* The following function transfer phase space properties from particle
      npold on stack to particle np */
@@ -1472,6 +1487,7 @@ void pair(int imed) {
     int iq1, iq2;               /* charge of "electrons" */
     int l, l1;                  /* flags for high/low energy distributions */
 
+    checkStackSpace();
     stack.npold = np;   // set old stack counter before interaction
     
     if (eig <= 2.1) {
@@ -1735,6 +1751,7 @@ void compton() {
     double alpha = 0.0;
     double rejmax = 0.0;   /* max. of rejf3 in the case of uniform sampling */
 
+    checkStackSpace();
     stack.npold = np;   // set old stack counter before interaction
 
     do {
@@ -2439,7 +2456,10 @@ void initSpinData(int nmed) {
     
     /* Open spinms file */
     FILE *fp;
-    if ((fp = fopen(spinms_file, "r")) == NULL) {
+    /* The spin file is binary; "rb" matters on Windows, where text mode
+     would translate CRLF byte pairs inside the records and stop reading at
+     the first 0x1A byte, silently corrupting the spin tables. */
+    if ((fp = fopen(spinms_file, "rb")) == NULL) {
         printf("Unable to open file: %s\n", spinms_file);
         exit(EXIT_FAILURE);
     }
@@ -2457,38 +2477,55 @@ void initSpinData(int nmed) {
     short *spin_buffer_int = (short*)malloc((spin_file_len/2)*sizeof(short));
     
     /* Read spin file version */
-    char version[32];
-    printf("\t");
-    for (int i=0; i<32; i++) {
-        fread(&version[i], 1, 1, fp);
-        printf("%c", version[i]);
+    char version[33];
+    if (fread(version, 1, 32, fp) != 32) {
+        printf("Could not read the version header of %s\n", spinms_file);
+        exit(EXIT_FAILURE);
     }
-    printf("\n");
-    
-    /* Read spin file endianess */
-    char endianess[4];
-    printf("\tspin file endianess : ");
-    for (int i=0; i<4; i++) {
-        fread(&endianess[i], 1, 1, fp);
-        printf("%c", endianess[i]);
+    version[32] = '\0';
+    printf("\t%s\n", version);
+
+    /* Read spin file endianess marker. The file stores the bytes '1','2',
+     '3','4' in the writer's byte order; anything else means the data was
+     produced on a machine of the opposite endianness and every float and
+     short below would be read byte-swapped. */
+    char endianess[5];
+    if (fread(endianess, 1, 4, fp) != 4) {
+        printf("Could not read the endianess marker of %s\n", spinms_file);
+        exit(EXIT_FAILURE);
     }
-    printf("\n");
-    
+    endianess[4] = '\0';
+    printf("\tspin file endianess : %s\n", endianess);
+
+    if (strncmp(endianess, "1234", 4) != 0) {
+        printf("The spin data file %s has the wrong byte order for this "
+               "machine (marker '%s', expected '1234'). Regenerate it on a "
+               "machine of this endianness.\n", spinms_file, endianess);
+        exit(EXIT_FAILURE);
+    }
+
     /* Read values for spin and b2, max and min values */
     float espin_max;
     float espin_min;
     float b2spin_max;
     float b2spin_min;
-    fread(&espin_min, 4, 1, fp);
-    fread(&espin_max, 4, 1, fp);
-    fread(&b2spin_min, 4, 1, fp);
-    fread(&b2spin_max, 4, 1, fp);
-    
+    if (fread(&espin_min, 4, 1, fp) != 1 ||
+        fread(&espin_max, 4, 1, fp) != 1 ||
+        fread(&b2spin_min, 4, 1, fp) != 1 ||
+        fread(&b2spin_max, 4, 1, fp) != 1) {
+        printf("Could not read the grid limits of %s\n", spinms_file);
+        exit(EXIT_FAILURE);
+    }
+
     /* Save information on spin data struct */
     spin_data.b2spin_min = (double)b2spin_min;
-    
+
+    /* Skip the rest of the first record */
     float algo[276];
-    fread(&algo, 263, 4, fp);
+    if (fread(&algo, 263, 4, fp) != 4) {
+        printf("Could not read the first record of %s\n", spinms_file);
+        exit(EXIT_FAILURE);
+    }
     
     int nener = MXE_SPIN;
     double dloge = log(espin_max/espin_min)/(double)nener;
@@ -2589,9 +2626,17 @@ void initSpinData(int nmed) {
         memset(g_array, 0.0, 2*(MXE_SPIN1+1)*sizeof(double));
         
         rewind(fp);
-        fread(&spin_buffer[0], 4, spin_file_len/4, fp);
+        if (fread(&spin_buffer[0], 4, spin_file_len/4, fp) !=
+                (size_t)(spin_file_len/4)) {
+            printf("Could not read the spin data records.\n");
+            exit(EXIT_FAILURE);
+        }
         rewind(fp);
-        fread(&spin_buffer_int[0], 2, spin_file_len/2, fp);
+        if (fread(&spin_buffer_int[0], 2, spin_file_len/2, fp) !=
+                (size_t)(spin_file_len/2)) {
+            printf("Could not read the spin data records.\n");
+            exit(EXIT_FAILURE);
+        }
         
         int irec, i2_array[512], ii2;
         double dum1, dum2, dum3, aux_o, tau, eta, gamma, flmax;
@@ -4164,6 +4209,7 @@ void rannih() {
     double rnno;
     int np = stack.np;
 
+    checkStackSpace();
     stack.npold = np;   // set old stack counter before interaction
     
     /* Polar angle selection */
@@ -4229,6 +4275,7 @@ void brems() {
     double eie = stack.p[np].e;   // energy of incident electron
 	double phi1; double phi2;   // screening function
 
+    checkStackSpace();
     stack.npold = np;   // set old stack counter before interaction
 	
 	/* Decide which distribution to use:
@@ -4423,6 +4470,7 @@ void moller() {
     double eie = stack.p[np].e;   // total energy of incident electron
 	double ekin = eie - RM;	    // kinetic energy of incident electron
 
+    checkStackSpace();
     stack.npold = np;   // set old stack counter before interaction
 
     if(ekin <= 2.0*pegs_data.te[imed]) { 
@@ -4513,6 +4561,7 @@ void bhabha() {
 	double ep0c = 1.0 - ep0;
 	double yp = 1.0 - 2.0*yy;
 
+    checkStackSpace();
     stack.npold = np;   // set old stack counter before interaction
 
     /* Used in rejection function calculation */
@@ -4594,6 +4643,7 @@ void annih() {
 	t = g - 1.0;
 	p = sqrt(a*t);
 
+    checkStackSpace();
     stack.npold = np;   // set old stack counter before interaction
 
 	double pot = p/t;                       // "p over t"

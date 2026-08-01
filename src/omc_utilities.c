@@ -70,35 +70,69 @@ double omc_get_time() {
 #include <string.h>
 #include <ctype.h>
 
+/* Trim leading and trailing whitespace in place. Internal whitespace stays,
+ so multi-word keys like "global ecut" keep their exact spelling. */
+static void trimSpaces(char *str) {
+
+    char *start = str;
+    while (isspace((unsigned char)*start)) {
+        start++;
+    }
+
+    size_t len = strlen(start);
+    while (len > 0 && isspace((unsigned char)start[len - 1])) {
+        len--;
+    }
+
+    memmove(str, start, len);
+    str[len] = '\0';
+
+    return;
+}
+
 /* Parse a configuration file */
 void parseInputFile(char *input_file) {
-    
+
     char buf[BUFFER_SIZE];      // support lines up to 120 characters
-    
+
     /* Make space for the new string */
     const char *extension = INPUT_EXT;
     char *file_name = malloc(strlen(input_file) + strlen(extension) + 1);
     strcpy(file_name, input_file);
     strcat(file_name, extension); /* add the extension */
-    
+
     FILE *fp;
     if ((fp = fopen(file_name, "r")) == NULL) {
         printf("Unable to open file: %s\n", file_name);
         exit(EXIT_FAILURE);
     }
-    
+
     while (fgets(buf, BUFFER_SIZE , fp) != NULL) {
         /* Jumps lines labeled with #, together with only white
          spaced or empty ones. */
         if (strstr(buf, "#") || lineBlack(buf)) {
             continue;
         }
-        
-        strcpy(input_items[input_idx].key, strtok(buf, "=\r\n"));
-        strcpy(input_items[input_idx].value, strtok(NULL, "\r\n"));
+
+        /* Lines without a '=' cannot form a key, value pair; skip them
+         instead of handing strcpy a NULL */
+        char *key = strtok(buf, "=\r\n");
+        char *value = (key != NULL) ? strtok(NULL, "\r\n") : NULL;
+        if (key == NULL || value == NULL) {
+            printf("Skipping malformed input line without 'key = value' "
+                   "form.\n");
+            continue;
+        }
+
+        /* Store trimmed of surrounding whitespace, so that keys can be
+         compared exactly rather than by substring */
+        strcpy(input_items[input_idx].key, key);
+        strcpy(input_items[input_idx].value, value);
+        trimSpaces(input_items[input_idx].key);
+        trimSpaces(input_items[input_idx].value);
         input_idx++;
     }
-    
+
     input_idx--;
     fclose(fp);
     
@@ -124,12 +158,15 @@ int getInputValue(char *dest, char *key) {
     }
     
     for (int i = 0; i <= input_idx; i++) {
-        if (strstr(input_items[i].key, key)) {
+        /* Keys are stored trimmed, so exact comparison is safe. The substring
+         match used before let a short key like "ecut" answer for
+         "global ecut", depending only on storage order. */
+        if (strcmp(input_items[i].key, key) == 0) {
             strcpy(dest, input_items[i].value);
             return 1;
         }
     }
-    
+
     return 0;
 }
 

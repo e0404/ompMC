@@ -155,6 +155,21 @@ struct OmcConfig {
 
 struct OmcConfig omcConfig;
 
+/* Fetch a required field of the MC options struct, failing with a clear
+ error message instead of handing a NULL pointer to the MATLAB API, which
+ would take the whole MATLAB session down. */
+static mxArray *getRequiredField(const mxArray *opts, const char *name) {
+
+    mxArray *field = mxGetField(opts, 0, name);
+    if (field == NULL) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:missingField",
+            "Required field '%s' is missing from the MC options struct.",
+            name);
+    }
+
+    return field;
+}
+
 /* Function used to parse input from matRad */
 void parseInput(int nrhs, const mxArray *prhs[]) {
     //Default values
@@ -262,7 +277,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
 
     nInput++;
     sprintf(input_items[nInput].key,"nsplit");
-    tmp_fieldpointer = mxGetField(mcOpt,0,"nSplit");    
+    tmp_fieldpointer = getRequiredField(mcOpt,"nSplit");
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
         mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
@@ -284,7 +299,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     {
         size_t buflen = 255;
         omcConfig.spectrumFile = (char*) mxCalloc(buflen + 1,sizeof(char));
-        omcConfig.spectrumFile = "./spectra/mohan6.spectrum";
+        strcpy(omcConfig.spectrumFile, "./spectra/mohan6.spectrum");
     }
    
     tmp_fieldpointer = mxGetField(mcOpt,0,"monoEnergy");
@@ -293,7 +308,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     
     nInput++;
     sprintf(input_items[nInput].key,"charge");
-    tmp_fieldpointer = mxGetField(mcOpt,0,"charge");    
+    tmp_fieldpointer = getRequiredField(mcOpt,"charge");
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
         mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
@@ -305,7 +320,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
 
     nInput++;
     sprintf(input_items[nInput].key,"global ecut");
-    tmp_fieldpointer = mxGetField(mcOpt,0,"global_ecut");    
+    tmp_fieldpointer = getRequiredField(mcOpt,"global_ecut");
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
         mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
@@ -317,7 +332,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
 
     nInput++;
     sprintf(input_items[nInput].key,"global pcut");
-    tmp_fieldpointer = mxGetField(mcOpt,0,"global_pcut");
+    tmp_fieldpointer = getRequiredField(mcOpt,"global_pcut");
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");
     if (status != 0)
         mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
@@ -345,7 +360,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
 
     nInput++;
     sprintf(input_items[nInput].key,"rng seeds");
-    tmp_fieldpointer = mxGetField(mcOpt,0,"randomSeeds");    
+    tmp_fieldpointer = getRequiredField(mcOpt,"randomSeeds");
     status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
     if (status != 0)
         mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
@@ -357,25 +372,25 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     
     nInput++;
     sprintf(input_items[nInput].key,"pegs file");
-    tmp_fieldpointer = mxGetField(mcOpt,0,"pegsFile");    
+    tmp_fieldpointer = getRequiredField(mcOpt,"pegsFile");
     tmp = mxArrayToString(tmp_fieldpointer);
     strcpy(input_items[nInput].value,tmp);
     
     nInput++;
     sprintf(input_items[nInput].key,"pgs4form file");
-    tmp_fieldpointer = mxGetField(mcOpt,0,"pgs4formFile");    
+    tmp_fieldpointer = getRequiredField(mcOpt,"pgs4formFile");
     tmp = mxArrayToString(tmp_fieldpointer);
     strcpy(input_items[nInput].value,tmp);
     
     nInput++;
     sprintf(input_items[nInput].key,"data folder");
-    tmp_fieldpointer = mxGetField(mcOpt,0,"dataFolder");    
+    tmp_fieldpointer = getRequiredField(mcOpt,"dataFolder");
     tmp = mxArrayToString(tmp_fieldpointer);
     strcpy(input_items[nInput].value,tmp);
     
     nInput++;
     sprintf(input_items[nInput].key,"output folder");
-    tmp_fieldpointer = mxGetField(mcOpt,0,"outputFolder");    
+    tmp_fieldpointer = getRequiredField(mcOpt,"outputFolder");    
     tmp = mxArrayToString(tmp_fieldpointer);
     strcpy(input_items[nInput].value,tmp);
 
