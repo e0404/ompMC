@@ -955,8 +955,11 @@ void accumulateResults(int iout, int nhist, int nbatch)
     const int *touched;
     int ntouched = scoreBeamVoxels(&touched);
 
+    /* MSVC only implements OpenMP 2.0, which in C does not allow declaring
+     the loop variable inside the for statement */
+    int n;
     #pragma omp parallel for
-    for (int n = 0; n < ntouched; n++) {
+    for (n = 0; n < ntouched; n++) {
         int irl = touched[n];
 
         /* Region 0 is outside the geometry. ausgab() does reach it, through

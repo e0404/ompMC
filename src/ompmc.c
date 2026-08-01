@@ -3836,7 +3836,7 @@ void mscat(int imed, int qel, int *spin_index, int *find_index,
 			counter2++;
 			xi = setRandom();
 			ak = xi*MXU_MS;
-			k = ak;
+			k = (int)ak;
 			ak -= k;
             
 			int msbase = m_scat->i*(MXQ_MS + 1)*(MXU_MS + 1) +
