@@ -477,6 +477,15 @@ struct Vrt {
      electron would have radiated below esave is absorbed locally; keep
      esave modest (~2 MeV) so that loss stays negligible. 0 disables. */
     double esave;
+
+    /* Unbiased Russian roulette of electrons at their creation point: a new
+     electron of total energy below e_rr (MeV) survives with probability
+     1/f_rr and carries f_rr times its weight; otherwise it is removed
+     without depositing. Unlike range rejection this also kills electrons in
+     the boundary-crossing zone, at the price of lumpier dose from the
+     amplified survivors. Enabled when e_rr > 0 and f_rr > 1. */
+    double e_rr;
+    double f_rr;
 };
 
 void initVrt(void);

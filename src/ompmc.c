@@ -537,10 +537,10 @@ void initPhotonData() {
     
     photon_data.ge0 = malloc(media.nmed*sizeof(double));
     photon_data.ge1 = malloc(media.nmed*sizeof(double));
-        photon_data.gmfp = malloc(2*media.nmed*MXGE*sizeof(double));
-        photon_data.gbr1 = malloc(2*media.nmed*MXGE*sizeof(double));
-        photon_data.gbr2 = malloc(2*media.nmed*MXGE*sizeof(double));
-        photon_data.cohe = malloc(2*media.nmed*MXGE*sizeof(double));
+    photon_data.gmfp = malloc(2*media.nmed*MXGE*sizeof(double));
+    photon_data.gbr1 = malloc(2*media.nmed*MXGE*sizeof(double));
+    photon_data.gbr2 = malloc(2*media.nmed*MXGE*sizeof(double));
+    photon_data.cohe = malloc(2*media.nmed*MXGE*sizeof(double));
     
     for (int i=0; i<media.nmed; i++) {
         photon_data.ge1[i] = (double)(MXGE - 1)/log(pegs_data.up[i]/pegs_data.ap[i]);
@@ -677,10 +677,10 @@ void cleanPhoton() {
     
     free(photon_data.ge0);
     free(photon_data.ge1);
-        free(photon_data.gmfp);
-        free(photon_data.gbr1);
-        free(photon_data.gbr2);
-        free(photon_data.cohe);
+    free(photon_data.gmfp);
+    free(photon_data.gbr1);
+    free(photon_data.gbr2);
+    free(photon_data.cohe);
     
     return;
 }
@@ -842,7 +842,7 @@ void initRayleighData(void) {
     rayleigh_data.b_array = malloc(media.nmed*MXRAYFF*sizeof(double));
     rayleigh_data.c_array = malloc(media.nmed*MXRAYFF*sizeof(double));
     rayleigh_data.i_array = malloc(media.nmed*RAYCDFSIZE*sizeof(int));
-        rayleigh_data.pmax = malloc(2*media.nmed*MXGE*sizeof(double));
+    rayleigh_data.pmax = malloc(2*media.nmed*MXGE*sizeof(double));
     
     for (int i=0; i<media.nmed; i++) {
         /* Calculate form factor using independent atom model */
@@ -1034,7 +1034,7 @@ void cleanRayleigh() {
     free(rayleigh_data.c_array);
     free(rayleigh_data.fcum);
     free(rayleigh_data.i_array);
-        free(rayleigh_data.pmax);
+    free(rayleigh_data.pmax);
     
     return;
 }
@@ -1918,6 +1918,45 @@ void photo() {
  along the ray, i.e. exactly the voxel marching Woodcock tracking avoids.)
  The survivor selection, Russian roulette of scattered photons and the
  interaction sampling itself are unchanged. */
+
+/* Unbiased Russian roulette of electrons at their creation point, see
+ struct Vrt. Sweeps the stack entries [start, stack.np], which the callers
+ arrange to hold only the products of the interaction that just happened, so
+ no electron is ever rouletted twice. Killed electrons are removed without
+ depositing; the amplified weight of the survivors keeps the expectation
+ value of the dose exact. Positrons are left alone so that annihilation
+ photons keep their fluence smooth. */
+static void rouletteElectrons(int start) {
+
+    if (vrt.e_rr <= 0.0 || vrt.f_rr <= 1.0) {
+        return;
+    }
+
+    int np = stack.np;
+    int ip = start;
+
+    while (ip <= np) {
+        if (stack.p[ip].iq == -1 && stack.p[ip].e < vrt.e_rr) {
+            double rnno = setRandom();
+            if (rnno*vrt.f_rr > 1.0) {
+                /* Killed: fill the slot with the top entry and look at the
+                 slot again */
+                if (ip < np) {
+                    stack.p[ip] = stack.p[np];
+                }
+                np -= 1;
+                continue;
+            }
+            stack.p[ip].wt *= vrt.f_rr;
+        }
+        ip += 1;
+    }
+
+    stack.np = np;
+
+    return;
+}
+
 void photon() {
 
     int np = stack.np;              // stack pointer
@@ -2145,6 +2184,11 @@ void photon() {
         } while (ip <= np);
         stack.np = np;
 
+        /* Play Russian roulette with the electrons this interaction just
+         created; [npold, np] holds nothing else after the compaction */
+        rouletteElectrons(stack.npold);
+        np = stack.np;
+
     }   // end of "photon splitting" loop
 
     /* Escaped flights push nothing, so the stack pointer may still hold the
@@ -2181,28 +2225,28 @@ void photon() {
 void cleanElectron() {
     
     free(electron_data.blcc);
-        free(electron_data.blcce);
+    free(electron_data.blcce);
     free(electron_data.e_array);
-        free(electron_data.ebr1);
-        free(electron_data.ededx);
+    free(electron_data.ebr1);
+    free(electron_data.ededx);
     free(electron_data.eke0);
     free(electron_data.eke1);
-        free(electron_data.esig);
+    free(electron_data.esig);
     free(electron_data.esig_e);
-        free(electron_data.etae_ms);
-        free(electron_data.etap_ms);
+    free(electron_data.etae_ms);
+    free(electron_data.etap_ms);
     free(electron_data.expeke1);
-        free(electron_data.pbr1);
-        free(electron_data.pbr2);
-        free(electron_data.pdedx);
-        free(electron_data.psig);
+    free(electron_data.pbr1);
+    free(electron_data.pbr2);
+    free(electron_data.pdedx);
+    free(electron_data.psig);
     free(electron_data.psig_e);
-        free(electron_data.q1ce_ms);
-        free(electron_data.q1cp_ms);
-        free(electron_data.q2ce_ms);
-        free(electron_data.q2cp_ms);
+    free(electron_data.q1ce_ms);
+    free(electron_data.q1cp_ms);
+    free(electron_data.q2ce_ms);
+    free(electron_data.q2cp_ms);
     free(electron_data.range_ep);
-        free(electron_data.tmxs);
+    free(electron_data.tmxs);
     free(electron_data.xcc);
     free(electron_data.sig_ismonotone);
     
@@ -2561,22 +2605,22 @@ void initSpinData(int nmed) {
     double *df = (double*) malloc((MXE_SPIN1+1)*sizeof(double));
     
     /* Allocate memory for electron data */
-        electron_data.etae_ms = malloc(2*nmed*MXEKE*sizeof(double));
-        electron_data.etap_ms = malloc(2*nmed*MXEKE*sizeof(double));
-        electron_data.q1ce_ms = malloc(2*nmed*MXEKE*sizeof(double));
-        electron_data.q1cp_ms = malloc(2*nmed*MXEKE*sizeof(double));
-        electron_data.q2ce_ms = malloc(2*nmed*MXEKE*sizeof(double));
-        electron_data.q2cp_ms = malloc(2*nmed*MXEKE*sizeof(double));
-        electron_data.blcce = malloc(2*nmed*MXEKE*sizeof(double));
+    electron_data.etae_ms = malloc(2*nmed*MXEKE*sizeof(double));
+    electron_data.etap_ms = malloc(2*nmed*MXEKE*sizeof(double));
+    electron_data.q1ce_ms = malloc(2*nmed*MXEKE*sizeof(double));
+    electron_data.q1cp_ms = malloc(2*nmed*MXEKE*sizeof(double));
+    electron_data.q2ce_ms = malloc(2*nmed*MXEKE*sizeof(double));
+    electron_data.q2cp_ms = malloc(2*nmed*MXEKE*sizeof(double));
+    electron_data.blcce = malloc(2*nmed*MXEKE*sizeof(double));
     
     /* Zero the following arrays, as they are surely not totally used. */
-        memset(electron_data.etae_ms, 0, 2*nmed*MXEKE*sizeof(double));
-        memset(electron_data.etap_ms, 0, 2*nmed*MXEKE*sizeof(double));
-        memset(electron_data.q1ce_ms, 0, 2*nmed*MXEKE*sizeof(double));
-        memset(electron_data.q1cp_ms, 0, 2*nmed*MXEKE*sizeof(double));
-        memset(electron_data.q2ce_ms, 0, 2*nmed*MXEKE*sizeof(double));
-        memset(electron_data.q2cp_ms, 0, 2*nmed*MXEKE*sizeof(double));
-        memset(electron_data.blcce, 0, 2*nmed*MXEKE*sizeof(double));
+    memset(electron_data.etae_ms, 0, 2*nmed*MXEKE*sizeof(double));
+    memset(electron_data.etap_ms, 0, 2*nmed*MXEKE*sizeof(double));
+    memset(electron_data.q1ce_ms, 0, 2*nmed*MXEKE*sizeof(double));
+    memset(electron_data.q1cp_ms, 0, 2*nmed*MXEKE*sizeof(double));
+    memset(electron_data.q2ce_ms, 0, 2*nmed*MXEKE*sizeof(double));
+    memset(electron_data.q2cp_ms, 0, 2*nmed*MXEKE*sizeof(double));
+    memset(electron_data.blcce, 0, 2*nmed*MXEKE*sizeof(double));
     
     for (int imed = 0; imed<nmed; imed++) {
         double sum_Z2 = 0.0, sum_A = 0.0, sum_pz = 0.0, sum_Z = 0.0;
@@ -5500,6 +5544,10 @@ void electron() {
 			}
 			else {
 				moller();
+
+				/* The delta ray, if one was pushed, sits above the
+				 primary; play Russian roulette with it */
+				rouletteElectrons(stack.npold + 1);
 			}
 		}
 	}
@@ -5520,6 +5568,12 @@ void electron() {
 			if (rnno < pbr2) {
 				/* It is bhabha */
 				bhabha();
+
+				/* If the new electron ended up above the surviving
+				 positron, play Russian roulette with it; when it is the
+				 more energetic product it sits below and is left alone,
+				 which costs savings but no correctness */
+				rouletteElectrons(stack.npold + 1);
 			}
 			else {
 				/* It is in-flight annihilation */
@@ -5616,24 +5670,24 @@ int readPegsFile(int *media_found) {
     electron_data.xcc = malloc(media.nmed*sizeof(double));
     electron_data.eke0 = malloc(media.nmed*sizeof(double));
     electron_data.eke1 = malloc(media.nmed*sizeof(double));
-        electron_data.esig = malloc(2*media.nmed*MXEKE*sizeof(double));
-        electron_data.psig = malloc(2*media.nmed*MXEKE*sizeof(double));
-        electron_data.ededx = malloc(2*media.nmed*MXEKE*sizeof(double));
-        electron_data.pdedx = malloc(2*media.nmed*MXEKE*sizeof(double));
-        electron_data.ebr1 = malloc(2*media.nmed*MXEKE*sizeof(double));
-        electron_data.pbr1 = malloc(2*media.nmed*MXEKE*sizeof(double));
-        electron_data.pbr2 = malloc(2*media.nmed*MXEKE*sizeof(double));
-        electron_data.tmxs = malloc(2*media.nmed*MXEKE*sizeof(double));
+    electron_data.esig = malloc(2*media.nmed*MXEKE*sizeof(double));
+    electron_data.psig = malloc(2*media.nmed*MXEKE*sizeof(double));
+    electron_data.ededx = malloc(2*media.nmed*MXEKE*sizeof(double));
+    electron_data.pdedx = malloc(2*media.nmed*MXEKE*sizeof(double));
+    electron_data.ebr1 = malloc(2*media.nmed*MXEKE*sizeof(double));
+    electron_data.pbr1 = malloc(2*media.nmed*MXEKE*sizeof(double));
+    electron_data.pbr2 = malloc(2*media.nmed*MXEKE*sizeof(double));
+    electron_data.tmxs = malloc(2*media.nmed*MXEKE*sizeof(double));
     
     /* Zero the following arrays, as they are surely not totally used. */
-        memset(electron_data.esig, 0, 2*media.nmed*MXEKE*sizeof(double));
-        memset(electron_data.psig, 0, 2*media.nmed*MXEKE*sizeof(double));
-        memset(electron_data.ededx, 0, 2*media.nmed*MXEKE*sizeof(double));
-        memset(electron_data.pdedx, 0, 2*media.nmed*MXEKE*sizeof(double));
-        memset(electron_data.ebr1, 0, 2*media.nmed*MXEKE*sizeof(double));
-        memset(electron_data.pbr1, 0, 2*media.nmed*MXEKE*sizeof(double));
-        memset(electron_data.pbr2, 0, 2*media.nmed*MXEKE*sizeof(double));
-        memset(electron_data.tmxs, 0, 2*media.nmed*MXEKE*sizeof(double));
+    memset(electron_data.esig, 0, 2*media.nmed*MXEKE*sizeof(double));
+    memset(electron_data.psig, 0, 2*media.nmed*MXEKE*sizeof(double));
+    memset(electron_data.ededx, 0, 2*media.nmed*MXEKE*sizeof(double));
+    memset(electron_data.pdedx, 0, 2*media.nmed*MXEKE*sizeof(double));
+    memset(electron_data.ebr1, 0, 2*media.nmed*MXEKE*sizeof(double));
+    memset(electron_data.pbr1, 0, 2*media.nmed*MXEKE*sizeof(double));
+    memset(electron_data.pbr2, 0, 2*media.nmed*MXEKE*sizeof(double));
+    memset(electron_data.tmxs, 0, 2*media.nmed*MXEKE*sizeof(double));
     
     do {
         /* Read a line of pegs file */
@@ -6075,6 +6129,32 @@ void initVrt(void) {
     }
     else {
         printf("Electron range rejection disabled\n");
+    }
+
+    /* Electron Russian roulette threshold and factor, optional. e_rr is the
+     total energy in MeV below which a newly created electron is rouletted,
+     f_rr the inverse of its survival probability. Absent keys disable the
+     technique. */
+    if (getInputValue(buffer, "e_rr") == 1) {
+        vrt.e_rr = atof(buffer);
+    }
+    else {
+        vrt.e_rr = 0.0;
+    }
+    if (getInputValue(buffer, "f_rr") == 1) {
+        vrt.f_rr = atof(buffer);
+    }
+    else {
+        vrt.f_rr = 0.0;
+    }
+    if (vrt.e_rr > 0.0 && vrt.f_rr > 1.0) {
+        printf("Electron Russian roulette enabled, e_rr = %f MeV, "
+               "f_rr = %f\n", vrt.e_rr, vrt.f_rr);
+    }
+    else {
+        vrt.e_rr = 0.0;
+        vrt.f_rr = 0.0;
+        printf("Electron Russian roulette disabled\n");
     }
 
     return;
