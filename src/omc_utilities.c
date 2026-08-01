@@ -36,6 +36,14 @@
 struct inputItems input_items[];     // key,value pairs
 int input_idx;                       // number of key,value pair
 
+/* Thread-local geometry memo declared in omc_utilities.h. Zero initialized,
+ which marks both halves as empty. */
+#if defined(_MSC_VER)
+    __declspec(thread) struct OmcGeomCache omc_geom_cache;
+#else
+    struct OmcGeomCache omc_geom_cache;
+#endif
+
 /******************************************************************************/
 /* Timing utilities. If OpenMP is enabled it calculates the wall time through 
  omp_get_wtime() function. Otherwise, it calculates CPU time through the clock() 

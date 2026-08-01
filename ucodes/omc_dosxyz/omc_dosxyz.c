@@ -225,32 +225,44 @@ void howfar(int *idisc, int *irnew, double *ustep) {
     int ijmax = imax*jmax;
 
     /* First we need to decode the region number of the particle in terms of
-     the region indices in each direction */
+     the region indices in each direction. The memo makes this free whenever
+     this region was decoded, or staged as a neighbour, by an earlier call */
     int irx, iry, irz;
-    omcDecodeRegion(irl, imax, jmax, &irx, &iry, &irz);
+    omcCachedDecodeRegion(irl, imax, jmax, &irx, &iry, &irz);
+
+    /* Reciprocal direction cosines, cached so that a photon marching through
+     voxels divides only on its first step in a given direction */
+    double ui, vi, wi;
+    omcInvDir(stack.p[np].u, stack.p[np].v, stack.p[np].w, &ui, &vi, &wi);
+
+    /* Whenever the step is truncated to a voxel face the indices of the
+     neighbour behind it are known without any division; stage them so the
+     next call, which runs in that neighbour, hits the memo. */
 
     /* Check in z-direction */
     if (stack.p[np].w > 0.0) {
         /* Going towards outer plane */
-        dist = (geometry.zbounds[irz+1] - stack.p[np].z)/stack.p[np].w;
+        dist = (geometry.zbounds[irz+1] - stack.p[np].z)*wi;
         if (dist < *ustep) {
             *ustep = dist;
             if (irz != (geometry.ksize - 1)) {
                 *irnew = irl + ijmax;
+                omcStageRegion(*irnew, irx, iry, irz + 1);
             }
             else {
                 *irnew = 0; /* leaving geometry */
             }
         }
     }
-    
+
     else if (stack.p[np].w < 0.0) {
         /* Going towards inner plane */
-        dist = -(stack.p[np].z - geometry.zbounds[irz])/stack.p[np].w;
+        dist = -(stack.p[np].z - geometry.zbounds[irz])*wi;
         if (dist < *ustep) {
             *ustep = dist;
             if (irz != 0) {
                 *irnew = irl - ijmax;
+                omcStageRegion(*irnew, irx, iry, irz - 1);
             }
             else {
                 *irnew = 0; /* leaving geometry */
@@ -261,61 +273,65 @@ void howfar(int *idisc, int *irnew, double *ustep) {
     /* Check in x-direction */
     if (stack.p[np].u > 0.0) {
         /* Going towards positive plane */
-        dist = (geometry.xbounds[irx+1] - stack.p[np].x)/stack.p[np].u;
+        dist = (geometry.xbounds[irx+1] - stack.p[np].x)*ui;
         if (dist < *ustep) {
             *ustep = dist;
             if (irx != (geometry.isize - 1)) {
                 *irnew = irl + 1;
+                omcStageRegion(*irnew, irx + 1, iry, irz);
             }
             else {
                 *irnew = 0; /* leaving geometry */
             }
         }
     }
-    
+
     else if (stack.p[np].u < 0.0) {
         /* Going towards negative plane */
-        dist = -(stack.p[np].x - geometry.xbounds[irx])/stack.p[np].u;
+        dist = -(stack.p[np].x - geometry.xbounds[irx])*ui;
         if (dist < *ustep) {
             *ustep = dist;
             if (irx != 0) {
                 *irnew = irl - 1;
+                omcStageRegion(*irnew, irx - 1, iry, irz);
             }
             else {
                 *irnew = 0; /* leaving geometry */
             }
         }
     }
-    
+
     /* Check in y-direction */
     if (stack.p[np].v > 0.0) {
         /* Going towards positive plane */
-        dist = (geometry.ybounds[iry+1] - stack.p[np].y)/stack.p[np].v;
+        dist = (geometry.ybounds[iry+1] - stack.p[np].y)*vi;
         if (dist < *ustep) {
             *ustep = dist;
             if (iry != (geometry.jsize - 1)) {
                 *irnew = irl + imax;
+                omcStageRegion(*irnew, irx, iry + 1, irz);
             }
             else {
                 *irnew = 0; /* leaving geometry */
             }
         }
     }
-    
+
     else if (stack.p[np].v < 0.0) {
         /* Going towards negative plane */
-        dist = -(stack.p[np].y - geometry.ybounds[iry])/stack.p[np].v;
+        dist = -(stack.p[np].y - geometry.ybounds[iry])*vi;
         if (dist < *ustep) {
             *ustep = dist;
             if (iry != 0) {
                 *irnew = irl - imax;
+                omcStageRegion(*irnew, irx, iry - 1, irz);
             }
             else {
                 *irnew = 0; /* leaving geometry */
             }
         }
     }
-    
+
     return;
 }
 
@@ -335,7 +351,8 @@ double hownear(void) {
         /* First we need to decode the region number of the particle in terms
          of the region indices in each direction */
         int irx, iry, irz;
-        omcDecodeRegion(irl, geometry.isize, geometry.jsize, &irx, &iry, &irz);
+        omcCachedDecodeRegion(irl, geometry.isize, geometry.jsize,
+                              &irx, &iry, &irz);
 
         /* Check in x-direction */
         tperp = fmin(tperp, geometry.xbounds[irx+1] - stack.p[np].x);

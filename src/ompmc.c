@@ -1939,12 +1939,24 @@ void photon() {
                              of mfp to transport before interacting */
     double cohfac = 0.0;    // Rayleigh scattering correction
     int ptrans;             // variable to control photon transport (true)
-    
+
+    int imed_cached = -2;   /* medium for which lgle, gmfpr0 and cohfac are
+                             valid. They depend only on the photon energy,
+                             fixed over the whole splitting loop, and on the
+                             medium, so they need re-evaluation only on a
+                             medium change rather than on every voxel
+                             crossing. -2 matches neither vacuum (-1) nor any
+                             medium, forcing the first evaluation */
+
     /* Setup photon splitting VRT */
-    
-    /* ED: I know, goto statements are evil, but it is much clear to use it 
+
+    /* ED: I know, goto statements are evil, but it is much clear to use it
     than that adding an additional 'do while' loop */
     start_mfp_loop:
+
+    /* The photon energy may have changed on re-entry after an interaction,
+     so any cached interpolations are stale */
+    imed_cached = -2;
 
     rnno = setRandom();
     rnno /= (double)nsplit;
@@ -1992,22 +2004,26 @@ void photon() {
         irold = irl;
         imed = region.med[irl];
 
-        do {    /* start of "transport" loop */                        
+        do {    /* start of "transport" loop */
             if (imed != -1) {
-                /* Adjust lgle to C indexing */
-                lgle = pwlfInterval(imed, gle,
-                                    photon_data.ge1, photon_data.ge0) - 1;
-                gmfpr0 = pwlfEval(imed*MXGE + lgle, gle,
-                                photon_data.gmfp1, photon_data.gmfp0);                
-                
-                /* Density scaling */
+                if (imed != imed_cached) {
+                    /* Adjust lgle to C indexing */
+                    lgle = pwlfInterval(imed, gle,
+                                        photon_data.ge1, photon_data.ge0) - 1;
+                    gmfpr0 = pwlfEval(imed*MXGE + lgle, gle,
+                                    photon_data.gmfp1, photon_data.gmfp0);
+
+                    /* Rayleigh correction */
+                    cohfac = pwlfEval(imed*MXGE + lgle, gle,
+                                        photon_data.cohe1, photon_data.cohe0);
+                    imed_cached = imed;
+                }
+
+                /* Density scaling, the only factor that varies from voxel to
+                 voxel of the same medium */
                 rhof = region.rhof[irl];
                 gmfp = gmfpr0/rhof;
-                
-                /* Rayleigh correction */
-                cohfac = pwlfEval(imed*MXGE + lgle, gle,
-                                    photon_data.cohe1, photon_data.cohe0);
-                gmfp *= cohfac;    
+                gmfp *= cohfac;
 
                 tstep = gmfp*dpmfp;
             }
@@ -2064,9 +2080,25 @@ void photon() {
 
         xsave = stack.p[np].x; ysave = stack.p[np].y; zsave = stack.p[np].z;
         irsave = stack.p[np].ir;
-        
+
         /* Time for an interaction */
-        
+
+        /* The transport loop can end within SGMFP of a boundary it just
+         crossed into a different medium, leaving the cached interpolations
+         belonging to the medium before the boundary. Refresh them so the
+         interaction is sampled with the tables of the medium it actually
+         happens in. (Before the caching this mixed the new medium's table
+         base with the old medium's interval index.) */
+        if (imed != imed_cached) {
+            lgle = pwlfInterval(imed, gle,
+                                photon_data.ge1, photon_data.ge0) - 1;
+            gmfpr0 = pwlfEval(imed*MXGE + lgle, gle,
+                            photon_data.gmfp1, photon_data.gmfp0);
+            cohfac = pwlfEval(imed*MXGE + lgle, gle,
+                                photon_data.cohe1, photon_data.cohe0);
+            imed_cached = imed;
+        }
+
         /* First check for Rayleigh scattering */
         rnno = setRandom();
         if (rnno <= 1.0 - cohfac) {

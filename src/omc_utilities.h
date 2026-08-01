@@ -104,6 +104,83 @@ static inline int omcFindVoxelIndex(const double *bounds, int n, double pos) {
 
     return lo;
 }
+
+/* Thread-local memo used by the user codes' howfar()/hownear() to keep the
+ integer divisions of omcDecodeRegion() and the floating point divisions by
+ the direction cosines off the per-step hot path.
+
+ The region half is a pure irl -> (ix,iy,iz) memo: entries are only ever
+ written as consistent pairs, so a staged entry that the transport ends up
+ not visiting is harmless -- it is just a memo of a region nobody asks
+ about. howfar() stages the indices of the neighbour region whenever it
+ truncates the step to a voxel face, which it knows without any division, so
+ the next call inside the new voxel hits the memo.
+
+ The direction half holds the reciprocals of the last direction seen.
+ Photons keep their direction while marching through voxels, so every
+ howfar() call after the first works with multiplications instead of up to
+ three divisions. Directions of exactly zero get a reciprocal of zero; the
+ sign tests in howfar() ensure such a component is never used.
+
+ Zero initialization leaves the memo empty: region 0 is outside the geometry
+ and is rejected by the callers before any lookup, and no transported
+ particle has the zero direction. */
+struct OmcGeomCache {
+    int irl;            /* region the indices below belong to; 0 = empty */
+    int ix, iy, iz;
+
+    double u, v, w;     /* direction the reciprocals below belong to */
+    double ui, vi, wi;
+};
+
+#if defined(_MSC_VER)
+    extern __declspec(thread) struct OmcGeomCache omc_geom_cache;
+#else
+    extern struct OmcGeomCache omc_geom_cache;
+    #pragma omp threadprivate(omc_geom_cache)
+#endif
+
+static inline void omcCachedDecodeRegion(int irl, int imax, int jmax,
+                                         int *ix, int *iy, int *iz) {
+
+    if (omc_geom_cache.irl != irl) {
+        omcDecodeRegion(irl, imax, jmax,
+                        &omc_geom_cache.ix, &omc_geom_cache.iy,
+                        &omc_geom_cache.iz);
+        omc_geom_cache.irl = irl;
+    }
+
+    *ix = omc_geom_cache.ix;
+    *iy = omc_geom_cache.iy;
+    *iz = omc_geom_cache.iz;
+}
+
+/* Prefill the memo with a region whose indices the caller already knows */
+static inline void omcStageRegion(int irl, int ix, int iy, int iz) {
+
+    omc_geom_cache.irl = irl;
+    omc_geom_cache.ix = ix;
+    omc_geom_cache.iy = iy;
+    omc_geom_cache.iz = iz;
+}
+
+static inline void omcInvDir(double u, double v, double w,
+                             double *ui, double *vi, double *wi) {
+
+    if (u != omc_geom_cache.u || v != omc_geom_cache.v ||
+        w != omc_geom_cache.w) {
+        omc_geom_cache.u = u;
+        omc_geom_cache.v = v;
+        omc_geom_cache.w = w;
+        omc_geom_cache.ui = (u != 0.0) ? 1.0/u : 0.0;
+        omc_geom_cache.vi = (v != 0.0) ? 1.0/v : 0.0;
+        omc_geom_cache.wi = (w != 0.0) ? 1.0/w : 0.0;
+    }
+
+    *ui = omc_geom_cache.ui;
+    *vi = omc_geom_cache.vi;
+    *wi = omc_geom_cache.wi;
+}
 /******************************************************************************/
 
 /* Flag set by '--verbose' argument */
