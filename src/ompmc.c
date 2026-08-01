@@ -1889,26 +1889,37 @@ void photo() {
     return;
 }
 
-/* Simulation of photon step */
+/* Simulation of photon step.
+
+ Photons are transported with Woodcock (delta) tracking: distances are
+ sampled against a majorant inverse mean free path sigma_max valid over the
+ whole geometry, the photon jumps there in one step regardless of how many
+ voxels it crosses, and the collision is accepted as real with probability
+ sigma(local)/sigma_max, otherwise it is a fictitious interaction and the
+ flight continues. This removes the voxel-by-voxel howfar() marching
+ entirely; the number of steps per flight is set by the attenuation of the
+ densest voxel rather than by the voxel size.
+
+ The photon splitting VRT samples nsplit sub-photons of weight wt/nsplit.
+ Each sub-photon delta-tracks its own flight from the same starting point;
+ the first majorant hop uses one value of the stratified eta grid, so that
+ as an ensemble the nsplit flights sample the free-path distribution exactly
+ as the previous scheme did, and the fresh random numbers of the delta
+ continuations preserve the correct conditional distribution of each
+ flight. (The previous scheme transported one photon to nsplit successive
+ pre-sampled optical depths, which requires integrating the cross-section
+ along the ray, i.e. exactly the voxel marching Woodcock tracking avoids.)
+ The survivor selection, Russian roulette of scattered photons and the
+ interaction sampling itself are unchanged. */
 void photon() {
-    
+
     int np = stack.np;              // stack pointer
-    int irl = stack.p[np].ir;         // region index
-    int irold, irnew;
-    int imed = region.med[irl];     // medium index of current region
-    int idisc;                      // to discard photon if requested
-    double rhof;                    // mass density
-    
-    double tstep;                   // distance to a discrete interaction               
-    double ustep, vstep;                   
+    int irl = stack.p[np].ir;       // region index
+    int imed;                       // medium index of current region
     double edep;                    // deposited energy by particle
-    double eig = stack.p[np].e;       // energy of incident gamma
+    double eig = stack.p[np].e;     // energy of incident gamma
 
-    double dpmfp, dpmfp_old;
-    double gmfpr0 = 0.0;    // photon mfp before density and coherent correction
-    double gmfp = 0.0;      // photon MFP after density scaling    
     double gbr1, gbr2;
-
     double rnno;
 
     /* Variables needed for photon splitting */
@@ -1917,46 +1928,65 @@ void photon() {
     int ip;
     double d_eta;
     double eta_prime;
-    double a_survive;
-        
+
     double xsave, ysave, zsave; // photon phase space data before splitting
     double usave, vsave, wsave;
     double esave, wtsave;
-    int irsave;
 
-    /* First check for photon cutoff energy */
-    if (eig <= regionPcut(irl) || stack.p[np].wt == 0) {
+    /* First check for photon cutoff energy. Region 0 photons cannot be
+     transported and deposit on the spot as well. */
+    if (eig <= regionPcut(irl) || stack.p[np].wt == 0 || irl == 0) {
         edep = eig;
-        
+
         /* Deposit energy on the spot */
         ausgab(edep);
         stack.np -= 1;
         return;
     }
-    
-    int lgle = 0;           // index for gamma MFP interpolation
-    double gle = log(eig);  /* gle is gamma log energy, here to sample number
-                             of mfp to transport before interacting */
-    double cohfac = 0.0;    // Rayleigh scattering correction
-    int ptrans;             // variable to control photon transport (true)
 
-    int imed_cached = -2;   /* medium for which lgle, gmfpr0 and cohfac are
-                             valid. They depend only on the photon energy,
-                             fixed over the whole splitting loop, and on the
-                             medium, so they need re-evaluation only on a
-                             medium change rather than on every voxel
-                             crossing. -2 matches neither vacuum (-1) nor any
-                             medium, forcing the first evaluation */
+    double gle = log(eig);  // gamma log energy
 
-    /* Setup photon splitting VRT */
+    /* Per-medium data at the current photon energy, evaluated once per
+     photon line rather than per transport step: interpolation interval,
+     Rayleigh correction, and the inverse mean free path of the medium at
+     unit density ratio. sigma_max bounds rho_rel/(gmfp*cohfac) over every
+     voxel of the geometry via the per-medium maximum density ratios. */
+    int lgle_med[MXMED];
+    double cohfac_med[MXMED];
+    double sigma_scale[MXMED];
+    double sigma_max;
+    double sigma_maxi;
 
     /* ED: I know, goto statements are evil, but it is much clear to use it
     than that adding an additional 'do while' loop */
     start_mfp_loop:
 
-    /* The photon energy may have changed on re-entry after an interaction,
-     so any cached interpolations are stale */
-    imed_cached = -2;
+    sigma_max = 0.0;
+    for (int m = 0; m < media.nmed; m++) {
+        /* Adjust the interval to C indexing */
+        int lg = pwlfInterval(m, gle, photon_data.ge1, photon_data.ge0) - 1;
+        double g0 = pwlfEval(m*MXGE + lg, gle,
+                             photon_data.gmfp1, photon_data.gmfp0);
+        double cf = pwlfEval(m*MXGE + lg, gle,
+                             photon_data.cohe1, photon_data.cohe0);
+
+        lgle_med[m] = lg;
+        cohfac_med[m] = cf;
+        sigma_scale[m] = 1.0/(g0*cf);
+
+        double sig = region.rhof_max[m]*sigma_scale[m];
+        if (sig > sigma_max) {
+            sigma_max = sig;
+        }
+    }
+
+    if (sigma_max <= 0.0) {
+        /* Nothing in the geometry can interact with this photon (all-vacuum
+         problem). Discard it, it would only escape. */
+        stack.np -= 1;
+        return;
+    }
+    sigma_maxi = 1.0/sigma_max;
 
     rnno = setRandom();
     rnno /= (double)nsplit;
@@ -1966,27 +1996,66 @@ void photon() {
     xsave = stack.p[np].x; ysave = stack.p[np].y; zsave = stack.p[np].z;
     usave = stack.p[np].u; vsave = stack.p[np].v; wsave = stack.p[np].w;
     esave = stack.p[np].e; wtsave = stack.p[np].wt/(double)nsplit;
-    irsave = stack.p[np].ir;
 
     np -= 1;
 
     /* Sample which scattered photon will survive splitting */
     rnno = setRandom();
-    a_survive = rnno*nsplit;
-    i_survive_s = (int)a_survive;
-    dpmfp_old = 0.0; 
+    i_survive_s = (int)(rnno*(double)nsplit);
 
     /* Start of "photon splitting" loop */
     for(int isplit = 0; isplit < nsplit; isplit++) {
-        ptrans = 1; // i.e. transport the photon
         eta_prime -= d_eta;
         if (eta_prime <= 0.0) {
-            goto end_mfp_loop;  // exit "photon splitting" loop
+            break;  // exit "photon splitting" loop
         }
-        
-        dpmfp = -log(eta_prime) - dpmfp_old;
-        dpmfp_old += dpmfp;
-        
+
+        /* Woodcock flight from the common starting point. The first hop
+         uses this sub-photon's stratified eta value. */
+        double x = xsave;
+        double y = ysave;
+        double z = zsave;
+        double t = -log(eta_prime)*sigma_maxi;
+        int interacted = 0; // i.e. false
+
+        do {
+            x += t*usave;
+            y += t*vsave;
+            z += t*wsave;
+
+            irl = regionIndex(x, y, z);
+            if (irl == 0) {
+                break;  // the sub-photon left the geometry
+            }
+
+            imed = region.med[irl];
+            if (imed != -1) {
+                /* Accept as a real interaction with probability
+                 sigma(local)/sigma_max; in vacuum voxels sigma is zero and
+                 the collision is always fictitious */
+                rnno = setRandom();
+                if (rnno*sigma_max <= region.rhof[irl]*sigma_scale[imed]) {
+                    interacted = 1;
+                    break;
+                }
+            }
+
+            /* Fictitious interaction, continue the flight */
+            rnno = setRandom();
+            if (rnno < 1.0E-30) {
+                rnno = 1.0E-30;
+            }
+            t = -log(rnno)*sigma_maxi;
+        } while (1);
+
+        if (!interacted) {
+            /* The flights are independent, an escaped sub-photon says
+             nothing about the remaining ones */
+            continue;
+        }
+
+        /* A real interaction at (x,y,z) in region irl. Put the sub-photon
+         on the stack */
         np += 1;
         stack.np = np;
 
@@ -1994,114 +2063,15 @@ void photon() {
             printf ("Stack overflow with np = %d. Increase MXSTACK!\n", np);
             exit(EXIT_FAILURE);
         }
-        
-        stack.p[np].x = xsave; stack.p[np].y = ysave; stack.p[np].z = zsave;
+
+        stack.p[np].x = x; stack.p[np].y = y; stack.p[np].z = z;
         stack.p[np].u = usave; stack.p[np].v = vsave; stack.p[np].w = wsave;
         stack.p[np].e = esave; stack.p[np].wt = wtsave;
-        stack.p[np].ir = irsave; stack.p[np].iq = 0;
-
-        irl = stack.p[np].ir;
-        irold = irl;
-        imed = region.med[irl];
-
-        do {    /* start of "transport" loop */
-            if (imed != -1) {
-                if (imed != imed_cached) {
-                    /* Adjust lgle to C indexing */
-                    lgle = pwlfInterval(imed, gle,
-                                        photon_data.ge1, photon_data.ge0) - 1;
-                    gmfpr0 = pwlfEval(imed*MXGE + lgle, gle,
-                                    photon_data.gmfp1, photon_data.gmfp0);
-
-                    /* Rayleigh correction */
-                    cohfac = pwlfEval(imed*MXGE + lgle, gle,
-                                        photon_data.cohe1, photon_data.cohe0);
-                    imed_cached = imed;
-                }
-
-                /* Density scaling, the only factor that varies from voxel to
-                 voxel of the same medium */
-                rhof = region.rhof[irl];
-                gmfp = gmfpr0/rhof;
-                gmfp *= cohfac;
-
-                tstep = gmfp*dpmfp;
-            }
-            else {
-                /* Vacuum step */
-                tstep = 1.0E8;
-            }
-
-            irnew = irl;        // default new region number
-            idisc = 0;          // assume photon is not discarded
-            ustep = tstep;      // transfer transport distance to user variable
-
-            howfar(&idisc, &irnew, &ustep);
-
-            /* Transport distance after truncation by howfar */
-            vstep = ustep;
-            edep = 0.0;
-
-            /* Transport the photon */
-            stack.p[np].x += ustep*stack.p[np].u;
-            stack.p[np].y += ustep*stack.p[np].v;
-            stack.p[np].z += ustep*stack.p[np].w;
-
-            if (idisc > 0) {
-                /* User requested inmediate discard */
-                np -= 1;
-                stack.np = np;
-                if (np < 0) {
-                    /* Stack is empty, get out of photon() */
-                    return;
-                }
-                goto end_mfp_loop;  // exit "photon splitting" loop
-            }
-
-            if (imed != -1) {
-                /* Deduct mean free path */
-                dpmfp = fmax(0.0, dpmfp-ustep/gmfp);
-            }
-
-            if (irnew != irold) {
-                /* Region change */
-                stack.p[np].ir = irnew;
-                irl = irnew;
-                irold = irnew;
-                imed = region.med[irl];
-            }
-
-            /* Check if the particle should finish its transport */
-            if (imed != -1 && dpmfp <= SGMFP) {
-                /* Time for an interaction */
-                ptrans = 0;
-            }                
-        } while (ptrans); /* end of "transport" loop */
-
-        xsave = stack.p[np].x; ysave = stack.p[np].y; zsave = stack.p[np].z;
-        irsave = stack.p[np].ir;
-
-        /* Time for an interaction */
-
-        /* The transport loop can end within SGMFP of a boundary it just
-         crossed into a different medium, leaving the cached interpolations
-         belonging to the medium before the boundary. Refresh them so the
-         interaction is sampled with the tables of the medium it actually
-         happens in. (Before the caching this mixed the new medium's table
-         base with the old medium's interval index.) */
-        if (imed != imed_cached) {
-            lgle = pwlfInterval(imed, gle,
-                                photon_data.ge1, photon_data.ge0) - 1;
-            gmfpr0 = pwlfEval(imed*MXGE + lgle, gle,
-                            photon_data.gmfp1, photon_data.gmfp0);
-            cohfac = pwlfEval(imed*MXGE + lgle, gle,
-                                photon_data.cohe1, photon_data.cohe0);
-            imed_cached = imed;
-        }
+        stack.p[np].ir = irl; stack.p[np].iq = 0;
 
         /* First check for Rayleigh scattering */
         rnno = setRandom();
-        if (rnno <= 1.0 - cohfac) {
+        if (rnno <= 1.0 - cohfac_med[imed]) {
             /* It was Rayleigh */
             if (isplit != i_survive_s) {
                 np -= 1;
@@ -2110,40 +2080,40 @@ void photon() {
             }
             else {
                 stack.p[np].wt *= nsplit;
-                rayleigh(imed, eig, gle, lgle);
+                rayleigh(imed, eig, gle, lgle_med[imed]);
                 continue;   // go to beginning of "photon splitting" loop
             }
         }
         else {
             /* Other interactions */
             rnno = setRandom();
-            
+
             /* gbr1 = pair/(pair + compton + photo) = pair/gtotal */
-            gbr1 = pwlfEval(imed*MXGE + lgle, gle,
+            gbr1 = pwlfEval(imed*MXGE + lgle_med[imed], gle,
                                 photon_data.gbr11, photon_data.gbr10);
             if (rnno <= gbr1 && eig>2.0*RM) {
-                /* It was pair production */           
+                /* It was pair production */
                 pair(imed);
                 np = stack.np;
             }
             else {
                 /* gbr2 = (pair + compton)/gtotal */
-                gbr2 = pwlfEval(imed*MXGE + lgle, gle,
-                                    photon_data.gbr21, photon_data.gbr20);            
+                gbr2 = pwlfEval(imed*MXGE + lgle_med[imed], gle,
+                                    photon_data.gbr21, photon_data.gbr20);
                 if (rnno < gbr2) {
-                    /* It was compton */            
-                    compton();      
-                    np = stack.np;  
-                }
-                else {
-                    /* It was photoelectric */            
-                    photo();                
+                    /* It was compton */
+                    compton();
                     np = stack.np;
                 }
-            }  
+                else {
+                    /* It was photoelectric */
+                    photo();
+                    np = stack.np;
+                }
+            }
         }
-        
-        /* Kill scattered photons with probabily 1/nsplit. Surviving photon 
+
+        /* Kill scattered photons with probabily 1/nsplit. Surviving photon
         carries the weigth of the original photon */
         ip = stack.npold;
         do {
@@ -2168,18 +2138,20 @@ void photon() {
         } while (ip <= np);
         stack.np = np;
 
-    }   // end of "photon splitting" loop    
-    end_mfp_loop:
+    }   // end of "photon splitting" loop
+
+    /* Escaped flights push nothing, so the stack pointer may still hold the
+     original photon's slot; sync it */
+    stack.np = np;
 
     if (np < 0) {
         return;
     }
-    
+
     if (stack.p[np].iq == 0) {
         /* Split photon again if energy > pcut */
         eig = stack.p[np].e;
         irl = stack.p[np].ir;
-        imed = region.med[irl];
 
         if (eig <= regionPcut(irl)) {
             edep = eig;
@@ -2192,7 +2164,7 @@ void photon() {
         gle = log(eig);
         goto start_mfp_loop;
     }
-        
+
     return;
 }
 

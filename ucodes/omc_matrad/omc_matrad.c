@@ -91,6 +91,11 @@ struct Geom {
     double *xbounds;            // boundaries of voxels on each direction
     double *ybounds;
     double *zbounds;
+
+    double dxi, dyi, dzi;       /* reciprocal grid spacing per axis when that
+                                 axis is uniform, 0.0 when it is not; lets
+                                 regionIndex() locate a point with one
+                                 multiplication instead of a binary search */
 };
 struct Geom geometry;
 
@@ -440,8 +445,14 @@ void initPhantom() {
     geometry.zbounds = mxGetPr(tmp_fieldpointer);
     
     geometry.med_densities = mxGetPr(cubeRho);
-    
+
     geometry.med_indices = (int*)mxGetPr(cubeMatIx);
+
+    /* Detect uniform voxel spacing for the fast point location used by
+     Woodcock photon tracking */
+    geometry.dxi = omcUniformSpacingInv(geometry.xbounds, geometry.isize);
+    geometry.dyi = omcUniformSpacingInv(geometry.ybounds, geometry.jsize);
+    geometry.dzi = omcUniformSpacingInv(geometry.zbounds, geometry.ksize);
 
     /* Summary with geometry information */
     if (verbose_flag > 1)
@@ -605,8 +616,29 @@ void howfar(int *idisc, int *irnew, double *ustep) {
     return;
 }
 
+int regionIndex(double x, double y, double z) {
+
+    /* Region containing the point, 0 if outside the phantom. Points exactly
+     on the outer boundaries count as inside, consistent with the clamping
+     of omcFindVoxelIndex(). */
+    if (x < geometry.xbounds[0] || x > geometry.xbounds[geometry.isize] ||
+        y < geometry.ybounds[0] || y > geometry.ybounds[geometry.jsize] ||
+        z < geometry.zbounds[0] || z > geometry.zbounds[geometry.ksize]) {
+        return 0;
+    }
+
+    int ix = omcVoxelIndexFast(geometry.xbounds, geometry.isize,
+                               geometry.dxi, x);
+    int iy = omcVoxelIndexFast(geometry.ybounds, geometry.jsize,
+                               geometry.dyi, y);
+    int iz = omcVoxelIndexFast(geometry.zbounds, geometry.ksize,
+                               geometry.dzi, z);
+
+    return 1 + ix + iy*geometry.isize + iz*geometry.isize*geometry.jsize;
+}
+
 double hownear(void) {
-    
+
     int np = stack.np;
     int irl = stack.p[np].ir;
     double tperp = 1.0E10;  /* perpendicular distance to closest boundary */
@@ -1108,6 +1140,11 @@ void initRegions() {
     region.med[0] = VACUUM;
     region.rhof[0] = 0.0;
 
+    /* Largest density ratio per medium, the basis of the Woodcock majorant */
+    for (int imed = 0; imed < media.nmed; imed++) {
+        region.rhof_max[imed] = 0.0;
+    }
+
     for (int i=1; i<nreg; i++) {
 
         /* -1 : EGS counts media from 1. Substract 1 to get medium index */
@@ -1133,6 +1170,10 @@ void initRegions() {
             else {
                 region.rhof[i] =
                     geometry.med_densities[i - 1]/pegs_data.rho[imed];
+            }
+
+            if (region.rhof[i] > region.rhof_max[imed]) {
+                region.rhof_max[imed] = region.rhof[i];
             }
         }
     }

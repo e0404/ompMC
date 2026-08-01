@@ -105,6 +105,45 @@ static inline int omcFindVoxelIndex(const double *bounds, int n, double pos) {
     return lo;
 }
 
+/* Reciprocal of the grid spacing if the n+1 values in bounds are uniformly
+ spaced to within a relative tolerance, 0.0 otherwise. Evaluated once at
+ initialization; the tolerance absorbs the single-precision noise that
+ phantom files carry in their boundary lists. */
+static inline double omcUniformSpacingInv(const double *bounds, int n) {
+
+    double dx = (bounds[n] - bounds[0])/(double)n;
+
+    for (int i = 0; i < n; i++) {
+        double d = bounds[i+1] - bounds[i];
+        if (d < 0.999999*dx || d > 1.000001*dx) {
+            return 0.0;
+        }
+    }
+
+    return 1.0/dx;
+}
+
+/* Voxel index of pos along one axis: a single multiplication on a uniform
+ grid (invdx from omcUniformSpacingInv()), the binary search otherwise. The
+ clamp keeps in-range results for positions on the outer boundaries; callers
+ reject positions outside the grid before asking. */
+static inline int omcVoxelIndexFast(const double *bounds, int n,
+                                    double invdx, double pos) {
+
+    if (invdx > 0.0) {
+        int i = (int)((pos - bounds[0])*invdx);
+        if (i < 0) {
+            i = 0;
+        }
+        if (i > n - 1) {
+            i = n - 1;
+        }
+        return i;
+    }
+
+    return omcFindVoxelIndex(bounds, n, pos);
+}
+
 /* Thread-local memo used by the user codes' howfar()/hownear() to keep the
  integer divisions of omcDecodeRegion() and the floating point divisions by
  the direction cosines off the per-step hot path.

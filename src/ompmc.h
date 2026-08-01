@@ -40,6 +40,13 @@ void ausgab(double edep);    // scoring function
 void howfar(int *idisc, int *irnew, double *ustep); // geometry functions
 double hownear(void);
 
+/* Region containing the point (x,y,z), 0 if the point lies outside the
+ geometry. Photon transport uses Woodcock (delta) tracking, which jumps to
+ arbitrary points instead of marching from voxel face to voxel face, so it
+ needs point location rather than howfar()'s directed distances. Electron
+ transport still uses howfar()/hownear(). */
+int regionIndex(double x, double y, double z);
+
 /*******************************************************************************
 * Definitions for Monte Carlo simulation of particle transport 
 *******************************************************************************/
@@ -432,6 +439,14 @@ struct Region {
      directly. */
     double pcut[MXMED + 1];
     double ecut[MXMED + 1];
+
+    /* Largest mass density ratio among the voxels of each medium, filled by
+     the user code's initRegions(). Woodcock photon tracking builds its
+     majorant cross-section from these: for a given energy no voxel of
+     medium m can attenuate more strongly than rhof_max[m] times the
+     medium's tabulated inverse mean free path. Media without any voxel keep
+     zero and simply never bound the majorant. */
+    double rhof_max[MXMED];
 };
 
 extern struct Region region;

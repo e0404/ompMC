@@ -34,6 +34,10 @@ void howfar(int *idisc, int *irnew, double *ustep) {
     (void)idisc; (void)irnew; (void)ustep;
 }
 double hownear(void) { return 0.0; }
+int regionIndex(double x, double y, double z) {
+    (void)x; (void)y; (void)z;
+    return 0;
+}
 void initRegions(void) { }
 
 /* The particle stack is thread local in the core library, so it has to be
