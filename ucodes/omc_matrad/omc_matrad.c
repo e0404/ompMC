@@ -317,16 +317,32 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
 
     nInput++;
     sprintf(input_items[nInput].key,"global pcut");
-    tmp_fieldpointer = mxGetField(mcOpt,0,"global_pcut");    
-    status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
+    tmp_fieldpointer = mxGetField(mcOpt,0,"global_pcut");
+    status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");
     if (status != 0)
         mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
-        tmp = mxArrayToString(tmp2);        
+        tmp = mxArrayToString(tmp2);
         strcpy(input_items[nInput].value,tmp);
     }
-    
+
+    /* Optional electron range rejection threshold (total energy in MeV);
+     when the field is absent the technique stays disabled */
+    tmp_fieldpointer = mxGetField(mcOpt,0,"esave");
+    if (tmp_fieldpointer) {
+        nInput++;
+        sprintf(input_items[nInput].key,"esave");
+        status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");
+        if (status != 0)
+            mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
+        else
+        {
+            tmp = mxArrayToString(tmp2);
+            strcpy(input_items[nInput].value,tmp);
+        }
+    }
+
     nInput++;
     sprintf(input_items[nInput].key,"rng seeds");
     tmp_fieldpointer = mxGetField(mcOpt,0,"randomSeeds");    

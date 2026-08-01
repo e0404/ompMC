@@ -33,6 +33,7 @@ pgs4form file = ./pegs4/pgs4form.dat
 
 # start VRT
 nsplit = 20
+esave = 2.0
 # stop VRT
 
 # start ompMC environment

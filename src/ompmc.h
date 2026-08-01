@@ -474,6 +474,15 @@ void cleanRegions(void);
 struct Vrt {
     /* photon splitting */
     int nsplit; // number of times the photon is divided
+
+    /* Electron range rejection: an electron of total energy below esave
+     (MeV) whose residual CSDA range is shorter than the perpendicular
+     distance to the closest region boundary cannot leave its voxel, so its
+     remaining energy is deposited on the spot (positrons still emit their
+     annihilation photons). The approximation is that bremsstrahlung the
+     electron would have radiated below esave is absorbed locally; keep
+     esave modest (~2 MeV) so that loss stays negligible. 0 disables. */
+    double esave;
 };
 
 void initVrt(void);

@@ -4991,6 +4991,38 @@ void electron() {
 				double tperp = hownear();
 				stack.p[np].dnear = tperp;
 
+				/* Range rejection: below esave, an electron whose residual
+				range cannot reach the closest boundary spends its whole
+				remaining history inside this region, so deposit its energy
+				here and stop transporting it. Bremsstrahlung it would have
+				radiated is absorbed locally, which is the technique's
+				(small, esave-controlled) approximation; annihilation
+				photons of a rejected positron are still emitted since
+				they do escape. */
+				if (eie < vrt.esave && range < tperp) {
+
+					edep = stack.p[np].e - RM;
+
+					/* Call ausgab and drop energy on spot */
+					ausgab(edep);
+
+					/* Positron annihilation section */
+					if (iq > 0) {
+						/* The particle is a positron. Produce annihilation
+						gammas if edep < eie */
+						if (edep < eie) {
+							rannih();
+
+							/* Now discard the positron and take normal
+							return to follow the annihilation gammas */
+							return;
+						}
+					}
+
+					stack.np -= 1;
+					return;
+				}
+
 				/* Set the minimum step size for a CH step, due to efficiency 
 				considerations. It is calculated with eke and elke */
 				double blccl = rhof*electron_data.blcc[imed];
@@ -6033,7 +6065,23 @@ void initVrt(void) {
     }
     else {
         printf("Photon splitting disabled\n");
-    }    
+    }
+
+    /* Electron range rejection threshold, optional. esave is the total
+     energy in MeV; 0 or an absent key disables the technique. */
+    if (getInputValue(buffer, "esave") == 1) {
+        vrt.esave = atof(buffer);
+    }
+    else {
+        vrt.esave = 0.0;
+    }
+    if (vrt.esave > 0.0) {
+        printf("Electron range rejection enabled, esave = %f MeV\n",
+               vrt.esave);
+    }
+    else {
+        printf("Electron range rejection disabled\n");
+    }
 
     return;
 }
