@@ -26,6 +26,7 @@ whether OpenMP and MATLAB were picked up.
 |---|---|---|
 | `OMPMC_BUILD_DOSXYZ` | `ON` | Build the `omc_dosxyz` command line user code |
 | `OMPMC_BUILD_MATRAD_MEX` | `AUTO` | Build the MEX file. `AUTO` skips it when no MATLAB is found, `ON` makes a missing MATLAB a hard error, `OFF` never builds it |
+| `OMPMC_BUILD_MATRAD_OCT` | `AUTO` | Build the same user code as a GNU Octave `.mex`. `AUTO` skips it when no Octave is found, `ON` makes a missing Octave a hard error, `OFF` never builds it. See [GNU Octave](#gnu-octave) |
 | `OMPMC_WITH_OPENMP` | `ON` | Multi threaded execution. Falls back to a serial build with a warning if no OpenMP runtime is available |
 | `OMPMC_WITH_OPENLIBM` | `OFF` | Fetch [openlibm](https://github.com/JuliaMath/openlibm) (MIT licensed) at configure time and resolve the `log`/`exp`/`sin`/`cos` calls from it, statically. Recommended for MinGW GCC, whose bundled software math routines are several times slower than the UCRT ones MSVC uses — the transport samples `-log(rng)` for every photon flight segment. Measured ~15% faster overall on MinGW; pointless with MSVC or glibc. Needs CMake 3.25+ and network access at configure time |
 | `OMPMC_NATIVE_TUNING` | `OFF` | Add `-mtune=native`. Do not use for binaries you intend to distribute |
@@ -46,6 +47,60 @@ cmake -S . -B build -DMatlab_ROOT_DIR="/path/to/MATLAB/R2024b"
 
 `Matlab_ROOT_DIR` is the directory that contains `bin/`, `extern/` and
 `toolbox/` — the value MATLAB reports as `matlabroot`.
+
+## GNU Octave
+
+Octave implements the same MEX C API, so the exact same `omc_matrad.c` is built
+a second time against Octave's headers and dropped next to the MATLAB one as
+`omc_matrad.mex`. The two extensions do not collide — MATLAB only looks for
+`.mexw64`/`.mexa64`/`.mexmaca64`, Octave only for `.mex` — so one `build/bin` can
+serve both, and `test_omc_matrad_mex.m` runs unchanged under either.
+
+Octave ships no CMake package, so [cmake/FindOctave.cmake](cmake/FindOctave.cmake)
+locates it through `octave-config`. Anything on `PATH` is found automatically, as
+are the usual Windows install locations; otherwise point the build at one:
+
+```sh
+cmake -S . -B build -DOctave_ROOT="/path/to/octave"
+```
+
+Two things changed in Octave 10, and both are detected rather than assumed:
+
+* **The MEX entry points moved** out of `liboctinterp` into their own
+  `liboctmex`. Octave 9 and older have no such library, so where a library has
+  to be linked at all the build falls back to `liboctinterp`.
+* **Octave 10 refuses to load a `.mex`** that does not say which `liboctmex` ABI
+  it was built against, failing with *"No SOVERSION found in .mex file
+  function"*. `mkoctfile` supplies that by generating a one-line stub, so the
+  CMake build generates the same one from
+  [ucodes/omc_matrad/omc_mex_soversion.c.in](ucodes/omc_matrad/omc_mex_soversion.c.in). `octave-config` does
+  not report the number, so it is read out of the `liboctmex` library name.
+  Releases predating the check get no stub.
+
+A `.mex` is loaded into a process that already provides the MEX symbols, so on
+Linux and macOS nothing is linked against it at all — exactly what `mkoctfile`
+does. Windows PE cannot leave symbols undefined, so there the Octave libraries
+really are on the link line (`liboctmex` from Octave 10, `liboctinterp` plus
+`liboctave` before it), and **MSVC cannot build the Octave MEX file**: Octave
+ships MinGW import libraries. Use MinGW GCC or clang on Windows; with
+`OMPMC_BUILD_MATRAD_OCT=AUTO` the MSVC build just skips it.
+
+The Windows build tolerates a C runtime mismatch: the Octave 10.3 installer is
+built against the UCRT, while MinGW GCC usually targets `msvcrt.dll`, and both
+runtimes then live in the process. Nothing crosses that boundary here — the MEX
+file frees only what it allocated, and every `mxArray` goes through Octave's own
+allocator — so the combination works. llvm-mingw's UCRT toolchain matches
+Octave's runtime outright.
+
+On Windows, do not put Octave's `bin` on `PATH` to be found. It is an MSYS2
+tree that also carries `gcc`, `g++`, `ld`, `cmake` and `ctest`, so it will
+shadow the toolchain you meant to build with. Pass `-DOctave_ROOT=` instead;
+nothing else needs Octave on `PATH`, since the build and the test both refer to
+it by absolute path.
+
+Tested against Octave 6.4, 8.4, 10.3 and 11.3 on Windows and Octave 8.4 on
+Linux — both sides of the Octave 10 changes above. All of them return the same
+`dij` as the MATLAB MEX file, to the last digit.
 
 ## Platform notes
 

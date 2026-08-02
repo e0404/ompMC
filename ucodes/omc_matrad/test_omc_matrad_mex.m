@@ -41,6 +41,16 @@ catch err
 end
 fprintf('Entered mexFunction and got the expected argument check.\n');
 
+%% Version query
+
+v = omc_matrad('version');
+if ~ischar(v) || isempty(regexp(v, '^\d+\.\d+\.\d+$', 'once'))
+    error('ompMC:test:badVersion', ...
+        'omc_matrad(''version'') returned %s, expected a MAJOR.MINOR.PATCH string.', ...
+        mat2str(v));
+end
+fprintf('omc_matrad(''version'') returned %s.\n', v);
+
 %% A real dose calculation
 
 fixture = load(fullfile(thisDir, 'test_fixture.mat'));
@@ -183,12 +193,3 @@ end
 fprintf('MEX file stayed locked across "clear mex".\n');
 
 fprintf('omc_matrad MEX smoke test passed.\n');
-
-function recordProgressCallback(p)
-%RECORDPROGRESSCALLBACK Append a progress value reported by omc_matrad.
-%   Passed to omc_matrad as mcOpt.progressCallback in the test above; logs
-%   to a global because the MEX file invokes it outside this script's
-%   workspace, so an ordinary local variable would not be reachable.
-global progressLog; %#ok<GVMIS>
-progressLog(end+1) = p;
-end

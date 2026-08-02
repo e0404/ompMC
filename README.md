@@ -43,7 +43,7 @@ If you use this code, please cite the work it is based on:
 | Target       | Kind                | What it does |
 |--------------|---------------------|--------------|
 | `omc_dosxyz` | command line binary | DOSXYZnrc-style standalone dose calculation on an `.egsphant` phantom, driven by a plain-text input file. Writes a `.3ddose` file. |
-| `omc_matrad` | MATLAB MEX file     | Beamlet dose-influence matrix for matRad. Takes density and material cubes, geometry, source and option structs; returns sparse `dij` (and optionally its variance). |
+| `omc_matrad` | MATLAB / Octave MEX file | Beamlet dose-influence matrix for matRad. Takes density and material cubes, geometry, source and option structs; returns sparse `dij` (and optionally its variance). The same source builds against MATLAB (`.mexw64`/`.mexa64`/…) and GNU Octave (`.mex`); see [BUILDING.md](BUILDING.md#gnu-octave). |
 
 Both link against `ompmc_core`, the transport library built from [src/](src/):
 
@@ -183,7 +183,8 @@ ctest --test-dir build --output-on-failure
 ```
 
 This covers the transport helpers and media data ([tests/](tests/)) plus a short `omc_dosxyz`
-smoke run. The MEX file has its own MATLAB-side test, which needs a MATLAB session:
+smoke run. When the Octave MEX file was built, `ctest` also drives it through the MEX-side test
+below. The same test runs unchanged in MATLAB, which needs a MATLAB session:
 
 ```matlab
 addpath('build/bin'); addpath('ucodes/omc_matrad');

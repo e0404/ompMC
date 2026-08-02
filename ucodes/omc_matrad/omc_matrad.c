@@ -46,6 +46,7 @@
 #include "omc_random.h"
 #include "ompmc.h"
 #include "omc_score.h"
+#include "omc_version.h"
 
 #include <ctype.h>
 #include <float.h>
@@ -1524,7 +1525,31 @@ static void closeProgress(void) {
 void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     int nrhs, const mxArray *prhs[])            // input of the function
 {
-    
+    /* A single "version"/"-v"/"--version" string argument is a version query,
+     answered without locking the MEX file or touching any of the dose
+     calculation machinery below. */
+    if (nrhs == 1 && mxIsChar(prhs[0])) {
+        char *arg = mxArrayToString(prhs[0]);
+        int isVersionQuery = arg != NULL &&
+            (strcmp(arg, "version") == 0 ||
+             strcmp(arg, "-v") == 0 ||
+             strcmp(arg, "--version") == 0);
+        mxFree(arg);
+
+        if (isVersionQuery) {
+            if (nlhs > 1) {
+                mexErrMsgIdAndTxt("matRad:omc_matrad:invalidNumOutputs",
+                    "Too many output arguments.");
+            }
+            if (nlhs == 1) {
+                plhs[0] = mxCreateString(OMPMC_VERSION_STRING);
+            } else {
+                mexPrintf("ompMC version %s\n", OMPMC_VERSION_STRING);
+            }
+            return;
+        }
+    }
+
     /* Execution time measurement */
     double tbegin;
     tbegin = omc_get_time();
@@ -1551,7 +1576,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
         mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:invalidNumOutputs","Too many output arguments.");
     }
 
-    mexPrintf("Running ompMC...\n");
+    mexPrintf("Running ompMC version %s...\n", OMPMC_VERSION_STRING);
 
 
     parseInput(nrhs, prhs);

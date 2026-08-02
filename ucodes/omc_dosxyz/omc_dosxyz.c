@@ -38,6 +38,7 @@
 #include "ompmc.h"
 #include "omc_random.h"
 #include "omc_score.h"
+#include "omc_version.h"
 
 /******************************************************************************/
 /* Parsing program options with getopt long
@@ -1095,7 +1096,9 @@ int main (int argc, char **argv) {
     /* Execution time measurement */
     double tbegin;
     tbegin = omc_get_time();
-    
+
+    printf("ompMC version %s\n", OMPMC_VERSION_STRING);
+
     /* Parsing program options */
     
     int c;

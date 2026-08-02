@@ -18,4 +18,5 @@ CMakeUserPresets.json
 *.mexmaca64
 *.mexmaci64
 *.mexw64
+*.mex
 build*/

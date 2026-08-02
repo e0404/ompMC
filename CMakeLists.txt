@@ -19,7 +19,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ompMC
-    VERSION 1.0.0
+    VERSION 0.1.0
     DESCRIPTION "An OpenMP parallel implementation for Monte Carlo particle transport simulations"
     HOMEPAGE_URL "https://github.com/e0404/ompMC"
     LANGUAGES C)
@@ -49,6 +49,13 @@ log/exp are several times slower; pointless with MSVC or glibc." OFF)
 set(OMPMC_BUILD_MATRAD_MEX "AUTO" CACHE STRING
     "Build the omc_matrad MEX file: ON (fail if MATLAB is missing), OFF, or AUTO")
 set_property(CACHE OMPMC_BUILD_MATRAD_MEX PROPERTY STRINGS AUTO ON OFF)
+
+set(OMPMC_BUILD_MATRAD_OCT "AUTO" CACHE STRING
+    "Build the omc_matrad MEX file for GNU Octave: ON (fail if Octave is \
+missing), OFF, or AUTO")
+set_property(CACHE OMPMC_BUILD_MATRAD_OCT PROPERTY STRINGS AUTO ON OFF)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # Single configuration generators get a sensible default build type.
 get_property(_ompmc_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
@@ -126,6 +133,18 @@ if(OMPMC_WITH_OPENMP)
 endif()
 
 ################################################################################
+# Version header
+################################################################################
+
+# omc_version.h is generated rather than committed so that the project()
+# VERSION above stays the single source of truth for the OMPMC_VERSION_*
+# macros the user codes print.
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/omc_version.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/omc_version.h"
+    @ONLY)
+
+################################################################################
 # Core library shared by all user codes
 ################################################################################
 
@@ -135,7 +154,9 @@ add_library(ompmc_core STATIC
     src/omc_random.c
     src/omc_score.c)
 
-target_include_directories(ompmc_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(ompmc_core PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 if(MSVC)
     # The code base uses the classic C string and stdio functions throughout.
@@ -268,6 +289,32 @@ if(OMPMC_WITH_OPENLIBM)
 
     target_link_libraries(ompmc_core PUBLIC openlibm)
     message(STATUS "Using openlibm for the math library calls")
+endif()
+
+################################################################################
+# Coverage instrumentation
+################################################################################
+
+option(OMPMC_COVERAGE
+    "Instrument ompmc_core and every executable linked against it with \
+gcov/llvm-cov line coverage (GCC or Clang only). Meant for a dedicated CI job \
+building Debug, not for anything the timing depends on." OFF)
+
+if(OMPMC_COVERAGE)
+    if(NOT (CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID MATCHES "Clang"))
+        message(FATAL_ERROR
+            "OMPMC_COVERAGE needs GCC or Clang, found ${CMAKE_C_COMPILER_ID}")
+    endif()
+
+    # PUBLIC on the core so that omc_dosxyz and the test executables, which
+    # all link ompmc_core, get the same instrumentation for their own
+    # translation units too, and so that the final link pulls libgcov in.
+    # -O0 overrides whatever optimization the chosen build type would
+    # otherwise add: inlining and dead code elimination move and merge lines,
+    # which skews line coverage away from what the source actually looks
+    # like.
+    target_compile_options(ompmc_core PUBLIC --coverage -O0)
+    target_link_options(ompmc_core PUBLIC --coverage)
 endif()
 
 ################################################################################
@@ -455,6 +502,114 @@ if(OMPMC_MEX_ENABLED)
 endif()
 
 ################################################################################
+# omc_matrad - GNU Octave MEX user code
+################################################################################
+
+# The same omc_matrad.c, built a second time against Octave's MEX API. Octave
+# implements the API MATLAB's mex.h declares, so the source needs no changes;
+# only the headers, the library and the file extension differ.
+set(OMPMC_OCT_ENABLED FALSE)
+
+if(NOT OMPMC_BUILD_MATRAD_OCT STREQUAL "OFF")
+    # Octave's libraries on Windows are MinGW import libraries, which MSVC
+    # cannot link. Rather than fail the MSVC build, say so and move on.
+    if(MSVC)
+        if(OMPMC_BUILD_MATRAD_OCT STREQUAL "ON")
+            message(FATAL_ERROR
+                "The Octave MEX file cannot be built with MSVC: Octave ships "
+                "MinGW import libraries. Build it with MinGW GCC or clang, or "
+                "set -DOMPMC_BUILD_MATRAD_OCT=OFF.")
+        endif()
+        message(STATUS
+            "Skipping the Octave MEX file: MSVC cannot link Octave's MinGW "
+            "import libraries.")
+    elseif(OMPMC_BUILD_MATRAD_OCT STREQUAL "AUTO")
+        find_package(Octave QUIET)
+        if(NOT Octave_FOUND)
+            message(STATUS
+                "No Octave installation found, skipping the Octave MEX file. "
+                "Set -DOctave_ROOT=<octave prefix> to point the build at one.")
+        endif()
+    else()
+        find_package(Octave REQUIRED)
+    endif()
+
+    if(Octave_FOUND)
+        set(OMPMC_OCT_ENABLED TRUE)
+    endif()
+endif()
+
+if(OMPMC_OCT_ENABLED)
+    # A plain MODULE library rather than matlab_add_mex()'s equivalent: Octave
+    # loads the file by name, so only the extension has to be right.
+    add_library(omc_matrad_oct MODULE ucodes/omc_matrad/omc_matrad.c)
+
+    # Octave 10 refuses to load a .mex that does not declare which liboctmex
+    # ABI it was built against; releases without liboctmex predate the check
+    # and need no stub. FindOctave leaves the version empty in that case.
+    if(Octave_MEX_SOVERSION)
+        configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/ucodes/omc_matrad/omc_mex_soversion.c.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/generated/omc_mex_soversion.c"
+            @ONLY)
+        target_sources(omc_matrad_oct PRIVATE
+            "${CMAKE_CURRENT_BINARY_DIR}/generated/omc_mex_soversion.c")
+    endif()
+
+    target_link_libraries(omc_matrad_oct PRIVATE
+        ompmc_core Octave::mex ${OMPMC_OPENMP_RUNTIME})
+
+    # On ELF and Mach-O the MEX API symbols are left undefined and bound to
+    # the Octave process that loads the file, which is what mkoctfile does
+    # too. Linux allows that by default for a shared object; macOS has to be
+    # told explicitly.
+    if(APPLE)
+        target_link_options(omc_matrad_oct PRIVATE
+            "SHELL:-undefined dynamic_lookup")
+    endif()
+
+    # mkoctfile compiles MEX sources with -DMEX_DEBUG, which is what makes
+    # Octave's mex.h declare the MATLAB compatible entry points rather than
+    # its own internal ones.
+    target_compile_definitions(omc_matrad_oct PRIVATE MEX_DEBUG)
+
+    # Octave reports MEX errors by throwing a C++ exception from inside
+    # liboctmex, so mexErrMsgIdAndTxt() never returns and the stack is
+    # unwound through this file's frames. Without -fexceptions GCC and Clang
+    # emit C translation units with no unwind tables, and that unwind hits
+    # std::terminate instead, taking the whole Octave session down. mkoctfile
+    # passes the same flag for the same reason.
+    check_c_compiler_flag("-fexceptions" OMPMC_HAVE_FEXCEPTIONS)
+    if(OMPMC_HAVE_FEXCEPTIONS)
+        target_compile_options(omc_matrad_oct PRIVATE "-fexceptions")
+    endif()
+
+    # Octave dlopen()s the file and looks up mexFunction by name. The MinGW
+    # linker exports nothing from a module by default once anything else is
+    # exported explicitly, so ask for the same blanket export mkoctfile uses.
+    if(WIN32)
+        target_link_options(omc_matrad_oct PRIVATE "-Wl,--export-all-symbols")
+    endif()
+
+    # Octave's .mex is a plain shared object with a fixed extension and no
+    # "lib" prefix, on every platform.
+    set_target_properties(omc_matrad_oct PROPERTIES
+        OUTPUT_NAME omc_matrad
+        PREFIX ""
+        SUFFIX ".mex"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    foreach(_cfg IN LISTS CMAKE_CONFIGURATION_TYPES)
+        string(TOUPPER "${_cfg}" _cfg_upper)
+        set_target_properties(omc_matrad_oct PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY_${_cfg_upper} "${CMAKE_BINARY_DIR}/bin"
+            RUNTIME_OUTPUT_DIRECTORY_${_cfg_upper} "${CMAKE_BINARY_DIR}/bin")
+    endforeach()
+
+    ompmc_enable_lto(omc_matrad_oct)
+endif()
+
+################################################################################
 # Tests
 ################################################################################
 
@@ -496,6 +651,19 @@ if(OMPMC_BUILD_TESTS)
             COMMAND omc_dosxyz -i ucodes/omc_dosxyz/smoke_test -o smoke_test
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     endif()
+
+    # Drives the Octave .mex through the same test_omc_matrad_mex.m the MATLAB
+    # build uses: loading the file, a real dose calculation, the progress
+    # callback and releasing the file afterwards. Octave exits nonzero when
+    # the script raises, which is what CTest keys off. The MATLAB MEX file has
+    # no equivalent test here because starting MATLAB needs the licensing that
+    # the CI's matlab-actions steps set up.
+    if(OMPMC_OCT_ENABLED AND Octave_EXECUTABLE)
+        add_test(NAME octave_mex
+            COMMAND "${Octave_EXECUTABLE}" --no-gui --quiet --eval
+                "addpath('${CMAKE_BINARY_DIR}/bin'); addpath('${CMAKE_CURRENT_SOURCE_DIR}/ucodes/omc_matrad'); test_omc_matrad_mex"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    endif()
 endif()
 
 ################################################################################
@@ -531,6 +699,7 @@ message(STATUS "  OpenMP           : ${OMPMC_OPENMP_ENABLED}")
 message(STATUS "  LTO              : ${OMPMC_LTO_ENABLED}")
 message(STATUS "  openlibm         : ${OMPMC_WITH_OPENLIBM}")
 message(STATUS "  Tests            : ${OMPMC_BUILD_TESTS}")
+message(STATUS "  Coverage         : ${OMPMC_COVERAGE}")
 message(STATUS "  omc_dosxyz       : ${OMPMC_BUILD_DOSXYZ}")
 message(STATUS "  omc_matrad (mex) : ${OMPMC_MEX_ENABLED}")
 if(OMPMC_MEX_ENABLED AND OMPMC_OPENMP_ENABLED)
@@ -540,5 +709,14 @@ if(OMPMC_MEX_ENABLED)
     message(STATUS "    MATLAB root    : ${Matlab_ROOT_DIR}")
     message(STATUS "    MATLAB version : ${Matlab_VERSION_STRING}")
     message(STATUS "    MEX extension  : ${Matlab_MEX_EXTENSION}")
+endif()
+message(STATUS "  omc_matrad (oct) : ${OMPMC_OCT_ENABLED}")
+if(OMPMC_OCT_ENABLED)
+    message(STATUS "    Octave version : ${Octave_VERSION}")
+    if(Octave_MEX_SOVERSION)
+        message(STATUS "    MEX soversion  : ${Octave_MEX_SOVERSION}")
+    else()
+        message(STATUS "    MEX soversion  : not checked by this Octave")
+    endif()
 endif()
 message(STATUS "")

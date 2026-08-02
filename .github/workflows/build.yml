@@ -42,8 +42,23 @@ jobs:
             generator: MinGW Makefiles
             mingw: true
             matlab: true
+            # Octave 10 is the first release that moved the MEX entry points
+            # into liboctmex and that checks the ABI number of a .mex on load.
+            octave: '10.3.0'
             # MinGW's bundled software log/exp are several times slower than
             # the UCRT ones MSVC uses; openlibm recovers most of that.
+            openlibm: true
+          # The Octave matRad is tested against. Everything before Octave 10
+          # takes the other branch of cmake/FindOctave.cmake -- no liboctmex,
+          # so liboctinterp is linked, and no SOVERSION stub -- which is why
+          # it gets a job of its own rather than sharing one above. No MATLAB
+          # here: this job exists for the Octave MEX file.
+          - name: windows-x64-mingw-octave8
+            os: windows-2022
+            generator: MinGW Makefiles
+            mingw: true
+            matlab: false
+            octave: '8.4.0'
             openlibm: true
           # llvm-mingw is the fastest non-proprietary Windows toolchain for
           # this code: clang uses native TLS where MinGW GCC emulates it with
@@ -55,10 +70,14 @@ jobs:
             llvm_mingw: '20260616'
             openlibm: true
             matlab: true
+            octave: '10.3.0'
+          # Ubuntu 24.04 rather than 22.04 for its Octave 8.4, the version
+          # matRad is tested against; 22.04 still has Octave 6.
           - name: linux-x64-gcc
-            os: ubuntu-22.04
+            os: ubuntu-24.04
             generator: Unix Makefiles
             matlab: true
+            octave: apt
           - name: linux-arm64-gcc
             os: ubuntu-24.04-arm
             generator: Unix Makefiles
@@ -155,6 +174,50 @@ jobs:
           test -f "$root/extern/include/mex.h"
           echo "MATLAB_ROOT=$root" >> "$GITHUB_ENV"
 
+      # Octave ships no CMake package, so cmake/FindOctave.cmake locates it
+      # through octave-config; having Octave's bin directory on PATH is all
+      # the discovery needs.
+      #
+      # The MSVC job deliberately gets no Octave: Octave's Windows libraries
+      # are MinGW import libraries that MSVC cannot link, which is why only
+      # the two MinGW jobs build the .mex here.
+      - name: Install Octave (Linux)
+        if: matrix.octave && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # octave-dev, not liboctave-dev, is what carries mex.h here.
+          sudo apt-get install -y octave octave-dev
+          octave-config --version
+
+      # The official w64 build, pinned to the version under test, rather than
+      # a package manager: only these zips let the two Octave generations be
+      # tested deliberately.
+      - name: Install Octave (Windows)
+        if: matrix.octave && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = '${{ matrix.octave }}'
+          $zip = "$env:RUNNER_TEMP\octave-$version-w64.zip"
+          $dest = "$env:RUNNER_TEMP\octave"
+          Write-Host "Downloading Octave $version"
+          curl.exe -fsSL -o $zip "https://ftp.gnu.org/gnu/octave/windows/octave-$version-w64.zip"
+          # Expand-Archive is minutes slower than this on a ~700 MB archive.
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $dest)
+          Remove-Item $zip
+          # The archive unpacks to octave-<version>-w64/, whose layout has
+          # moved between releases, so locate octave-config instead.
+          $cfg = Get-ChildItem -Path $dest -Recurse -Filter 'octave-config.exe' `
+              -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $cfg) { throw "octave-config.exe not found under $dest" }
+          # Deliberately NOT added to PATH. The Windows build of Octave is an
+          # MSYS2 tree whose bin directory also carries gcc, g++, ld, cmake and
+          # ctest; putting it on PATH would quietly shadow the toolchain this
+          # job is meant to be testing. Hand CMake the prefix instead, the same
+          # way MATLAB_ROOT is handled above.
+          $prefix = Split-Path $cfg.DirectoryName -Parent
+          Write-Host "Using Octave from $prefix"
+          Add-Content -Path $env:GITHUB_ENV -Value "OCTAVE_ROOT=$prefix"
+
       - name: Configure
         shell: bash
         run: |
@@ -166,6 +229,7 @@ jobs:
           fi
           args+=(-DCMAKE_BUILD_TYPE=Release)
           args+=(-DOMPMC_BUILD_MATRAD_MEX=${{ matrix.matlab && 'ON' || 'OFF' }})
+          args+=(-DOMPMC_BUILD_MATRAD_OCT=${{ matrix.octave && 'ON' || 'OFF' }})
           args+=(-DOMPMC_WITH_OPENLIBM=${{ matrix.openlibm && 'ON' || 'OFF' }})
           # The MinGW Makefiles generator would pick up whatever gcc is on the
           # image; point it at the llvm-mingw clang explicitly.
@@ -175,22 +239,29 @@ jobs:
           if [ -n "${MATLAB_ROOT:-}" ]; then
             args+=("-DMatlab_ROOT_DIR=$MATLAB_ROOT")
           fi
+          # Set by the Windows Octave step, which keeps Octave off PATH so its
+          # bundled gcc/cmake/ctest cannot shadow the toolchain under test.
+          if [ -n "${OCTAVE_ROOT:-}" ]; then
+            args+=("-DOctave_ROOT=$OCTAVE_ROOT")
+          fi
           cmake "${args[@]}"
 
       - name: Build
         run: cmake --build build --config Release --parallel
 
-      - name: Smoke test omc_dosxyz
+      # Runs the "unit", "media" and "smoke" tests registered in CMakeLists.txt
+      # (-C Release is needed on the multi-config generators -- MSVC and, in
+      # this matrix, that's it -- and ignored elsewhere).
+      - name: Run tests (ctest)
+        shell: bash
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Check the smoke test's .3ddose output
         shell: bash
         run: |
           set -euo pipefail
-          exe=build/bin/omc_dosxyz
-          if [ -f "$exe.exe" ]; then
-            exe="$exe.exe"
-          fi
-          # The -i value carries no extension, omc_dosxyz appends .inp itself.
-          "$exe" -i ucodes/omc_dosxyz/smoke_test -o smoke_test
-          # A valid .3ddose starts with the voxel counts of the WATER phantom.
+          # The "smoke" ctest above already ran omc_dosxyz; a valid .3ddose
+          # starts with the voxel counts of the WATER phantom.
           header="$(head -n 1 output/smoke_test.3ddose)"
           echo "3ddose header: $header"
           case "$header" in
@@ -236,4 +307,55 @@ jobs:
         with:
           name: ompmc-${{ matrix.name }}
           path: artifacts/
+          if-no-files-found: error
+
+  # A single dedicated job rather than another matrix entry: gcov/lcov only
+  # understand GCC/Clang's coverage format, so there is nothing this would
+  # add on the MSVC job, and instrumentation (--coverage, -O0, no LTO) is not
+  # something the other jobs' binaries -- some of which get uploaded as
+  # artifacts -- should carry.
+  coverage:
+    name: coverage (linux-x64-gcc)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Install lcov
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lcov
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DOMPMC_BUILD_MATRAD_MEX=OFF \
+            -DOMPMC_BUILD_MATRAD_OCT=OFF \
+            -DOMPMC_COVERAGE=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run tests (ctest)
+        run: ctest --test-dir build --output-on-failure
+
+      # No --remove filtering step: geninfo only picks up .gcda files under
+      # build/, and every one of those compiles from this project's own
+      # src/tests/ucodes trees (Ubuntu's system getopt_long means the
+      # bundled src/compat shim is not even compiled in), so there is
+      # nothing external in coverage.info to strip out.
+      - name: Generate the coverage report
+        run: |
+          set -euo pipefail
+          lcov --capture --directory build --output-file coverage.info
+          lcov --summary coverage.info
+          genhtml coverage.info --output-directory coverage-html
+
+      - name: Upload the coverage report
+        uses: actions/upload-artifact@v7
+        with:
+          name: ompmc-coverage
+          path: coverage-html/
           if-no-files-found: error
