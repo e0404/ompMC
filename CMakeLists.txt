@@ -154,7 +154,10 @@ add_library(ompmc_core STATIC
     src/omc_random.c
     src/omc_score.c
     src/omc_host.c
-    src/omc_geom.c)
+    src/omc_geom.c
+    src/omc_spectrum.c
+    src/omc_engine_dij.c
+    src/omc_engine_cube.c)
 
 target_include_directories(ompmc_core PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"

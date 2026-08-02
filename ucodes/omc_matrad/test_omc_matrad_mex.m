@@ -191,6 +191,60 @@ catch err
 end
 fprintf('A spectrum with descending bin energies was rejected.\n');
 
+%% mcOpt.monoEnergy replaces the spectrum with a single energy
+
+% 6 MeV photons are far more penetrating than the 6 MV bremsstrahlung
+% spectrum they are compared against here, whose mean energy is around 2 MeV,
+% so the two runs must not agree.
+mcOptMono = rmfield(mcOpt, 'spectrumFile');
+mcOptMono.monoEnergy = 6;
+
+dijMono = omc_matrad(fixture.cubeRho, fixture.cubeMatIx, ...
+    fixture.mcGeo, fixture.mcSrc, mcOptMono);
+
+monoDose = nonzeros(dijMono);
+if isempty(monoDose) || ~all(isfinite(monoDose)) || any(monoDose < 0)
+    error('ompMC:test:badMonoDose', ...
+        'The monoenergetic source produced no usable dose (%d nonzeros).', ...
+        numel(monoDose));
+end
+
+monoRatio = full(sum(dijMono(:)))/totalDose;
+if ~(monoRatio > 1.05)
+    error('ompMC:test:monoEnergyIgnored', ...
+        ['A 6 MeV monoenergetic source deposited %.3fx the dose of the 6 MV ', ...
+         'spectrum; it should deposit noticeably more, so monoEnergy looks ignored.'], ...
+        monoRatio);
+end
+fprintf('Monoenergetic 6 MeV source deposited %.2fx the dose of the 6 MV spectrum.\n', ...
+    monoRatio);
+
+% A spectrum still wins over monoEnergy, and a nonsensical energy is rejected.
+mcOptBoth = mcOptSpec;
+mcOptBoth.monoEnergy = 6;
+dijBoth = omc_matrad(fixture.cubeRho, fixture.cubeMatIx, ...
+    fixture.mcGeo, fixture.mcSrc, mcOptBoth);
+bothRatio = full(sum(dijBoth(:)))/totalDose;
+if ~(abs(bothRatio - 1) < 1e-3)
+    error('ompMC:test:precedenceWrong', ...
+        ['With both a spectrum and monoEnergy given the result is %.3fx the ', ...
+         'spectrum-only dose; the spectrum should have won.'], bothRatio);
+end
+fprintf('A passed spectrum took precedence over monoEnergy.\n');
+
+mcOptBadEnergy = mcOptMono;
+mcOptBadEnergy.monoEnergy = 0;
+try
+    omc_matrad(fixture.cubeRho, fixture.cubeMatIx, ...
+        fixture.mcGeo, fixture.mcSrc, mcOptBadEnergy);
+    error('ompMC:test:badEnergyAccepted', 'A monoEnergy of 0 was accepted.');
+catch err
+    if ~strcmp(err.identifier, 'matRad:omc_matrad:invalidMonoEnergy')
+        rethrow(err);
+    end
+end
+fprintf('A monoEnergy of 0 was rejected.\n');
+
 %% mcOpt.charge selects the source particle
 
 % charge used to be parsed and then ignored, so everything ran as photons.

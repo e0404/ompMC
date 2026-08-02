@@ -21,6 +21,23 @@ host. Shared code reports through `omcLog()`/`omcFail()`
 `mexErrMsgIdAndTxt()`, and each host installs the sinks that give those meaning;
 both are called on the master thread only, never from inside a parallel region.
 
+The dose calculation itself is a library function too. There are two engines,
+differing only in where the particles start and how the result comes back:
+
+| Engine | Source | Result |
+| --- | --- | --- |
+| [src/omc_engine_dij.h](src/omc_engine_dij.h) | beamlet apertures at isocentre | one sparse column per beamlet, through a callback |
+| [src/omc_engine_cube.h](src/omc_engine_cube.h) | point source behind a collimator | dense dose and uncertainty cubes |
+
+Both take their energies from [src/omc_spectrum.h](src/omc_spectrum.h), which
+turns a `.spectrum` file, a histogram handed over by the host, or a single energy
+into the same sampling tables.
+
+A user code is then only a translator: `omc_matrad.c` converts `mxArray`s into
+those structs and appends the columns it gets back to a MATLAB sparse matrix,
+`omc_dosxyz.c` reads an input file and writes a `.3ddose`, and nothing about
+either host reaches the engines.
+
 ## Quick start
 
 ```sh

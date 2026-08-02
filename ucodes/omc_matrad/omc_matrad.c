@@ -46,12 +46,12 @@
  is gone with them: it hid the real message behind a generic one, and quietly
  turned every exit() in scope into something that unwinds instead. */
 
+#include "omc_engine_dij.h"
 #include "omc_geom.h"
 #include "omc_host.h"
+#include "omc_spectrum.h"
 #include "omc_utilities.h"
-#include "omc_random.h"
 #include "ompmc.h"
-#include "omc_score.h"
 #include "omc_version.h"
 
 #include <ctype.h>
@@ -76,72 +76,22 @@ int verbose_flag;
  which case progress falls back to the built-in waitbar. */
 mxArray *progressCallback;
 
-#if defined(_MSC_VER)
-	//use __declspec(thread) instead of threadprivate to avoid 
-	//error C3053. More information in:
-	// https://stackoverflow.com/questions/12560243/using-threadprivate-directive-in-visual-studio 
-	__declspec(thread) extern struct Stack stack;
-#else
-	extern struct Stack stack;
-    #pragma omp threadprivate(stack)
-#endif
+/* The particle stack, the regions and the PEGS data are the engine's business
+ now; all this file still touches of the core's state is the media table it
+ fills from mcGeo, and the input items it fills from mcOpt. */
 extern struct Media media;
-extern struct Pegs pegs_data;
-extern struct Region region;
 
 extern struct inputItems input_items[];     // key,value pairs
 extern int input_idx;                       // number of key,value pair
 
-//Data Types and Structs
-
-struct Source {
-    int nmed;                   // number of media in phantom file
-    int spectrum;               // 0 : monoenergetic, 1 : spectrum
-    int charge;                 // 0 : photons, -1 : electron, +1 : positron
-    
-    /* For monoenergetic source */
-    double energy;
-    
-    /* For spectrum */
-    double deltak;              // number of elements in inverse CDF
-    double *cdfinv1;            // energy value of bin
-    double *cdfinv2;            // prob. that particle has energy xi
-    
-    /* Beamlets shape information */
-    int nbeamlets;               // number of beamlets per beam
-    int *ibeam;                  // index of beam per beamlet
-    
-    double *xsource;           // coordinates of the source of each beam
-    double *ysource;          
-    double *zsource;          
-        
-    double *xcorner;           // coordinates of the bixel corner
-    double *ycorner;           
-    double *zcorner;  
-    
-    double *xside1;           // coordinates of the first side of bixel
-    double *yside1;           
-    double *zside1;
-    
-    double *xside2;           // coordinates of the second side of bixel
-    double *yside2;           
-    double *zside2;
-        
-};
-struct Source source;
-
-
-
-enum sourceGeometryType {POINT, GAUSSIAN};
+/* Everything parsed out of the MC options struct that the engine does not
+ take through struct OmcDijOptions: where the spectrum comes from, and the
+ file paths. */
 struct OmcConfig {
-    //Simulation parameters
-    int nHist;
-    int nBatch;
-    double doseThreshold;
-
     //Source Parameters
     double monoEnergy;
-    char * spectrumFile;
+    int useMonoEnergy;              // mcOpt.monoEnergy was given and wins
+    char * spectrumFile;            // NULL when the energies come from elsewhere
 
     /* Spectrum handed over directly from MATLAB in mcOpt.spectrum, used
      instead of reading spectrumFile when given. The two pointers alias the
@@ -152,12 +102,12 @@ struct OmcConfig {
     int spectrumNbins;
     double spectrumEnMin;           // lower energy of the first bin, MeV
     int spectrumMode;               // 0 : counts/bin, 1 : counts/MeV
-
-    enum sourceGeometryType sourceGeometry;
-    double sourceGaussianWidth; //Assuming 5mm FWHM penumbra if the source is gaussian
 };
 
 struct OmcConfig omcConfig;
+
+/* What the engine is asked to calculate. Filled by parseInput(). */
+struct OmcDijOptions dijOptions;
 
 /******************************************************************************/
 /* Host sinks. Shared ompMC code calls omcLog()/omcFail() and these turn them
@@ -259,8 +209,9 @@ static const double *getSpectrumVector(const mxArray *spec, const char *name,
     eMin     : lower energy of the first bin in MeV, optional, default 0
     mode     : 0 for counts/bin (default), 1 for counts/MeV
 
- The arrays are only validated here; they are turned into the sampling tables
- in initSource(), together with the ones read from file. */
+ The arrays are only validated here; omcSpectrumFromHistogram() turns them
+ into the sampling tables, the same ones a spectrum read from file ends up
+ in. */
 static void parseSpectrum(const mxArray *spec) {
 
     if (!mxIsStruct(spec) || mxGetNumberOfElements(spec) != 1) {
@@ -363,10 +314,16 @@ static void parseSpectrum(const mxArray *spec) {
 /* Function used to parse input from matRad */
 void parseInput(int nrhs, const mxArray *prhs[]) {
     //Default values
-    omcConfig.nHist = 1e4;
-    omcConfig.nBatch = 10;
-    omcConfig.doseThreshold = 0.01;
+    dijOptions.nhist = 1e4;
+    dijOptions.nbatch = 10;
+    dijOptions.relDoseThreshold = 0.01;
+    dijOptions.charge = 0;
+    dijOptions.sourceGeometry = OMC_SOURCE_POINT;
+    dijOptions.sourceGaussianWidth = 0.2123; //Assuming 5mm FWHM penumbra if the source is gaussian
+    dijOptions.wantVariance = 0;    // set from nlhs by mexFunction()
+
     omcConfig.monoEnergy = 0.1;
+    omcConfig.useMonoEnergy = 0;
     /* Reset explicitly rather than relying on the zero initialization of the
      global: the MEX file stays locked in memory, so a spectrum passed in one
      call would otherwise still be pointed at by the next one, which no longer
@@ -376,9 +333,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     omcConfig.spectrumNbins = 0;
     omcConfig.spectrumEnMin = 0.0;
     omcConfig.spectrumMode = 0;
-    omcConfig.sourceGeometry = POINT;
-    omcConfig.sourceGaussianWidth = 0.2123; //Assuming 5mm FWHM penumbra if the source is gaussian
-    
+
     
     mxArray *tmp_fieldpointer;
     char *tmp;
@@ -436,18 +391,18 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     int nInput = 0;
         
     tmp_fieldpointer = mxGetField(mcOpt,0,"nHistories");
-    
+
     //size_t nHistLength = mxGetNumberOfElements(tmp_fieldpointer);
-    if (tmp_fieldpointer)    
-        omcConfig.nHist = mxGetScalar(tmp_fieldpointer);
-    
+    if (tmp_fieldpointer)
+        dijOptions.nhist = mxGetScalar(tmp_fieldpointer);
+
     tmp_fieldpointer = mxGetField(mcOpt,0,"nBatches");
     if (tmp_fieldpointer)
-        omcConfig.nBatch = mxGetScalar(tmp_fieldpointer);
+        dijOptions.nbatch = mxGetScalar(tmp_fieldpointer);
 
     tmp_fieldpointer = mxGetField(mcOpt,0,"sourceGaussianWidth");
     if (tmp_fieldpointer) {
-        omcConfig.sourceGaussianWidth = mxGetScalar(tmp_fieldpointer);
+        dijOptions.sourceGaussianWidth = mxGetScalar(tmp_fieldpointer);
     }
 
     tmp_fieldpointer = mxGetField(mcOpt,0,"sourceGeometry");
@@ -458,14 +413,14 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
             mexErrMsgIdAndTxt("MATLAB:explore:invalidStringArray","Invalid string for source Geometry");
 
         //Parse source definition
-        if (strcmp(sourceGeoTmpStr,"gaussian") == 0) 
+        if (strcmp(sourceGeoTmpStr,"gaussian") == 0)
         {
-            omcConfig.sourceGeometry = GAUSSIAN;
-            mexPrintf("Using 'gaussian' source geometry with %f mm width...\n",omcConfig.sourceGaussianWidth);
+            dijOptions.sourceGeometry = OMC_SOURCE_GAUSSIAN;
+            mexPrintf("Using 'gaussian' source geometry with %f mm width...\n",dijOptions.sourceGaussianWidth);
         }
         else if (strcmp(sourceGeoTmpStr,"point") == 0)
         {
-            omcConfig.sourceGeometry = POINT;
+            dijOptions.sourceGeometry = OMC_SOURCE_POINT;
             mexPrintf("Using 'point' source geometry...\n");
         }
         else
@@ -495,20 +450,48 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
         strcpy(input_items[nInput].value,tmp);
     }
 
-    /* The spectrum can either be passed in directly or read from file, with
-     the passed one taking precedence when both are given. */
+    /* Where the source energies come from. Three ways of saying it, in
+     descending precedence: a spectrum passed in as arrays, a spectrum file,
+     or a single energy. Whatever is left over is announced rather than
+     silently dropped, since a caller who sets two of them has a wrong idea of
+     what the run is doing. Nothing at all still means the default file. */
+    tmp_fieldpointer = mxGetField(mcOpt,0,"monoEnergy");
+    if (tmp_fieldpointer && !mxIsEmpty(tmp_fieldpointer)) {
+        if (!mxIsNumeric(tmp_fieldpointer) || mxIsComplex(tmp_fieldpointer) ||
+            mxGetNumberOfElements(tmp_fieldpointer) != 1) {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidMonoEnergy",
+                "Option 'monoEnergy' must be a real scalar.");
+        }
+
+        omcConfig.monoEnergy = mxGetScalar(tmp_fieldpointer);
+
+        if (!(omcConfig.monoEnergy > 0.0) || !mxIsFinite(omcConfig.monoEnergy)) {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidMonoEnergy",
+                "Option 'monoEnergy' is %g MeV, it must be positive and "
+                "finite.", omcConfig.monoEnergy);
+        }
+
+        omcConfig.useMonoEnergy = 1;
+    }
+
     tmp_fieldpointer = mxGetField(mcOpt,0,"spectrum");
     if (tmp_fieldpointer && !mxIsEmpty(tmp_fieldpointer)) {
         parseSpectrum(tmp_fieldpointer);
-
-        if (mxGetField(mcOpt,0,"spectrumFile"))
-            mexPrintf("Both 'spectrum' and 'spectrumFile' were given, using "
-                "the passed spectrum and ignoring the file.\n");
     }
 
     tmp_fieldpointer = mxGetField(mcOpt,0,"spectrumFile");
     if (omcConfig.spectrumEnergy != NULL) {
+        /* Passed spectrum wins */
         omcConfig.spectrumFile = NULL;
+
+        if (tmp_fieldpointer)
+            mexPrintf("Both 'spectrum' and 'spectrumFile' were given, using "
+                "the passed spectrum and ignoring the file.\n");
+        if (omcConfig.useMonoEnergy)
+            mexPrintf("Both 'spectrum' and 'monoEnergy' were given, using the "
+                "passed spectrum and ignoring the single energy.\n");
+
+        omcConfig.useMonoEnergy = 0;
     }
     else if (tmp_fieldpointer) {
         size_t buflen = mxGetNumberOfElements(tmp_fieldpointer) + 1;
@@ -516,6 +499,14 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
         if (mxGetString(tmp_fieldpointer, omcConfig.spectrumFile, buflen) != 0)
             mexErrMsgIdAndTxt("MATLAB:explore:invalidStringArray","Invalid string for path to spectrum file!");
 
+        if (omcConfig.useMonoEnergy)
+            mexPrintf("Both 'spectrumFile' and 'monoEnergy' were given, using "
+                "the file and ignoring the single energy.\n");
+
+        omcConfig.useMonoEnergy = 0;
+    }
+    else if (omcConfig.useMonoEnergy) {
+        omcConfig.spectrumFile = NULL;
     }
     else
     {
@@ -524,20 +515,38 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
         strcpy(omcConfig.spectrumFile, "./spectra/mohan6.spectrum");
     }
 
-    tmp_fieldpointer = mxGetField(mcOpt,0,"monoEnergy");
-    if (tmp_fieldpointer)
-        omcConfig.monoEnergy = mxGetScalar(tmp_fieldpointer);    
-    
     nInput++;
     sprintf(input_items[nInput].key,"charge");
     tmp_fieldpointer = getRequiredField(mcOpt,"charge");
-    status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");    
+    status = mexCallMATLAB(1, &tmp2, 1,  &tmp_fieldpointer, "num2str");
     if (status != 0)
         mexErrMsgIdAndTxt( "matRad:omc_matrad:Error","Call to num2str not successful");
     else
     {
-        tmp = mxArrayToString(tmp2);        
+        tmp = mxArrayToString(tmp2);
         strcpy(input_items[nInput].value,tmp);
+    }
+
+    /* The engine needs the charge itself, not just the input item: it decides
+     what the source particles are. Before this was read back the field was
+     accepted and then ignored, so an electron source silently ran as photons. */
+    if (!mxIsNumeric(tmp_fieldpointer) || mxIsComplex(tmp_fieldpointer) ||
+        mxGetNumberOfElements(tmp_fieldpointer) != 1) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidCharge",
+            "Option 'charge' must be a real scalar: -1, 0 or +1.");
+    }
+    double chargeValue = mxGetScalar(tmp_fieldpointer);
+    if (chargeValue != -1.0 && chargeValue != 0.0 && chargeValue != 1.0) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidCharge",
+            "Option 'charge' is %g, expected -1 for electrons, 0 for photons "
+            "or +1 for positrons.", chargeValue);
+    }
+    dijOptions.charge = (int)chargeValue;
+
+    if (verbose_flag > 1) {
+        const char *particle = dijOptions.charge == 0 ? "photons" :
+            (dijOptions.charge < 0 ? "electrons" : "positrons");
+        mexPrintf("Source charge : %d (%s)\n", dijOptions.charge, particle);
     }
 
     nInput++;
@@ -622,7 +631,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
 
     tmp_fieldpointer = mxGetField(mcOpt,0,"relDoseThreshold");
     if (tmp_fieldpointer)
-        omcConfig.doseThreshold = mxGetScalar(tmp_fieldpointer);
+        dijOptions.relDoseThreshold = mxGetScalar(tmp_fieldpointer);
     
     
     input_idx = nInput;
@@ -741,763 +750,218 @@ void cleanPhantom() {
     return;
 }
 
-/******************************************************************************/
 
 /******************************************************************************/
 /* Source definitions */
-const int MXEBIN = 200;     // number of energy bins of spectrum
-const int INVDIM = 1000;    // number of bins in inverse CDF
 
-/* Build the tables used to sample the incident energy, from a histogram of
- nensrc bins with upper energies ensrcd[], lower edge enmin of the first bin
- and per-bin probabilities srcpdf[] in counts/bin. Shared by the spectrum
- read from file and the one passed in from MATLAB, so that both are sampled
- in exactly the same way. */
-static void initSpectrumCdf(const double *ensrcd, const double *srcpdf,
-                            int nensrc, double enmin) {
+/* The beamlet source, taken straight from the mcSrc struct. Every array but
+ the beam index is used in place, so mcSrc has to stay alive for the whole
+ call -- it does, it is one of the inputs. */
+static struct OmcBeamletSource beamletSource;
+static int *beamIndex = NULL;   // 0 based, converted from mcSrc.iBeam
+
+static const double *getSourceArray(const char *name) {
+
+    mxArray *field = mxGetField(mcSrc, 0, name);
+
+    if (field == NULL) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:missingField",
+            "Required field '%s' is missing from the mcSrc struct.", name);
+    }
+    if (!mxIsDouble(field) || mxIsComplex(field) || mxIsSparse(field)) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidField",
+            "Field 'mcSrc.%s' must be a real double array.", name);
+    }
+
+    return mxGetPr(field);
+}
+
+static void initSource(void) {
+
+    mxArray *field = mxGetField(mcSrc, 0, "nBixels");
+    if (field == NULL) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:missingField",
+            "Required field 'nBixels' is missing from the mcSrc struct.");
+    }
+
+    beamletSource.nbeamlets = (int) mxGetScalar(field);
 
     if (verbose_flag > 1)
-        mexPrintf("Energy ranges from %f to %f MeV\n", enmin, ensrcd[nensrc - 1]);
+        mexPrintf("%s%d\n", "Total Number of Beamlets:",
+                  beamletSource.nbeamlets);
 
-    /* Initialization routine to calculate the inverse of the
-     cumulative probability distribution that is used during execution to
-     sample the incident particle energy. */
-    double *srccdf = malloc(nensrc*sizeof(double));
+    /* The beam index is the one field that cannot be shared: matRad counts
+     beams from 1 and hands them over as doubles, the engine wants 0 based
+     ints. */
+    const double *iBeamPerBeamlet = getSourceArray("iBeam");
 
-    srccdf[0] = srcpdf[0];
-    for (int i=1; i<nensrc; i++) {
-        srccdf[i] = srccdf[i-1] + srcpdf[i];
+    beamIndex = (int*) malloc(beamletSource.nbeamlets*sizeof(int));
+    for(int i=0; i<beamletSource.nbeamlets; i++) {
+        beamIndex[i] = (int) iBeamPerBeamlet[i] - 1; // C indexing style
     }
+    beamletSource.ibeam = beamIndex;
 
-    double fnorm = 1.0/srccdf[nensrc - 1];
-    double binsok = 0.0;
-    source.deltak = INVDIM; /* number of elements in inverse CDF */
-    double gridsz = 1.0f/source.deltak;
+    beamletSource.xsource = getSourceArray("xSource");
+    beamletSource.ysource = getSourceArray("ySource");
+    beamletSource.zsource = getSourceArray("zSource");
 
-    for (int i=0; i<nensrc; i++) {
-        srccdf[i] *= fnorm;
-        if (i == 0) {
-            if (srccdf[0] <= 3.0*gridsz) {
-                binsok = 1.0;
-            }
-        }
-        else {
-            if ((srccdf[i] - srccdf[i - 1]) < 3.0*gridsz) {
-                binsok = 1.0;
-            }
-        }
-    }
+    beamletSource.xcorner = getSourceArray("xCorner");
+    beamletSource.ycorner = getSourceArray("yCorner");
+    beamletSource.zcorner = getSourceArray("zCorner");
 
-    if (verbose_flag > 1 && binsok != 0.0) {
-        mexPrintf("Warning! Some of normalized bin probabilities are so small that bins may be missed.\n");
-    }
+    beamletSource.xside1 = getSourceArray("xSide1");
+    beamletSource.yside1 = getSourceArray("ySide1");
+    beamletSource.zside1 = getSourceArray("zSide1");
 
-    /* Calculate cdfinv. This array allows the rapid sampling for the
-     energy by precomputing the results for a fine grid. */
-    source.cdfinv1 = malloc(source.deltak*sizeof(double));
-    source.cdfinv2 = malloc(source.deltak*sizeof(double));
-    double ak;
-
-    for (int k=0; k<source.deltak; k++) {
-        ak = (double)k*gridsz;
-        int i;
-
-        for (i=0; i<nensrc; i++) {
-            if (ak <= srccdf[i]) {
-                break;
-            }
-        }
-
-        /* We should fall here only through the above break sentence. */
-        if (i != 0) {
-            source.cdfinv1[k] = ensrcd[i - 1];
-        }
-        else {
-            source.cdfinv1[k] = enmin;
-        }
-        source.cdfinv2[k] = ensrcd[i] - source.cdfinv1[k];
-
-    }
-
-    free(srccdf);
+    beamletSource.xside2 = getSourceArray("xSide2");
+    beamletSource.yside2 = getSourceArray("ySide2");
+    beamletSource.zside2 = getSourceArray("zSide2");
 
     return;
 }
 
-/* Read the spectrum from the .spectrum file given in mcOpt.spectrumFile */
-static void initSpectrumFromFile(void) {
+static void cleanSource(void) {
 
-    char buffer[BUFFER_SIZE];
-    char* fstatus;
+    /* Everything else is shared with MATLAB and freed there */
+    free(beamIndex);
+    beamIndex = NULL;
 
-    //removeSpaces(omcConfig.spectrumFile, buffer);
-
-    /* Open .source file */
-    FILE *fp;
-
-    if ((fp = fopen(omcConfig.spectrumFile, "r")) == NULL) {
-        omcFail("matRad:omc_matrad:spectrumFile",
-            "Unable to open spectrum file: %s", omcConfig.spectrumFile);
-    }
-
-    if (verbose_flag > 2)
-        mexPrintf("Path to spectrum file : %s\n", omcConfig.spectrumFile);
-
-    /* Read spectrum file title */
-    fstatus = fgets(buffer, BUFFER_SIZE, fp);
-    if (fstatus == NULL)
-        mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Could not parse spectrum file.\n");
-
-    if (verbose_flag > 1)
-        mexPrintf("Spectrum file title: %s", buffer);
-
-
-    /* Read number of bins and spectrum type */
-    double enmin;   /* lower energy of first bin */
-    int nensrc;     /* number of energy bins in spectrum histogram */
-    int imode;      /* 0 : histogram counts/bin, 1 : counts/MeV*/
-
-    fstatus = fgets(buffer, BUFFER_SIZE, fp);
-    if (fstatus == NULL)
-        mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Could not parse spectrum file.\n");
-
-    sscanf(buffer, "%d %lf %d", &nensrc, &enmin, &imode);
-
-    if (nensrc > MXEBIN) {
-        omcFail("matRad:omc_matrad:spectrumFile",
-            "Number of energy bins = %d is greater than max allowed = %d. "
-            "Increase MXEBIN macro!", nensrc, MXEBIN);
-    }
-
-    /* upper energy of bin i in MeV */
-    double *ensrcd = malloc(nensrc*sizeof(double));
-    /* prob. of finding a particle in bin i */
-    double *srcpdf = malloc(nensrc*sizeof(double));
-
-    /* Read spectrum information */
-    for (int i=0; i<nensrc; i++) {
-        fstatus = fgets(buffer, BUFFER_SIZE, fp);
-        if (fstatus == NULL)
-            mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Could not parse spectrum file.\n");
-
-        sscanf(buffer, "%lf %lf", &ensrcd[i], &srcpdf[i]);
-    }
-    if (verbose_flag > 2)
-        mexPrintf("Have read %d input energy bins from spectrum file.\n", nensrc);
-
-    if (imode == 0) {
-        if (verbose_flag > 2)
-            mexPrintf("Counts/bin assumed.\n");
-    }
-    else if (imode == 1) {
-        if (verbose_flag > 2)
-            mexPrintf("Counts/MeV assumed.\n");
-        srcpdf[0] *= (ensrcd[0] - enmin);
-        for(int i=1; i<nensrc; i++) {
-            srcpdf[i] *= (ensrcd[i] - ensrcd[i - 1]);
-        }
-    }
-    else {
-        omcFail("matRad:omc_matrad:spectrumFile",
-            "Invalid mode number in spectrum file.");
-    }
-
-    initSpectrumCdf(ensrcd, srcpdf, nensrc, enmin);
-
-    /* Cleaning */
-    fclose(fp);
-    free(ensrcd);
-    free(srcpdf);
-
-    return;
-}
-
-/* Use the spectrum passed in through mcOpt.spectrum, already validated in
- parseSpectrum(). The bin probabilities are copied because counts/MeV input
- has to be scaled by the bin widths, and the array belongs to MATLAB. */
-static void initSpectrumFromArrays(void) {
-
-    int nensrc = omcConfig.spectrumNbins;
-    double enmin = omcConfig.spectrumEnMin;
-    const double *ensrcd = omcConfig.spectrumEnergy;
-
-    double *srcpdf = malloc(nensrc*sizeof(double));
-    for (int i=0; i<nensrc; i++) {
-        srcpdf[i] = omcConfig.spectrumFluence[i];
-    }
-
-    if (omcConfig.spectrumMode == 1) {
-        if (verbose_flag > 2)
-            mexPrintf("Counts/MeV assumed.\n");
-        srcpdf[0] *= (ensrcd[0] - enmin);
-        for (int i=1; i<nensrc; i++) {
-            srcpdf[i] *= (ensrcd[i] - ensrcd[i - 1]);
-        }
-    }
-    else if (verbose_flag > 2) {
-        mexPrintf("Counts/bin assumed.\n");
-    }
-
-    if (verbose_flag > 2)
-        mexPrintf("Have taken %d energy bins from the passed spectrum.\n", nensrc);
-
-    initSpectrumCdf(ensrcd, srcpdf, nensrc, enmin);
-
-    free(srcpdf);
-
-    return;
-}
-
-void initSource() {
-
-    /* Read the charge of the source particles from mcOpt.charge, which
-     parseInput() has put into the input items. Without this the field was
-     accepted and then ignored, leaving source.charge at its static zero, so
-     an electron or positron source silently ran as photons. */
-    char buffer[BUFFER_SIZE];
-    if (getInputValue(buffer, "charge") != 1) {
-        omcFail("matRad:omc_matrad:missingInput",
-            "Can not find 'charge' key on input file.");
-    }
-
-    char *endptr;
-    long charge = strtol(buffer, &endptr, 10);
-
-    /* strtol() stops at the first character it cannot use and returns 0 for a
-     string it could not read at all, which would quietly turn a bad value
-     into a photon source */
-    while (isspace((unsigned char)*endptr)) {
-        endptr++;
-    }
-    if (endptr == buffer || *endptr != '\0') {
-        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidCharge",
-            "Option 'charge' is '%s', expected -1, 0 or +1.", buffer);
-    }
-    if (charge < -1 || charge > 1) {
-        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidCharge",
-            "Option 'charge' is %ld, expected -1 for electrons, 0 for photons "
-            "or +1 for positrons.", charge);
-    }
-    source.charge = (int)charge;
-
-    if (verbose_flag > 1) {
-        const char *particle = source.charge == 0 ? "photons" :
-            (source.charge < 0 ? "electrons" : "positrons");
-        mexPrintf("Source charge : %d (%s)\n", source.charge, particle);
-    }
-
-    source.spectrum = 1;    /* energy spectrum as default case */
-
-    if (source.spectrum) {
-        if (omcConfig.spectrumEnergy != NULL) {
-            initSpectrumFromArrays();
-        }
-        else {
-            initSpectrumFromFile();
-        }
-    }
-    else {  /* monoenergetic source */
-        source.energy = omcConfig.monoEnergy;
-        mexPrintf("%f monoenergetic source\n", source.energy);
-
-    }
-
-    /* Parse data of the beamlets */
-    unsigned int nfields;
-    mxArray *tmp_fieldpointer;
-
-    tmp_fieldpointer = mxGetField(mcSrc,0,"nBixels");
-    nfields = mxGetScalar(tmp_fieldpointer);
-    source.nbeamlets = nfields;
-    
-    if (verbose_flag > 1)
-        mexPrintf("%s%d\n", "Total Number of Beamlets:", source.nbeamlets);
-    
-    tmp_fieldpointer = mxGetField(mcSrc,0,"iBeam");
-    const double* iBeamPerBeamlet = mxGetPr(tmp_fieldpointer);
-    
-    source.ibeam = (int*) malloc(source.nbeamlets*sizeof(int));
-    for(int i=0; i<source.nbeamlets; i++) {
-        source.ibeam[i] = (int) iBeamPerBeamlet[i] - 1; // C indexing style
-    }
-        
-    tmp_fieldpointer = mxGetField(mcSrc,0,"xSource");
-    source.xsource = mxGetPr(tmp_fieldpointer);
-    
-    tmp_fieldpointer = mxGetField(mcSrc,0,"ySource");
-    source.ysource = mxGetPr(tmp_fieldpointer);
-    
-    tmp_fieldpointer = mxGetField(mcSrc,0,"zSource");
-    source.zsource = mxGetPr(tmp_fieldpointer);
-            
-    tmp_fieldpointer = mxGetField(mcSrc,0,"xCorner");
-    source.xcorner = mxGetPr(tmp_fieldpointer);
-    
-    tmp_fieldpointer = mxGetField(mcSrc,0,"yCorner");
-    source.ycorner = mxGetPr(tmp_fieldpointer);
-    
-    tmp_fieldpointer = mxGetField(mcSrc,0,"zCorner");
-    source.zcorner = mxGetPr(tmp_fieldpointer);
-    
-    tmp_fieldpointer = mxGetField(mcSrc,0,"xSide1");
-    source.xside1 = mxGetPr(tmp_fieldpointer);
-    
-    tmp_fieldpointer = mxGetField(mcSrc,0,"ySide1");
-    source.yside1 = mxGetPr(tmp_fieldpointer);
-    
-    tmp_fieldpointer = mxGetField(mcSrc,0,"zSide1");
-    source.zside1 = mxGetPr(tmp_fieldpointer);
-    
-    tmp_fieldpointer = mxGetField(mcSrc,0,"xSide2");
-    source.xside2 = mxGetPr(tmp_fieldpointer);
-    
-    tmp_fieldpointer = mxGetField(mcSrc,0,"ySide2");
-    source.yside2 = mxGetPr(tmp_fieldpointer);
-    
-    tmp_fieldpointer = mxGetField(mcSrc,0,"zSide2");
-    source.zside2 = mxGetPr(tmp_fieldpointer);    
-    
-    return;
-}
-
-void cleanSource() {
-    
-    /* Memory related to the beamlets is freed within Matlab */
-    free(source.cdfinv1);
-    free(source.cdfinv2);
-    
     return;
 }
 
 /******************************************************************************/
-/* Scoring definitions. The scoring arrays, ausgab() and accumEndep() live in
- the core library, in omc_score.c, so that both user codes share the touched
- voxel bookkeeping. */
+/* Collecting the results. The engine hands over one finished beamlet at a
+ time and this grows the two sparse matrices MATLAB gets back, which is what
+ the beamlet loop used to do inline. */
 
-void accumulateResults(int iout, int nhist, int nbatch)
-{
-    /* Only voxels this beamlet actually deposited in can be nonzero, and for
-     an untouched voxel the arithmetic below reduces to writing back the zeros
-     that are already there: accum_endep is 0, so endep and endep2 come out 0,
-     the endep != 0 branch is not taken, and both outputs are set to 0. Zeroing
-     the dose in air is likewise a no-op on a voxel that never received any.
-     So walking the touched set is equivalent to walking the grid, at a
-     fraction of the cost for a single beamlet. */
-    const int *touched;
-    int ntouched = scoreBeamVoxels(&touched);
+struct SparseDij {
+    mxArray *dose;              // the matrices being filled
+    mxArray *variance;          // NULL unless a second output was asked for
 
-    /* MSVC only implements OpenMP 2.0, which in C does not allow declaring
-     the loop variable inside the for statement */
-    int n;
-    #pragma omp parallel for
-    for (n = 0; n < ntouched; n++) {
-        int irl = touched[n];
+    mwSize nCubeElements;
+    mwSize nbeamlets;
 
-        /* Region 0 is outside the geometry. ausgab() does reach it, through
-         the discard path in electron(), but it has no voxel and is not part
-         of the output. */
-        if (irl == 0) {
-            continue;
+    double *sr;                 // dose: values, row indices, column starts
+    mwIndex *irs;
+    mwIndex *jcs;
+
+    double *sr_var;             // the same for the variance
+    mwIndex *irs_var;
+    mwIndex *jcs_var;
+
+    mwIndex linIx;              // values written so far
+    mwSize nzmax;               // values the arrays have room for
+    double percentage_steps;    // steps in which the sparse matrix is allocated
+    double percent_sparse;      // fraction currently allocated for
+    int reallocations;
+};
+
+static void appendBeamlet(int ibeamlet, int nvoxels, const int *voxels,
+                          const double *dose, const double *variance,
+                          void *user) {
+
+    struct SparseDij *dij = (struct SparseDij*) user;
+
+    /* The number of new non-zero values is the current linear index plus the
+     entries coming from this beamlet */
+    mwSize newnnz = (mwSize)nvoxels + (mwSize) dij->linIx;
+
+    /* Check if we need to reallocate for sparse matrix */
+    if (newnnz > dij->nzmax) {
+        mwSize oldnzmax = dij->nzmax;
+        dij->percent_sparse += dij->percentage_steps;
+        dij->nzmax = (mwSize) ceil((double)dij->nCubeElements
+                                   *(double)dij->nbeamlets
+                                   *dij->percent_sparse);
+
+        /* Make sure nzmax increases at least by 1. */
+        if (oldnzmax == dij->nzmax) {
+            dij->nzmax++;
         }
 
-        int ix, iy, iz;
-        omcDecodeRegion(irl, geometry.isize, geometry.jsize, &ix, &iy, &iz);
-
-        double endep = score.accum_endep[irl];
-        double endep2 = score.accum_endep2[irl];
-        double factor;
-
-        if (iout) {
-            /* Convert deposited energy to dose */
-            double mass = (geometry.xbounds[ix+1] - geometry.xbounds[ix])*
-                (geometry.ybounds[iy+1] - geometry.ybounds[iy])*
-                (geometry.zbounds[iz+1] - geometry.zbounds[iz]);
-
-            /* Transform deposited energy to Gy */
-            mass *= geometry.med_densities[irl-1];
-
-            factor = 1.602E-10/(mass);
-        }
-        else {  /* Output mean deposited energy */
-            factor = 1.0;
+        /* Check that the new nmax is large enough and if not, also adjust
+        the percentage_steps since we seem to have set it too small for this
+        particular use case */
+        if (dij->nzmax < newnnz) {
+            dij->nzmax = newnnz;
+            dij->percent_sparse = (double)dij->nzmax/dij->nCubeElements;
+            dij->percentage_steps = dij->percent_sparse;
         }
 
-        endep *= factor;
-        endep2 *= factor*factor;
-
-        /* First calculate mean deposited energy across batches and its
-         uncertainty */
-        endep /= (double) nbatch;
-        endep2 /= (double) nbatch;
-
-        double unc_endep;
-
-        /* Batch approach uncertainty calculation: sample variance of the
-         batch means over (nbatch - 1) gives the variance of the mean. The
-         divisors here must not be swapped -- dividing endep2 by (nbatch - 1)
-         instead leaves a spurious mean^2/(nbatch*(nbatch - 1)) term that puts
-         a floor of ~10% relative uncertainty under every voxel regardless of
-         the statistics. */
-        if (endep != 0.0) {
-            unc_endep = endep2 - endep*endep;
-
-            //Variance of the mean
-            unc_endep /= (double) (nbatch - 1);
-        }
-        else {
-            endep = 0.0;
-            unc_endep = 0.0;
+        if (verbose_flag > 2) {
+            mexPrintf("Reallocating Sparse Matrix from nzmax=%d to nzmax=%d\n",
+                      (int)oldnzmax, (int)dij->nzmax);
         }
 
-        /* Zero dose in air */
-        if (geometry.med_densities[irl-1] < 0.044) {
-            endep = 0.0;
-            unc_endep = 0.0;
+        /* Set new nzmax and reallocate more memory */
+        mxSetNzmax(dij->dose, dij->nzmax);
+        mxSetPr(dij->dose, (double *) mxRealloc(dij->sr,
+            dij->nzmax*sizeof(double)));
+        mxSetIr(dij->dose, (mwIndex *) mxRealloc(dij->irs,
+            dij->nzmax*sizeof(mwIndex)));
+
+        /* Use the new pointers */
+        dij->sr  = mxGetPr(dij->dose);
+        dij->irs = mxGetIr(dij->dose);
+
+        if (dij->variance) {
+            /* Set new nzmax and reallocate more memory */
+            mxSetNzmax(dij->variance, dij->nzmax);
+            mxSetPr(dij->variance, (double *) mxRealloc(dij->sr_var,
+                dij->nzmax*sizeof(double)));
+            mxSetIr(dij->variance, (mwIndex *) mxRealloc(dij->irs_var,
+                dij->nzmax*sizeof(mwIndex)));
+
+            /* Use the new pointers */
+            dij->sr_var  = mxGetPr(dij->variance);
+            dij->irs_var = mxGetIr(dij->variance);
         }
 
-        /* Store output quantities */
-        score.accum_endep[irl] = endep;
-        score.accum_endep2[irl] = unc_endep;
+        dij->reallocations++;
+    }
+
+    /* Writing past the arrays would corrupt the heap rather than produce a
+     wrong number, so make sure of the arithmetic above before trusting it */
+    if (newnnz > dij->nzmax) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:sparseOverflow",
+            "Beamlet %d needs room for %d values but only %d are allocated.",
+            ibeamlet, (int)newnnz, (int)dij->nzmax);
+    }
+
+    //Populate sparse matrix arrays
+    for (int n = 0; n < nvoxels; n++) {
+        dij->sr[dij->linIx] = dose[n];
+        dij->irs[dij->linIx] = voxels[n];
+
+        if (dij->variance) {
+            dij->sr_var[dij->linIx] = variance[n];
+            dij->irs_var[dij->linIx] = voxels[n];
+        }
+        dij->linIx++;
+    }
+
+    dij->jcs[ibeamlet+1] = dij->linIx;
+    if (dij->variance) {
+        dij->jcs_var[ibeamlet+1] = dij->linIx;
     }
 
     return;
 }
 
-void outputResults(char *output_file, int iout, int nhist, int nbatch) {
-    
-    /* Accumulate the results */
-    accumulateResults(iout, nhist,nbatch);
-    
-    int irl;
-    int imax = geometry.isize;
-    int ijmax = geometry.isize*geometry.jsize;
-    
-    /* Output to file */
-    char extension[15];
-    if (iout) {
-        strcpy(extension, ".3ddose");
-    } else {
-        strcpy(extension, ".3denergy");
-    }
-    
-    /* Get file path from input data */
-    char output_folder[128];
-    char buffer[BUFFER_SIZE];
-    
-    if (getInputValue(buffer, "output folder") != 1) {
-        omcFail("matRad:omc_matrad:missingInput",
-            "Can not find 'output folder' key on input file.");
-    }
-    removeSpaces(output_folder, buffer);
-    
-    /* Make space for the new string */
-    char* file_name = malloc(strlen(output_folder) + strlen(output_file) + 
-        strlen(extension) + 1);
-    strcpy(file_name, output_folder);
-    strcat(file_name, output_file); /* add the file name */
-    strcat(file_name, extension); /* add the extension */
-    
-    FILE *fp;
-    if ((fp = fopen(file_name, "w")) == NULL) {
-        omcFail("matRad:omc_matrad:outputFile",
-            "Unable to open file: %s", file_name);
-    }
-    
-    /* Grid dimensions */
-    fprintf(fp, "%5d%5d%5d\n",
-            geometry.isize, geometry.jsize, geometry.ksize);
-    
-    /* Boundaries in x-, y- and z-directions */
-    for (int ix = 0; ix<=geometry.isize; ix++) {
-        fprintf(fp, "%f ", geometry.xbounds[ix]);
-    }
-    fprintf(fp, "\n");
-    for (int iy = 0; iy<=geometry.jsize; iy++) {
-        fprintf(fp, "%f ", geometry.ybounds[iy]);
-    }
-    fprintf(fp, "\n");
-    for (int iz = 0; iz<=geometry.ksize; iz++) {
-        fprintf(fp, "%f ", geometry.zbounds[iz]);
-    }
-    fprintf(fp, "\n");
-    
-    /* Dose or energy array */
-    for (int iz=0; iz<geometry.ksize; iz++) {
-        for (int iy=0; iy<geometry.jsize; iy++) {
-            for (int ix=0; ix<geometry.isize; ix++) {
-                irl = 1 + ix + iy*imax + iz*ijmax;
-                fprintf(fp, "%e ", score.accum_endep[irl]);
-            }
-        }
-    }
-    fprintf(fp, "\n");
-    
-    /* Uncertainty array */
-    for (int iz=0; iz<geometry.ksize; iz++) {
-        for (int iy=0; iy<geometry.jsize; iy++) {
-            for (int ix=0; ix<geometry.isize; ix++) {
-                irl = 1 + ix + iy*imax + iz*ijmax;
-                fprintf(fp, "%f ", score.accum_endep2[irl]);
-            }
-        }
-    }
-    fprintf(fp, "\n");
-    
-    /* Cleaning */
-    fclose(fp);
-    free(file_name);
-
-    return;
-}
-
-
-void initHistory(int ibeamlet) {
-
-    double rnno1;
-    double rnno2;
-    
-    int ijmax = geometry.isize*geometry.jsize;
-    int imax = geometry.isize;
-    
-    /* Initialize first particle of the stack from source data */
-    stack.np = 0;
-    stack.p[stack.np].iq = source.charge;
-    
-    /* Get primary particle energy */
-    double ein = 0.0;
-    if (source.spectrum) {
-        /* Sample initial energy from spectrum data */
-        rnno1 = setRandom();
-        rnno2 = setRandom();
-        
-        /* Sample bin number in order to select particle energy */
-        int k = (int)fmin(source.deltak*rnno1, source.deltak - 1.0);
-        ein = source.cdfinv1[k] + rnno2*source.cdfinv2[k];
-    }
-    else {
-        /* Monoenergetic source */
-        ein = source.energy;
-    }
-    
-    /* Check if the particle is an electron, in such a case add electron
-     rest mass energy */
-    if (stack.p[stack.np].iq != 0) {
-        /* Electron or positron */
-        stack.p[stack.np].e = ein + RM;
-    }
-    else {
-        /* Photon */
-        stack.p[stack.np].e = ein;
-    }
-    
-    /* Accumulate sampled kinetic energy for fraction of deposited energy
-     calculations */
-    scoreSource(ein);
-    
-    /* Set particle position. First obtain a random position in the rectangle
-     defined by the bixel at isocenter*/    
-    double xiso = 0.0; 
-    double yiso = 0.0;
-    double ziso = 0.0;
-    
-    rnno1 = setRandom();
-    rnno2 = setRandom();
-
-    xiso = rnno1*source.xside1[ibeamlet] + rnno2*source.xside2[ibeamlet] + 
-            source.xcorner[ibeamlet];
-    yiso = rnno1*source.yside1[ibeamlet] + rnno2*source.yside2[ibeamlet] + 
-            source.ycorner[ibeamlet];
-    ziso = rnno1*source.zside1[ibeamlet] + rnno2*source.zside2[ibeamlet] + 
-            source.zcorner[ibeamlet];
-    
-    
-    /* Norm of the resulting vector from the source of current beam to the 
-     position of the particle on bixel */
-    int ibeam = source.ibeam[ibeamlet];
-
-    double sourcePos[3];
-
-    //Gaussian Source
-
-    switch (omcConfig.sourceGeometry)
-    {
-        case POINT: ;
-            sourcePos[0] = source.xsource[ibeam];
-            sourcePos[1] = source.ysource[ibeam];
-            sourcePos[2] = source.zsource[ibeam];
-            break;
-        case GAUSSIAN: ;        
-            //double stdSource[3] = {omcConfig.sourceGaussianWidth, omcConfig.sourceGaussianWidth, omcConfig.sourceGaussianWidth};
-            //sourcePos[0] = setStandardNormalRandom(source.xsource[ibeam],stdSource[0]);
-            //sourcePos[1] = setStandardNormalRandom(source.ysource[ibeam],stdSource[1]);
-            //sourcePos[2] = setStandardNormalRandom(source.zsource[ibeam],stdSource[2]);
-                        
-            //Get the normalized collimator plane vectors
-            double planeVec1_norm;
-            double planeVec2_norm;
-            planeVec1_norm = sqrt(   
-                                            source.xside1[ibeamlet]*source.xside1[ibeamlet] + 
-                                            source.yside1[ibeamlet]*source.yside1[ibeamlet] + 
-                                            source.zside1[ibeamlet]*source.zside1[ibeamlet]
-                                        );
-            planeVec2_norm = sqrt(   
-                                            source.xside2[ibeamlet]*source.xside2[ibeamlet] + 
-                                            source.yside2[ibeamlet]*source.yside2[ibeamlet] + 
-                                            source.zside2[ibeamlet]*source.zside2[ibeamlet]
-                                        );
-            double planeVec1[3];
-            planeVec1[0] = source.xside1[ibeamlet] / planeVec1_norm;
-            planeVec1[1] = source.yside1[ibeamlet] / planeVec1_norm;
-            planeVec1[2] = source.zside1[ibeamlet] / planeVec1_norm;    
-
-            double planeVec2[3];
-            planeVec2[0] = source.xside2[ibeamlet] / planeVec2_norm;
-            planeVec2[1] = source.yside2[ibeamlet] / planeVec2_norm;
-            planeVec2[2] = source.zside2[ibeamlet] / planeVec2_norm;            
-
-            //Create two normally distributed random veriables with box-muller transform
-            double rnSource[2]; 
-            boxMuller(rnSource);
-
-            //Scale with source width
-            rnSource[0] *= omcConfig.sourceGaussianWidth;
-            rnSource[1] *= omcConfig.sourceGaussianWidth;
-
-            //Now use the plane vectors to add the random 2D offset to the source
-            sourcePos[0] = source.xsource[ibeam] + rnSource[0]*planeVec1[0] + rnSource[1]*planeVec2[0];
-            sourcePos[1] = source.ysource[ibeam] + rnSource[0]*planeVec1[1] + rnSource[1]*planeVec2[1];
-            sourcePos[2] = source.zsource[ibeam] + rnSource[0]*planeVec1[2] + rnSource[1]*planeVec2[2];
-
-            
-            break;
-        default: ;
-            mexErrMsgIdAndTxt("matRad:matRad_ompInterface:invalidSourceGeometry","Source type not defined!");
-    }
-        
-
-    //Point source
-    double xd = xiso - sourcePos[0];
-    double yd = yiso - sourcePos[1];
-    double zd = ziso - sourcePos[2];
-
-
-    double vnorm = sqrt(xd*xd + yd*yd + zd*zd);            
-        
-    /* Direction of the particle from position on bixel to beam source*/
-    double u = -(xd)/vnorm;
-    double v = -(yd)/vnorm;
-    double w = -(zd)/vnorm;
-    
-    /* Calculate the minimum distance from particle position on bixel to 
-     phantom boundaries */
-    double ustep = DBL_MAX; //1.0E5; 
-    double dist;
-    
-    if(u > 0.0) {
-        dist = (geometry.xbounds[geometry.isize]-xiso)/u;
-        if(dist < ustep) {
-            ustep = dist;
-        }        
-    }
-    if(u < 0.0) {
-        dist = -(xiso-geometry.xbounds[0])/u;
-        if(dist < ustep) {
-            ustep = dist;
-        }        
-    }
-    
-    if(v > 0.0) {
-        dist = (geometry.ybounds[geometry.jsize]-yiso)/v;
-        if(dist < ustep) {
-            ustep = dist;
-        }        
-    }
-    if(v < 0.0) {
-        dist = -(yiso-geometry.ybounds[0])/v;
-        if(dist < ustep) {
-            ustep = dist;
-        }        
-    }
-    
-    if(w > 0.0) {
-        dist = (geometry.zbounds[geometry.ksize]-ziso)/w;
-        if(dist < ustep) {
-            ustep = dist;
-        }        
-    }
-    if(w < 0.0) {
-        dist = -(ziso-geometry.zbounds[0])/w;
-        if(dist < ustep) {
-            ustep = dist;
-        }        
-    }
-    
-    /* Transport particle from bixel to surface. Adjust particle direction 
-     to be incident to phantom surface */
-    stack.p[stack.np].x = xiso + ustep*u;
-    stack.p[stack.np].y = yiso + ustep*v;
-    stack.p[stack.np].z = ziso + ustep*w;
-    
-    stack.p[stack.np].u = -u;
-    stack.p[stack.np].v = -v;
-    stack.p[stack.np].w = -w;
-
-    /* For numerical stability, make sure that points are really inside the
-     phantom. nextafter() moves one representable step towards the opposite
-     face; the 2.0*DBL_MIN offset used before is denormal-small and was
-     absorbed entirely when added to any normal boundary coordinate, leaving
-     the particle exactly on the boundary. */
-    if(stack.p[stack.np].x < geometry.xbounds[0]) {
-        stack.p[stack.np].x = nextafter(geometry.xbounds[0],
-                                        geometry.xbounds[geometry.isize]);
-    }
-    if(stack.p[stack.np].x > geometry.xbounds[geometry.isize]) {
-        stack.p[stack.np].x = nextafter(geometry.xbounds[geometry.isize],
-                                        geometry.xbounds[0]);
-    }
-
-    if(stack.p[stack.np].y < geometry.ybounds[0]) {
-        stack.p[stack.np].y = nextafter(geometry.ybounds[0],
-                                        geometry.ybounds[geometry.jsize]);
-    }
-    if(stack.p[stack.np].y > geometry.ybounds[geometry.jsize]) {
-        stack.p[stack.np].y = nextafter(geometry.ybounds[geometry.jsize],
-                                        geometry.ybounds[0]);
-    }
-
-    if(stack.p[stack.np].z < geometry.zbounds[0]) {
-        stack.p[stack.np].z = nextafter(geometry.zbounds[0],
-                                        geometry.zbounds[geometry.ksize]);
-    }
-    if(stack.p[stack.np].z > geometry.zbounds[geometry.ksize]) {
-        stack.p[stack.np].z = nextafter(geometry.zbounds[geometry.ksize],
-                                        geometry.zbounds[0]);
-    }
-    
-    /* Determine region index of source particle */
-    int ix = omcFindVoxelIndex(geometry.xbounds, geometry.isize,
-                               stack.p[stack.np].x);
-    int iy = omcFindVoxelIndex(geometry.ybounds, geometry.jsize,
-                               stack.p[stack.np].y);
-    int iz = omcFindVoxelIndex(geometry.zbounds, geometry.ksize,
-                               stack.p[stack.np].z);
-
-    stack.p[stack.np].ir = 1 + ix + iy*imax + iz*ijmax;
-          
-    /* Set statistical weight and distance to closest boundary*/
-    stack.p[stack.np].wt = 1.0;
-    stack.p[stack.np].dnear = 0.0;
-    
-    return;
-}
-
+/******************************************************************************/
 /* Progress reporting for the main simulation loop. If the caller supplied
  options.progressCallback, report through it (progress in [0,1]) and let
  the MATLAB side own any waitbar/handle lifecycle. Otherwise fall back to
  the built-in waitbar, lazily opened on first use, when verbose_flag > 1. */
 static mxArray *builtinWaitbarHandle = NULL;
 
-static void reportProgress(double progress, const char *message) {
+static const char *progressMessage =
+    "calculate dose influence matrix for photons (ompMC) ...";
+
+static void reportProgress(double progress, void *user) {
+
+    (void)user;
+
     if (progressCallback != NULL) {
         mxArray *progressArg = mxCreateDoubleScalar(progress);
         mxArray *cbArgs[2] = { progressCallback, progressArg };
@@ -1510,7 +974,7 @@ static void reportProgress(double progress, const char *message) {
         return;
 
     mxArray *progressArg = mxCreateDoubleScalar(progress);
-    mxArray *messageArg = mxCreateString(message);
+    mxArray *messageArg = mxCreateString(progressMessage);
     mxArray *waitbarOutput[1];
 
     if (builtinWaitbarHandle == NULL) {
@@ -1599,7 +1063,8 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     initHost();
 
     parseInput(nrhs, prhs);
-    
+    dijOptions.wantVariance = (nlhs >= 2);
+
     if (verbose_flag > 0)
     {
         mexPrintf("Input successfully parsed!\n");
@@ -1616,250 +1081,86 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     if (verbose_flag > 1)
         mexPrintf("ompMC compiled without OpenMP support. Serial execution.\n");
 #endif
-    
+
     /* Read geometry information from matRad and initialize geometry */
     initPhantom();
-    
+
     /* With number of media and media names initialize the medium data */
     initMediaData();
-    
-    /* Initialize radiation source */
+
+    /* Initialize the source: first the energy spectrum, either passed in
+     directly or read from file, then the beamlet apertures */
+    struct OmcSpectrum spectrum;
+    if (omcConfig.spectrumEnergy != NULL) {
+        omcSpectrumFromHistogram(&spectrum, omcConfig.spectrumEnergy,
+            omcConfig.spectrumFluence, omcConfig.spectrumNbins,
+            omcConfig.spectrumEnMin, omcConfig.spectrumMode);
+    }
+    else if (omcConfig.useMonoEnergy) {
+        omcSpectrumMonoenergetic(&spectrum, omcConfig.monoEnergy);
+    }
+    else {
+        omcSpectrumFromFile(&spectrum, omcConfig.spectrumFile);
+    }
     initSource();
-    
+
     /* Initialize data on a region-by-region basis */
     initRegions();
-    
+
     /* Initialize VRT data */
     initVrt();
-    
-    /* Preparation of scoring struct */
-    initScore(geometry.isize*geometry.jsize*geometry.ksize);
 
-    #pragma omp parallel
-    {
-      /* Initialize random number generator */
-      initRandom();
-
-      /* Initialize particle stack */
-      initStack();
-    }
-
-    /* Shower call */
-    
-    /* Get number of histories, statistical batches and splitting factor */
-    char buffer[BUFFER_SIZE];
-    
-    int nhist = omcConfig.nHist;
-    int nbatch = omcConfig.nBatch; 
-    
-    if (nhist/nbatch == 0) {
-        nhist = nbatch;
-    }
-    
-    int nperbatch = nhist/nbatch;
-    nhist = nperbatch*nbatch;
-    
     int gridsize = geometry.isize*geometry.jsize*geometry.ksize;
-    
-    if (verbose_flag > 1) 
-    {
-        mexPrintf("Total number of particle histories: %d\n", nhist);
-        mexPrintf("Number of statistical batches: %d\n", nbatch);
-        mexPrintf("Histories per batch: %d\n", nperbatch);
-    }
-
-    double relDoseThreshold = omcConfig.doseThreshold;
-
-    if (verbose_flag > 2)
-        mexPrintf("Using a relative dose cut-off of %f\n",relDoseThreshold);
-    
-    const char *progressMessage = "calculate dose influence matrix for photons (ompMC) ...";
-
 
     /* Create output matrix */
-    mwSize nCubeElements = geometry.isize*geometry.jsize*geometry.ksize;
-    double percentage_steps = 0.01;             // steps in which the sparse matrix is allocated
-    double percent_sparse = percentage_steps;   // initial percentage to allocate memory for
+    struct SparseDij dij;
+    dij.nCubeElements = (mwSize) gridsize;
+    dij.nbeamlets = (mwSize) beamletSource.nbeamlets;
+    dij.percentage_steps = 0.01;            // steps in which it is allocated
+    dij.percent_sparse = dij.percentage_steps;
+    dij.nzmax = (mwSize) ceil((double)dij.nCubeElements*(double)dij.nbeamlets
+                              *dij.percent_sparse);
+    dij.linIx = 0;
+    dij.reallocations = 0;
 
-    mwSize nzmax = (mwSize) ceil((double)nCubeElements*(double)source.nbeamlets*percent_sparse);
-    plhs[0] = mxCreateSparse(nCubeElements,(mwSize) source.nbeamlets,nzmax,mxREAL);
+    plhs[0] = mxCreateSparse(dij.nCubeElements, dij.nbeamlets, dij.nzmax, mxREAL);
+    dij.dose = plhs[0];
+    dij.sr  = mxGetPr(plhs[0]);
+    dij.irs = mxGetIr(plhs[0]);
+    dij.jcs = mxGetJc(plhs[0]);
+    dij.jcs[0] = 0;
 
-    double *sr  = mxGetPr(plhs[0]);
-    mwIndex *irs = mxGetIr(plhs[0]);
-    mwIndex *jcs = mxGetJc(plhs[0]);
-    mwIndex linIx = 0;
-    jcs[0] = 0;
+    dij.variance = NULL;
+    dij.sr_var = NULL;
+    dij.irs_var = NULL;
+    dij.jcs_var = NULL;
 
-    int outputVariance = (nlhs >= 2);
-
-    double *sr_var = NULL;
-    mwIndex *irs_var = NULL;
-    mwIndex *jcs_var = NULL;
-    if (outputVariance)
+    if (dijOptions.wantVariance)
     {
-        plhs[1] = mxCreateSparse(nCubeElements,(mwSize) source.nbeamlets,nzmax,mxREAL);
-        sr_var  = mxGetPr(plhs[1]);
-        irs_var = mxGetIr(plhs[1]);
-        jcs_var = mxGetJc(plhs[1]);
-        jcs_var[0] = 0;
-    }    
-    
-    double progress = 0.0;
+        plhs[1] = mxCreateSparse(dij.nCubeElements, dij.nbeamlets, dij.nzmax, mxREAL);
+        dij.variance = plhs[1];
+        dij.sr_var  = mxGetPr(plhs[1]);
+        dij.irs_var = mxGetIr(plhs[1]);
+        dij.jcs_var = mxGetJc(plhs[1]);
+        dij.jcs_var[0] = 0;
+    }
 
     if (verbose_flag > 0)
-        mexPrintf("done!\n");        
+        mexPrintf("done!\n");
 
     /* Execution time up to this point */
     if (verbose_flag > 2)
         mexPrintf("Execution time up to this point : %8.2f seconds\n",(omc_get_time() - tbegin));
-    
+
     if (verbose_flag > 0)
         mexPrintf("Running ompMC simulation...\n");
 
-    int sparse_reallocations;
-    sparse_reallocations = 0;
-    
-    for(int ibeamlet=0; ibeamlet<source.nbeamlets; ibeamlet++) {
-        for (int ibatch=0; ibatch<nbatch; ibatch++) {            
-            int ihist;
+    struct OmcDijCallbacks callbacks;
+    callbacks.beamlet = appendBeamlet;
+    callbacks.progress = reportProgress;
+    callbacks.user = &dij;
 
-            #pragma omp parallel for schedule(guided)
-            for (ihist=0; ihist<nperbatch; ihist++) {
-                /* Point the RNG at this history's stream; the index is
-                 unique across batches and beamlets, so results do not
-                 depend on the scheduling */
-                setRandomHistory(((uint64_t)ibeamlet*(uint64_t)nbatch
-                                  + (uint64_t)ibatch)*(uint64_t)nperbatch
-                                 + (uint64_t)ihist);
-
-                /* Initialize particle history */
-                initHistory(ibeamlet);
-
-                /* Start electromagnetic shower simulation */
-                shower();
-            }
-
-            /* Accumulate results of current batch for statistical analysis */
-            accumEndep(1.0/(double)nperbatch);
-
-            progress = ((double)ibeamlet + (double)(ibatch+1)/nbatch)/source.nbeamlets;
-            reportProgress(progress, progressMessage);
-        }
-
-        /* Output of results for current beamlet */
-        int iout = 1;   /* i.e. deposit mean dose per particle fluence */
-        accumulateResults(iout, nhist, nbatch);
-
-        /* Everything from here to the end of the beamlet only ever looks at
-         voxels this beamlet deposited in; the rest of the grid is zero and
-         below any positive threshold. The list comes back ascending, which is
-         what the sparse column below needs. */
-        const int *touched;
-        int ntouched = scoreBeamVoxels(&touched);
-
-        /* Get maximum value to apply threshold */
-        double doseMax = 0.0;
-        for (int n = 0; n < ntouched; n++) {
-            int irl = touched[n];
-            if (irl != 0 && score.accum_endep[irl] > doseMax) {
-                doseMax = score.accum_endep[irl];
-            }
-        }
-        double thresh = doseMax*relDoseThreshold;
-
-        /* Count values above threshold */
-        mwSize j_nnz = 0; //Number of nonzeros in the dose cube for the current beamlet
-        for (int n = 0; n < ntouched; n++) {
-            int irl = touched[n];
-            if (irl != 0 && score.accum_endep[irl] > thresh) {
-                j_nnz++;
-            }
-        }
-
-        //The number of new non-zero values is the current linear index + new upcoming entries from current beamlet + 1
-        mwSize newnnz = j_nnz + (mwSize) linIx;
-
-        /* Check if we need to reallocate for sparse matrix */
-        if (newnnz > nzmax) {
-            mwSize oldnzmax = nzmax;
-            percent_sparse += percentage_steps;
-            nzmax = (mwSize) ceil((double)nCubeElements*(double)source.nbeamlets*percent_sparse);
-            
-            /* Make sure nzmax increases at least by 1. */
-            if (oldnzmax == nzmax) {
-                nzmax++;
-            }                
-
-            /* Check that the new nmax is large enough and if not, also adjust 
-            the percentage_steps since we seem to have set it too small for this 
-            particular use case */
-            if (nzmax < newnnz) {
-                nzmax = newnnz;
-                percent_sparse = (double)nzmax/nCubeElements;
-                percentage_steps = percent_sparse;
-            }
-
-            if (verbose_flag > 2) {
-                mexPrintf("Reallocating Sparse Matrix from nzmax=%d to nzmax=%d\n", oldnzmax, nzmax);
-            }                
-            
-            /* Set new nzmax and reallocate more memory */
-            mxSetNzmax(plhs[0], nzmax);
-            mxSetPr(plhs[0], (double *) mxRealloc(sr, nzmax*sizeof(double)));
-            mxSetIr(plhs[0], (mwIndex *) mxRealloc(irs, nzmax*sizeof(mwIndex)));
-            
-            /* Use the new pointers */
-            sr  = mxGetPr(plhs[0]);
-            irs = mxGetIr(plhs[0]);
-
-            if (outputVariance) {
-                /* Set new nzmax and reallocate more memory */
-                mxSetNzmax(plhs[1], nzmax);
-                mxSetPr(plhs[1], (double *) mxRealloc(sr_var, nzmax*sizeof(double)));
-                mxSetIr(plhs[1], (mwIndex *)  mxRealloc(irs_var, nzmax*sizeof(mwIndex)));
-            
-                /* Use the new pointers */
-                sr_var  = mxGetPr(plhs[1]);
-                irs_var = mxGetIr(plhs[1]);
-            }
-
-            sparse_reallocations++;
-        }
-
-
-        //Populate sparse matrix arrays
-        for (int n = 0; n < ntouched; n++) {
-            int irl = touched[n];
-            if (irl != 0 && score.accum_endep[irl] > thresh) {
-                sr[linIx] = score.accum_endep[irl];
-                irs[linIx] = irl-1;
-
-                if (outputVariance) {
-                    sr_var[linIx] = score.accum_endep2[irl];
-                    irs_var[linIx] = irl-1;
-                }
-                linIx++;
-            }
-        }
-        
-        if (verbose_flag > 1 && linIx != newnnz)
-            mexPrintf("Warning: Discrepancy between linear index %d and maximum number of computed nonzeros %d at beamlet %d finalization!\n",linIx,newnnz,ibeamlet);
-
-        if (verbose_flag > 1 && linIx > nzmax)
-            mexPrintf("Warning: Discrepancy between linear index %d and maximum number of allowed nonzeros %d at beamlet %d finalization!\n",linIx,newnnz,ibeamlet);
-
-        jcs[ibeamlet+1] = linIx;
-        if (outputVariance) {
-            jcs_var[ibeamlet+1] = linIx;
-        }
-        
-        /* Reset the accumulators for the following beamlet. This clears
-         accum_endep2 as well, which the memset it replaces did not, so the
-         variance of one beamlet no longer leaks into the next. */
-        resetBeamScore();
-		progress = (double) (ibeamlet+1) / (double) source.nbeamlets;
-        reportProgress(progress, progressMessage);
-    }
+    omcCalcDij(&dijOptions, &beamletSource, &spectrum, &callbacks);
 
     /* Print some output and execution time up to this point */
     if (verbose_flag > 0)
@@ -1868,44 +1169,39 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     closeProgress();
 
     if (verbose_flag >= 3)
-        mexPrintf("Sparse MC Dij has %d (%f percent) elements!\n", linIx, (double)linIx/((double)nCubeElements*(double)source.nbeamlets));
+        mexPrintf("Sparse MC Dij has %d (%f percent) elements!\n", (int)dij.linIx,
+            (double)dij.linIx/((double)dij.nCubeElements*(double)dij.nbeamlets));
 
     if (verbose_flag >= 3)
-        mexPrintf("Needed %d sparse matrix reallocations.\n",sparse_reallocations);
+        mexPrintf("Needed %d sparse matrix reallocations.\n", dij.reallocations);
 
-    
     /* Truncate the matrix to the exact size by reallocation */
-    mxSetNzmax(plhs[0], linIx);
-    mxSetPr(plhs[0], mxRealloc(sr, linIx*sizeof(double)));
-    mxSetIr(plhs[0], mxRealloc(irs, linIx*sizeof(mwIndex)));
-    
-    sr  = mxGetPr(plhs[0]);
-    irs = mxGetIr(plhs[0]);
+    mxSetNzmax(plhs[0], dij.linIx);
+    mxSetPr(plhs[0], mxRealloc(dij.sr, dij.linIx*sizeof(double)));
+    mxSetIr(plhs[0], mxRealloc(dij.irs, dij.linIx*sizeof(mwIndex)));
+
+    mwIndex *irs = mxGetIr(plhs[0]);
 
     //Check output
     if (verbose_flag >= 3)
         mexPrintf("Verifying sparse Matrix... ");
-    for (int ix = 0; ix < linIx; ix++)
+    for (mwIndex ix = 0; ix < dij.linIx; ix++)
     {
         mwIndex currIx = irs[ix];
-        
-        if (currIx > gridsize)
-            mexPrintf("Invalid dose-cube index %d at linear index %d in sparse matrix check!",currIx,linIx);
+
+        if (currIx > (mwIndex)gridsize)
+            mexPrintf("Invalid dose-cube index %d at linear index %d in sparse matrix check!",(int)currIx,(int)dij.linIx);
     }
     if (verbose_flag >= 3)
         mexPrintf("done!\n");
 
-    if (outputVariance) {
+    if (dijOptions.wantVariance) {
         /* Truncate the matrix to the exact size by reallocation */
-        mxSetNzmax(plhs[1], linIx);
-        mxSetPr(plhs[1], mxRealloc(sr_var, linIx*sizeof(double)));
-        mxSetIr(plhs[1], mxRealloc(irs_var, linIx*sizeof(mwIndex)));
-        sr_var  = mxGetPr(plhs[1]);
-        irs_var = mxGetIr(plhs[1]);           
+        mxSetNzmax(plhs[1], dij.linIx);
+        mxSetPr(plhs[1], mxRealloc(dij.sr_var, dij.linIx*sizeof(double)));
+        mxSetIr(plhs[1], mxRealloc(dij.irs_var, dij.linIx*sizeof(mwIndex)));
     }
 
-    
-       
     /* Cleaning */
     cleanPhantom();
     cleanPhoton();
@@ -1915,17 +1211,11 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     cleanMscat();
     cleanSpin();
     cleanRegions();
-    cleanScore();
+    omcSpectrumFree(&spectrum);
     cleanSource();
 
-    //Cleaning private random generators and particle stack
-    #pragma omp parallel
-    {
-      cleanRandom();
-      cleanStack();
-    }
     /* Get total execution time */
-    if (verbose_flag > 0)        
+    if (verbose_flag > 0)
         mexPrintf("Finished! Total execution time : %8.5f seconds\n", (omc_get_time() - tbegin));
-    
+
 }

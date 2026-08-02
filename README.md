@@ -157,8 +157,12 @@ same information:
 mcOpt.spectrum = struct('energy', [1; 2; 3], 'fluence', [0.2; 0.5; 0.3]);
 ```
 
-Within a bin the energy is sampled uniformly, as it is for a spectrum read from file. If both
-`spectrum` and `spectrumFile` are given, the passed spectrum wins and the file is ignored.
+Within a bin the energy is sampled uniformly, as it is for a spectrum read from file.
+
+`monoEnergy` is the third way: a single kinetic energy in MeV, used for every source particle.
+
+The three are tried in order — `spectrum`, then `spectrumFile`, then `monoEnergy` — and whichever
+loses is announced rather than silently dropped. Giving none of them uses `spectra/mohan6.spectrum`.
 
 `progressCallback`, if given, is a function handle called with a single scalar in `[0,1]` once
 per batch and once per finished beamlet; it replaces the built-in `waitbar` and owns any

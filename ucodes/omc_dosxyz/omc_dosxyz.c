@@ -34,12 +34,12 @@
     #include <omp.h>
 #endif
 
+#include "omc_engine_cube.h"
 #include "omc_geom.h"
 #include "omc_host.h"
+#include "omc_spectrum.h"
 #include "omc_utilities.h"
 #include "ompmc.h"
-#include "omc_random.h"
-#include "omc_score.h"
 #include "omc_version.h"
 
 /******************************************************************************/
@@ -52,22 +52,10 @@
  read back by the ompMC core library */
 int verbose_flag = 0;
 
-/* Global simulation state owned by the ompMC core library */
-#if defined(_MSC_VER)
-	//use __declspec(thread) instead of threadprivate to avoid
-	//error C3053. More information in:
-	// https://stackoverflow.com/questions/12560243/using-threadprivate-directive-in-visual-studio
-	__declspec(thread) extern struct Stack stack;
-#else
-	extern struct Stack stack;
-    #pragma omp threadprivate(stack)
-#endif
+/* The particle stack, the regions and the PEGS data are the engine's business
+ now; all this file still touches of the core's state is the media table it
+ fills from the phantom file. */
 extern struct Media media;
-extern struct Pegs pegs_data;
-extern struct Region region;
-
-extern struct inputItems input_items[];     // key,value pairs
-extern int input_idx;                       // number of key,value pair
 
 /******************************************************************************/
 /* Geometry definitions */
@@ -201,407 +189,108 @@ void cleanPhantom() {
 
 /******************************************************************************/
 
+
 /******************************************************************************/
-/* Source definitions */
-const int MXEBIN = 200;     // number of energy bins of spectrum
-const int INVDIM = 1000;    // number of bins in inverse CDF
+/* Source definitions. The transport side of the source lives in the core, in
+ omc_engine_cube.c; what is left here is reading the input file. */
 
-struct Source {
-    int spectrum;               // 0 : monoenergetic, 1 : spectrum
-    int charge;                 // 0 : photons, -1 : electron, +1 : positron
-    
-    /* For monoenergetic source */
-    double energy;
-    
-    /* For spectrum */
-    double deltak;              // number of elements in inverse CDF
-    double *cdfinv1;            // energy value of bin
-    double *cdfinv2;            // prob. that particle has energy xi
-    
-    /* Source shape information */
-    double ssd;                 // distance of point source to phantom surface
-    double xinl, xinu;          // lower and upper x-bounds of the field on
-                                // phantom surface
-    double yinl, yinu;          // lower and upper y-bounds of the field on
-                                // phantom surface
-    double xsize, ysize;        // x- and y-width of collimated field
-    int ixinl, ixinu;        // lower and upper x-bounds indices of the
-                                // field on phantom surface
-    int iyinl, iyinu;        // lower and upper y-bounds indices of the
-                                // field on phantom surface
-};
-struct Source source;
+static struct OmcSpectrum spectrum;
+static struct OmcSsdSource ssdSource;
+static struct OmcCubeOptions cubeOptions;
 
-void initSource() {
-    
-    /* Get spectrum file path from input data */
-    char spectrum_file[128];
+static void initSource(void) {
+
     char buffer[BUFFER_SIZE];
-    
-    source.spectrum = 1;    /* energy spectrum as default case */
-    
-    /* First check of spectrum file was given as an input */
-    if (getInputValue(buffer, "spectrum file") != 1) {
+
+    /* Get spectrum file path from input data. Without one the source is
+     monoenergetic and the energy has to be given instead. */
+    if (getInputValue(buffer, "spectrum file") == 1) {
+        char spectrum_file[128];
+        removeSpaces(spectrum_file, buffer);
+
+        omcSpectrumFromFile(&spectrum, spectrum_file);
+    }
+    else {
         printf("Can not find 'spectrum file' key on input file.\n");
         printf("Switch to monoenergetic case.\n");
-        source.spectrum = 0;    /* monoenergetic source */
-    }
-    
-    if (source.spectrum) {
-        removeSpaces(spectrum_file, buffer);
-        
-        /* Open .source file */
-        FILE *fp;
-        
-        if ((fp = fopen(spectrum_file, "r")) == NULL) {
-            printf("Unable to open file: %s\n", spectrum_file);
-            exit(EXIT_FAILURE);
-        }
-        
-        printf("Path to spectrum file : %s\n", spectrum_file);
-        
-        /* Read spectrum file title */
-        fgets(buffer, BUFFER_SIZE, fp);
-        printf("Spectrum file title: %s", buffer);
-        
-        /* Read number of bins and spectrum type */
-        double enmin;   /* lower energy of first bin */
-        int nensrc;     /* number of energy bins in spectrum histogram */
-        int imode;      /* 0 : histogram counts/bin, 1 : counts/MeV*/
-        
-        fgets(buffer, BUFFER_SIZE, fp);
-        sscanf(buffer, "%d %lf %d", &nensrc, &enmin, &imode);
-        
-        if (nensrc > MXEBIN) {
-            printf("Number of energy bins = %d is greater than max allowed = "
-                   "%d. Increase MXEBIN macro!\n", nensrc, MXEBIN);
-            exit(EXIT_FAILURE);
-        }
-        
-        /* upper energy of bin i in MeV */
-        double *ensrcd = malloc(nensrc*sizeof(double));
-        /* prob. of finding a particle in bin i */
-        double *srcpdf = malloc(nensrc*sizeof(double));
-        
-        /* Read spectrum information */
-        for (int i=0; i<nensrc; i++) {
-            fgets(buffer, BUFFER_SIZE, fp);
-            sscanf(buffer, "%lf %lf", &ensrcd[i], &srcpdf[i]);
-        }
-        printf("Have read %d input energy bins from spectrum file.\n", nensrc);
-        
-        if (imode == 0) {
-            printf("Counts/bin assumed.\n");
-        }
-        else if (imode == 1) {
-            printf("Counts/MeV assumed.\n");
-            srcpdf[0] *= (ensrcd[0] - enmin);
-            for(int i=1; i<nensrc; i++) {
-                srcpdf[i] *= (ensrcd[i] - ensrcd[i - 1]);
-            }
-        }
-        else {
-            printf("Invalid mode number in spectrum file.");
-            exit(EXIT_FAILURE);
-        }
-        
-        double ein = ensrcd[nensrc - 1];
-        printf("Energy ranges from %f to %f MeV\n", enmin, ein);
-        
-        /* Initialization routine to calculate the inverse of the
-         cumulative probability distribution that is used during execution to
-         sample the incident particle energy. */
-        double *srccdf = malloc(nensrc*sizeof(double));
-        
-        srccdf[0] = srcpdf[0];
-        for (int i=1; i<nensrc; i++) {
-            srccdf[i] = srccdf[i-1] + srcpdf[i];
-        }
-        
-        double fnorm = 1.0/srccdf[nensrc - 1];
-        double binsok = 0.0;
-        source.deltak = INVDIM; /* number of elements in inverse CDF */
-        double gridsz = 1.0f/source.deltak;
-        
-        for (int i=0; i<nensrc; i++) {
-            srccdf[i] *= fnorm;
-            if (i == 0) {
-                if (srccdf[0] <= 3.0*gridsz) {
-                    binsok = 1.0;
-                }
-            }
-            else {
-                if ((srccdf[i] - srccdf[i - 1]) < 3.0*gridsz) {
-                    binsok = 1.0;
-                }
-            }
-        }
-        
-        if (binsok != 0.0) {
-            printf("Warning!, some of normalized bin probabilities are "
-                   "so small that bins may be missed.\n");
-        }
 
-        /* Calculate cdfinv. This array allows the rapid sampling for the
-         energy by precomputing the results for a fine grid. */
-        source.cdfinv1 = malloc(source.deltak*sizeof(double));
-        source.cdfinv2 = malloc(source.deltak*sizeof(double));
-        double ak;
-        
-        for (int k=0; k<source.deltak; k++) {
-            ak = (double)k*gridsz;
-            int i;
-            
-            for (i=0; i<nensrc; i++) {
-                if (ak <= srccdf[i]) {
-                    break;
-                }
-            }
-            
-            /* We should fall here only through the above break sentence. */
-            if (i != 0) {
-                source.cdfinv1[k] = ensrcd[i - 1];
-            }
-            else {
-                source.cdfinv1[k] = enmin;
-            }
-            source.cdfinv2[k] = ensrcd[i] - source.cdfinv1[k];
-            
-        }
-        
-        /* Cleaning */
-        fclose(fp);
-        free(ensrcd);
-        free(srcpdf);
-        free(srccdf);
-    }
-    else {  /* monoenergetic source */
         if (getInputValue(buffer, "mono energy") != 1) {
             printf("Can not find 'mono energy' key on input file.\n");
             exit(EXIT_FAILURE);
         }
-        source.energy = atof(buffer);
-        printf("%f monoenergetic source\n", source.energy);
-        
+
+        omcSpectrumMonoenergetic(&spectrum, atof(buffer));
     }
-    
+
     /* Initialize geometrical data of the source */
-    
+
     /* Read collimator rectangle */
     if (getInputValue(buffer, "collimator bounds") != 1) {
         printf("Can not find 'collimator bounds' key on input file.\n");
         exit(EXIT_FAILURE);
     }
-    sscanf(buffer, "%lf %lf %lf %lf", &source.xinl,
-           &source.xinu, &source.yinl, &source.yinu);
-    
-    /* Calculate x-direction input zones */
-    if (source.xinl < geometry.xbounds[0]) {
-        source.xinl = geometry.xbounds[0];
-    }
-    if (source.xinu <= source.xinl) {
-        source.xinu = source.xinl;  /* default a pencil beam */
-    }
-    
-    /* Check radiation field is not too big against the phantom */
-    if (source.xinu > geometry.xbounds[geometry.isize]) {
-        source.xinu = geometry.xbounds[geometry.isize];
-    }
-    if (source.xinl > geometry.xbounds[geometry.isize]) {
-        source.xinl = geometry.xbounds[geometry.isize];
-    }
-    
-    /* Now search for initial region x index range */
-    printf("Index ranges for radiation field:\n");
-    source.ixinl = 0;
-    while ((geometry.xbounds[source.ixinl] <= source.xinl) &&
-           (geometry.xbounds[source.ixinl + 1] < source.xinl)) {
-        source.ixinl++;
-    }
-        
-    source.ixinu = source.ixinl - 1;
-    while ((geometry.xbounds[source.ixinu] <= source.xinu) &&
-           (geometry.xbounds[source.ixinu + 1] < source.xinu)) {
-        source.ixinu++;
-    }
-    printf("i index ranges over i = %d to %d\n", source.ixinl, source.ixinu);
-    
-    /* Calculate y-direction input zones */
-    if (source.yinl < geometry.ybounds[0]) {
-        source.yinl = geometry.ybounds[0];
-    }
-    if (source.yinu <= source.yinl) {
-        source.yinu = source.yinl;  /* default a pencil beam */
-    }
-    
-    /* Check radiation field is not too big against the phantom */
-    if (source.yinu > geometry.ybounds[geometry.jsize]) {
-        source.yinu = geometry.ybounds[geometry.jsize];
-    }
-    if (source.yinl > geometry.ybounds[geometry.jsize]) {
-        source.yinl = geometry.ybounds[geometry.jsize];
-    }
-    
-    /* Now search for initial region y index range */
-    source.iyinl = 0;
-    while ((geometry.ybounds[source.iyinl] <= source.yinl) &&
-           (geometry.ybounds[source.iyinl + 1] < source.yinl)) {
-        source.iyinl++;
-    }
-    source.iyinu = source.iyinl - 1;
-    while ((geometry.ybounds[source.iyinu] <= source.yinu) &&
-           (geometry.ybounds[source.iyinu + 1] < source.yinu)) {
-        source.iyinu++;
-    }
-    printf("j index ranges over i = %d to %d\n", source.iyinl, source.iyinu);
+    sscanf(buffer, "%lf %lf %lf %lf", &ssdSource.xinl,
+           &ssdSource.xinu, &ssdSource.yinl, &ssdSource.yinu);
 
-    /* Calculate collimator sizes */
-    source.xsize = source.xinu - source.xinl;
-    source.ysize = source.yinu - source.yinl;
-    
     /* Read source charge */
     if (getInputValue(buffer, "charge") != 1) {
         printf("Can not find 'charge' key on input file.\n");
         exit(EXIT_FAILURE);
     }
-    
-    source.charge = atoi(buffer);
-    if (source.charge < -1 || source.charge > 1) {
+
+    cubeOptions.charge = atoi(buffer);
+    if (cubeOptions.charge < -1 || cubeOptions.charge > 1) {
         printf("Particle kind not recognized.\n");
         exit(EXIT_FAILURE);
     }
-    
+
     /* Read source SSD */
     if (getInputValue(buffer, "ssd") != 1) {
         printf("Can not find 'ssd' key on input file.\n");
         exit(EXIT_FAILURE);
     }
-    
-    source.ssd = atof(buffer);
-    if (source.ssd < 0) {
+
+    ssdSource.ssd = atof(buffer);
+    if (ssdSource.ssd < 0) {
         printf("SSD must be greater than zero.\n");
         exit(EXIT_FAILURE);
     }
-    
+
+    /* Clamp the collimator to the phantom and find the voxels it covers */
+    omcSsdSourceInit(&ssdSource);
+
     /* Print some information for debugging purposes */
     if (verbose_flag) {
         printf("Source information :\n");
-        printf("\t Charge = %d\n", source.charge);
-        printf("\t SSD (cm) = %f\n", source.ssd);
+        printf("\t Charge = %d\n", cubeOptions.charge);
+        printf("\t SSD (cm) = %f\n", ssdSource.ssd);
         printf("Collimator :\n");
-        printf("\t x (cm) : min = %f, max = %f\n", source.xinl, source.xinu);
-        printf("\t y (cm) : min = %f, max = %f\n", source.yinl, source.yinu);
+        printf("\t x (cm) : min = %f, max = %f\n", ssdSource.xinl, ssdSource.xinu);
+        printf("\t y (cm) : min = %f, max = %f\n", ssdSource.yinl, ssdSource.yinu);
         printf("Sizes :\n");
-        printf("\t x (cm) = %f, y (cm) = %f\n", source.xsize, source.ysize);
+        printf("\t x (cm) = %f, y (cm) = %f\n", ssdSource.xsize, ssdSource.ysize);
     }
-    
+
     return;
 }
 
-void cleanSource() {
-    
-    free(source.cdfinv1);
-    free(source.cdfinv2);
-    
+static void cleanSource(void) {
+
+    omcSpectrumFree(&spectrum);
+
     return;
 }
 
 /******************************************************************************/
-/* Scoring definitions. The scoring arrays, ausgab() and accumEndep() live in
- the core library, in omc_score.c, so that both user codes share the touched
- voxel bookkeeping. */
+/* Writing the results out in the EGSnrc .3ddose format */
 
-void accumulateResults(int iout, int nhist, int nbatch)
-{
-    int irl;
+void outputResults(char *output_file, int iout,
+                   const double *dose, const double *uncertainty) {
+
+    int ivox;
     int imax = geometry.isize;
     int ijmax = geometry.isize*geometry.jsize;
-    double endep, endep2, unc_endep;
 
-    /* Calculate incident fluence */
-    double inc_fluence = (double)nhist;
-    double mass;
-    int iz;
-
-    #pragma omp parallel for private(irl,endep,endep2,unc_endep,mass)
-    for (iz=0; iz<geometry.ksize; iz++) {
-        for (int iy=0; iy<geometry.jsize; iy++) {
-            for (int ix=0; ix<geometry.isize; ix++) {
-                irl = 1 + ix + iy*imax + iz*ijmax;
-                endep = score.accum_endep[irl];
-                endep2 = score.accum_endep2[irl];
-                
-                /* First calculate mean deposited energy across batches and its
-                 uncertainty */
-                endep /= (double)nbatch;
-                endep2 /= (double)nbatch;
-                
-                /* Batch approach uncertainty calculation */
-                if (endep != 0.0) {
-                    unc_endep = endep2 - endep*endep;
-                    unc_endep /= (double)(nbatch - 1);
-                    
-                    /* Relative uncertainty */
-                    unc_endep = sqrt(unc_endep)/endep;
-                }
-                else {
-                    endep = 0.0;
-                    unc_endep = 0.9999999;
-                }
-                
-                /* We separate de calculation of dose, to give the user the
-                 option to output mean energy (iout=0) or deposited dose
-                 (iout=1) per incident fluence */
-                
-                if (iout) {
-                    
-                    /* Convert deposited energy to dose */
-                    mass = (geometry.xbounds[ix+1] - geometry.xbounds[ix])*
-                        (geometry.ybounds[iy+1] - geometry.ybounds[iy])*
-                        (geometry.zbounds[iz+1] - geometry.zbounds[iz]);
-                    
-                    /* Transform deposited energy to Gy */
-                    mass *= geometry.med_densities[irl-1];
-                    endep *= 1.602E-10/(mass*inc_fluence);
-                    
-                } else {    /* Output mean deposited energy */
-                    endep /= inc_fluence;
-                }
-                
-                /* Store output quantities */
-                score.accum_endep[irl] = endep;
-                score.accum_endep2[irl] = unc_endep;
-            }
-        }
-    }
-    
-    /* Zero dose in air */
-    #pragma omp parallel for private(irl)
-    for (iz=0; iz<geometry.ksize; iz++) {
-        for (int iy=0; iy<geometry.jsize; iy++) {
-            for (int ix=0; ix<geometry.isize; ix++) {
-                irl = 1 + ix + iy*imax + iz*ijmax;
-                
-                if(geometry.med_densities[irl-1] < 0.044) {
-                    score.accum_endep[irl] = 0.0;
-                    score.accum_endep2[irl] = 0.9999999;
-                }
-            }
-        }
-    }
-    
-    return;
-}
-
-void outputResults(char *output_file, int iout, int nhist, int nbatch) {
-    
-    // Accumulate the results
-    accumulateResults(iout, nhist,nbatch);
-    
-    int irl;
-    int imax = geometry.isize;
-    int ijmax = geometry.isize*geometry.jsize;
-    
     /* Output to file */
     char extension[15];
     if (iout) {
@@ -609,34 +298,34 @@ void outputResults(char *output_file, int iout, int nhist, int nbatch) {
     } else {
         strcpy(extension, ".3denergy");
     }
-    
+
     /* Get file path from input data */
     char output_folder[128];
     char buffer[BUFFER_SIZE];
-    
+
     if (getInputValue(buffer, "output folder") != 1) {
         printf("Can not find 'output folder' key on input file.\n");
         exit(EXIT_FAILURE);
     }
     removeSpaces(output_folder, buffer);
-    
+
     /* Make space for the new string */
-    char* file_name = malloc(strlen(output_folder) + strlen(output_file) + 
+    char* file_name = malloc(strlen(output_folder) + strlen(output_file) +
         strlen(extension) + 1);
     strcpy(file_name, output_folder);
     strcat(file_name, output_file); /* add the file name */
     strcat(file_name, extension); /* add the extension */
-    
+
     FILE *fp;
     if ((fp = fopen(file_name, "w")) == NULL) {
         printf("Unable to open file: %s\n", file_name);
         exit(EXIT_FAILURE);
     }
-    
+
     /* Grid dimensions */
     fprintf(fp, "%5d%5d%5d\n",
             geometry.isize, geometry.jsize, geometry.ksize);
-    
+
     /* Boundaries in x-, y- and z-directions */
     for (int ix = 0; ix<=geometry.isize; ix++) {
         fprintf(fp, "%f ", geometry.xbounds[ix]);
@@ -650,29 +339,29 @@ void outputResults(char *output_file, int iout, int nhist, int nbatch) {
         fprintf(fp, "%f ", geometry.zbounds[iz]);
     }
     fprintf(fp, "\n");
-    
+
     /* Dose or energy array */
     for (int iz=0; iz<geometry.ksize; iz++) {
         for (int iy=0; iy<geometry.jsize; iy++) {
             for (int ix=0; ix<geometry.isize; ix++) {
-                irl = 1 + ix + iy*imax + iz*ijmax;
-                fprintf(fp, "%e ", score.accum_endep[irl]);
+                ivox = ix + iy*imax + iz*ijmax;
+                fprintf(fp, "%e ", dose[ivox]);
             }
         }
     }
     fprintf(fp, "\n");
-    
+
     /* Uncertainty array */
     for (int iz=0; iz<geometry.ksize; iz++) {
         for (int iy=0; iy<geometry.jsize; iy++) {
             for (int ix=0; ix<geometry.isize; ix++) {
-                irl = 1 + ix + iy*imax + iz*ijmax;
-                fprintf(fp, "%f ", score.accum_endep2[irl]);
+                ivox = ix + iy*imax + iz*ijmax;
+                fprintf(fp, "%f ", uncertainty[ivox]);
             }
         }
     }
     fprintf(fp, "\n");
-    
+
     /* Cleaning */
     fclose(fp);
     free(file_name);
@@ -680,155 +369,67 @@ void outputResults(char *output_file, int iout, int nhist, int nbatch) {
     return;
 }
 
-/* Region-by-region definitions live in the core, in omc_geom.c, together with
- the geometry callbacks they set up the transport parameters for. */
+/******************************************************************************/
+/* Progress: one line per batch, with the elapsed time only this file knows */
 
-void initHistory() {
+static double tbegin;
 
-    double rnno1;
-    double rnno2;
-    
-    /* Initialize first particle of the stack from source data */
-    stack.np = 0;
-    stack.p[stack.np].iq = source.charge;
-    
-    /* Get primary particle energy */
-    double ein = 0.0;
-    if (source.spectrum) {
-        /* Sample initial energy from spectrum data */
-        rnno1 = setRandom();
-        rnno2 = setRandom();
-        
-        /* Sample bin number in order to select particle energy */
-        int k = (int)fmin(source.deltak*rnno1, source.deltak - 1.0);
-        ein = source.cdfinv1[k] + rnno2*source.cdfinv2[k];
+static void reportBatch(int ibatch, int nbatch, uint64_t firstHistory,
+                        void *user) {
+
+    (void)nbatch;
+    (void)user;
+
+    if (ibatch == 0) {
+        /* Print header for information during simulation */
+        printf("%-10s\t%-15s\t%-15s\n", "Batch #", "Elapsed time",
+               "First history");
     }
-    else {
-        /* Monoenergetic source */
-        ein = source.energy;
-    }
-    
-    /* Check if the particle is an electron, in such a case add electron
-     rest mass energy */
-    if (stack.p[stack.np].iq != 0) {
-        /* Electron or positron */
-        stack.p[stack.np].e = ein + RM;
-    }
-    else {
-        /* Photon */
-        stack.p[stack.np].e = ein;
-    }
-    
-    /* Accumulate sampled kinetic energy for fraction of deposited energy
-     calculations. This runs inside the parallel history loop, so it has to
-     go through scoreSource() rather than a bare += . */
-    scoreSource(ein);
-           
-    /* Set particle position. First obtain a random position in the rectangle
-     defined by the collimator */
-    double rxyz = 0.0;
-    if (source.xsize == 0.0 || source.ysize == 0.0) {
-        stack.p[stack.np].x = source.xinl;
-        stack.p[stack.np].y = source.yinl;
-        
-        rxyz = sqrt(pow(source.ssd, 2.0) + pow(stack.p[stack.np].x, 2.0) +
-                    pow(stack.p[stack.np].y, 2.0));
-        
-        /* Get direction along z-axis */
-        stack.p[stack.np].w = source.ssd/rxyz;
-        
-    } else {
-        double fw;
-        double rnno3;
-        do { /* rejection sampling of the initial position */
-            rnno3 = setRandom();
-            stack.p[stack.np].x = rnno3*source.xsize + source.xinl;
-            rnno3 = setRandom();
-            stack.p[stack.np].y = rnno3*source.ysize + source.yinl;
-            rnno3 = setRandom();
-            rxyz = sqrt(source.ssd*source.ssd + 
-				stack.p[stack.np].x*stack.p[stack.np].x +
-				stack.p[stack.np].y*stack.p[stack.np].y);
-            
-            /* Get direction along z-axis */
-            stack.p[stack.np].w = source.ssd/rxyz;
-            fw = stack.p[stack.np].w*stack.p[stack.np].w*stack.p[stack.np].w;
-        } while(rnno3 >= fw);
-    }
-    /* Set position of the particle in front of the geometry */
-    stack.p[stack.np].z = geometry.zbounds[0];
-    
-    /* At this point the position has been found, calculate particle
-     direction */
-    stack.p[stack.np].u = stack.p[stack.np].x/rxyz;
-    stack.p[stack.np].v = stack.p[stack.np].y/rxyz;
-    
-    /* Determine region index of source particle */
-    int ix, iy;
-    if (source.xsize == 0.0) {
-        ix = source.ixinl;
-    } else {
-        ix = source.ixinl - 1;
-        while ((geometry.xbounds[ix+1] < stack.p[stack.np].x) && ix < geometry.isize-1) {
-            ix++;
-        }
-    }
-    if (source.ysize == 0.0) {
-        iy = source.iyinl;
-    } else {
-        iy = source.iyinl - 1;
-        while ((geometry.ybounds[iy+1] < stack.p[stack.np].y) && iy < geometry.jsize-1) {
-            iy++;
-        }
-    }
-    stack.p[stack.np].ir = 1 + ix + iy*geometry.isize;
-    
-    /* Set statistical weight and distance to closest boundary*/
-    stack.p[stack.np].wt = 1.0;
-    stack.p[stack.np].dnear = 0.0;
-        
+    printf("%-10d\t%-15.2f\t%-15llu\n", ibatch,
+           (omc_get_time() - tbegin),
+           (unsigned long long)firstHistory);
+
     return;
 }
 
 /******************************************************************************/
 /* omc_dosxyz main function */
 int main (int argc, char **argv) {
-    
+
     /* Execution time measurement */
-    double tbegin;
     tbegin = omc_get_time();
 
     printf("ompMC version %s\n", OMPMC_VERSION_STRING);
 
     /* Parsing program options */
-    
+
     int c;
     char *input_file = NULL;
     char *output_file = NULL;
-    
+
     while (1) {
         static struct option long_options[] =
         {
             /* These options set a flag. */
             {"verbose", no_argument, &verbose_flag, 1},
             {"brief",   no_argument, &verbose_flag, 0},
-            /* These options don’t set a flag.
+            /* These options don't set a flag.
              We distinguish them by their indices. */
             {"input",  required_argument, 0, 'i'},
             {"output",    required_argument, 0, 'o'},
             {0, 0, 0, 0}
         };
-        
+
         /* getopt_long stores the option index here. */
         int option_index = 0;
-        
+
         c = getopt_long(argc, argv, "i:o:",
                          long_options, &option_index);
-        
+
         /* Detect the end of the options. */
         if (c == -1)
             break;
-        
+
         switch (c) {
             case 0:
                 /* If this option set a flag, do nothing else now. */
@@ -839,34 +440,34 @@ int main (int argc, char **argv) {
                     printf (" with arg %s", optarg);
                 printf ("\n");
                 break;
-                
+
             case 'i':
                 input_file = malloc(strlen(optarg) + 1);
                 strcpy(input_file, optarg);
                 printf ("option -i with value `%s'\n", input_file);
                 break;
-                
+
             case 'o':
                 output_file = malloc(strlen(optarg) + 1);
                 strcpy(output_file, optarg);
                 printf ("option -o with value `%s'\n", output_file);
                 break;
-            
+
             case '?':
                 /* getopt_long already printed an error message. */
                 break;
-                
+
             default:
                 exit(EXIT_FAILURE);
         }
     }
-    
-    /* Instead of reporting ‘--verbose’
-     and ‘--brief’ as they are encountered,
+
+    /* Instead of reporting '--verbose'
+     and '--brief' as they are encountered,
      we report the final status resulting from them. */
     if (verbose_flag)
         puts ("verbose flag is set");
-    
+
     /* Print any remaining command line arguments (not options). */
     if (optind < argc)
     {
@@ -875,7 +476,7 @@ int main (int argc, char **argv) {
             printf ("%s ", argv[optind++]);
         putchar ('\n');
     }
-    
+
     /* Parse input file and print key,value pairs (test) */
     parseInputFile(input_file);
 
@@ -887,34 +488,21 @@ int main (int argc, char **argv) {
 #else
     printf("ompMC compiled without OpenMP support. Serial execution.\n");
 #endif
-    
+
     /* Read geometry information from phantom file and initialize geometry */
     initPhantom();
-    
+
     /* With number of media and media names initialize the medium data */
     initMediaData();
-    
+
     /* Initialize radiation source */
     initSource();
-    
+
     /* Initialize data on a region-by-region basis */
     initRegions();
 
     /* Initialize VRT data */
     initVrt();
-    
-    /* Preparation of scoring struct */
-    initScore(geometry.isize*geometry.jsize*geometry.ksize);
-
-    #pragma omp parallel
-    {
-      /* Initialize random number generator */
-      initRandom();
-
-      /* Initialize particle stack */
-      initStack();
-    }
-
 
     /* In verbose mode, list interaction data to output folder */
     if (verbose_flag) {
@@ -925,89 +513,56 @@ int main (int argc, char **argv) {
         listMscat();
         listSpin();
     }
-    
-    /* Shower call */
-    
+
     /* Get number of histories and statistical batches */
     char buffer[BUFFER_SIZE];
     if (getInputValue(buffer, "ncase") != 1) {
         printf("Can not find 'ncase' key on input file.\n");
         exit(EXIT_FAILURE);
     }
-   int nhist = atoi(buffer);
-    
+    cubeOptions.nhist = atoi(buffer);
+
     if (getInputValue(buffer, "nbatch") != 1) {
         printf("Can not find 'nbatch' key on input file.\n");
         exit(EXIT_FAILURE);
     }
-    int nbatch = atoi(buffer);
-    
-    if (nhist/nbatch == 0) {
-        nhist = nbatch;
-    }
-    
-    int nperbatch = nhist/nbatch;
-    nhist = nperbatch*nbatch;
-    
+    cubeOptions.nbatch = atoi(buffer);
+
+    cubeOptions.outputDose = 1;  /* i.e. deposit mean dose per particle fluence */
+
     int gridsize = geometry.isize*geometry.jsize*geometry.ksize;
-    
-    printf("Total number of particle histories: %d\n", nhist);
-    printf("Number of statistical batches: %d\n", nbatch);
-    printf("Histories per batch: %d\n", nperbatch);
-    
+    double *dose = malloc(gridsize*sizeof(double));
+    double *uncertainty = malloc(gridsize*sizeof(double));
+
     /* Execution time up to this point */
     printf("Execution time up to this point : %8.2f seconds\n",
            (omc_get_time() - tbegin));
-    
-    for (int ibatch=0; ibatch<nbatch; ibatch++) {
-        if (ibatch == 0) {
-            /* Print header for information during simulation */
-            printf("%-10s\t%-15s\t%-15s\n", "Batch #", "Elapsed time",
-                   "First history");
-        }
-        printf("%-10d\t%-15.2f\t%-15llu\n", ibatch,
-               (omc_get_time() - tbegin),
-               (unsigned long long)ibatch*(unsigned long long)nperbatch);
 
-        int ihist;
-        #pragma omp parallel for schedule(dynamic)
-        for (ihist=0; ihist<nperbatch; ihist++) {
-            /* Point the RNG at this history's stream; the index is unique
-             across batches, so results do not depend on the scheduling */
-            setRandomHistory((uint64_t)ibatch*(uint64_t)nperbatch
-                             + (uint64_t)ihist);
+    struct OmcCubeCallbacks callbacks;
+    callbacks.batch = reportBatch;
+    callbacks.user = NULL;
 
-            /* Initialize particle history */
-            initHistory();
+    struct OmcCubeSummary summary;
 
-            /* Start electromagnetic shower simulation */
-            shower();
-        }
+    omcCalcCube(&cubeOptions, &ssdSource, &spectrum, dose, uncertainty,
+                &callbacks, &summary);
 
-        /* Accumulate results of current batch for statistical analysis */
-        accumEndep(1.0);
-    }
-    
     /* Print some output and execution time up to this point */
     printf("Simulation finished\n");
     printf("Execution time up to this point : %8.2f seconds\n",
            (omc_get_time() - tbegin));
-    
+
     /* Analysis and output of results */
     if (verbose_flag) {
-        /* Sum energy deposition in the phantom */
-        double etot = 0.0;
-        for (int irl=1; irl<gridsize+1; irl++) {
-            etot += score.accum_endep[irl];
-        }
         printf("Fraction of incident energy deposited in the phantom: %5.4f\n",
-               etot/score.ensrc);
+               summary.energyFraction);
     }
-    
-    int iout = 1;   /* i.e. deposit mean dose per particle fluence */
-    outputResults(output_file, iout, nperbatch, nbatch);
-    
+
+    outputResults(output_file, cubeOptions.outputDose, dose, uncertainty);
+
     /* Cleaning */
+    free(dose);
+    free(uncertainty);
     cleanPhantom();
     cleanPhoton();
     cleanRayleigh();
@@ -1016,18 +571,13 @@ int main (int argc, char **argv) {
     cleanMscat();
     cleanSpin();
     cleanRegions();
-    cleanScore();
     cleanSource();
-    #pragma omp parallel
-    {
-      cleanRandom();
-      cleanStack();
-    }
+
     free(input_file);
     free(output_file);
     /* Get total execution time */
     printf("Total execution time : %8.5f seconds\n",
            (omc_get_time() - tbegin));
-    
+
     exit (EXIT_SUCCESS);
 }
