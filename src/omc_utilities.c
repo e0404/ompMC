@@ -21,6 +21,8 @@
 
 #include "omc_utilities.h"
 
+#include "omc_host.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -168,6 +170,48 @@ int getInputValue(char *dest, char *key) {
     }
 
     return 0;
+}
+
+void omcSetInputValue(const char *key, const char *value) {
+
+    /* Replace the value if this key is already known. getInputValue() walks
+     up to and including input_idx, so a duplicate would be found only by
+     storage order. */
+    for (int i = 0; i <= input_idx && i < INPUT_PAIRS; i++) {
+        if (strcmp(input_items[i].key, key) == 0) {
+            strncpy(input_items[i].value, value, BUFFER_SIZE - 1);
+            input_items[i].value[BUFFER_SIZE - 1] = '\0';
+            return;
+        }
+    }
+
+    if (input_idx >= INPUT_PAIRS - 1) {
+        omcFail("ompMC:input:tooManyItems",
+            "Cannot store input item '%s': the table holds at most %d pairs.",
+            key, INPUT_PAIRS);
+    }
+
+    /* Index 0 is left empty by the file parser, which counts from 1 and uses
+     input_idx as the index of the last pair rather than as a count. Follow
+     that so the two ways of filling the table can be mixed. */
+    input_idx++;
+    strncpy(input_items[input_idx].key, key, BUFFER_SIZE - 1);
+    input_items[input_idx].key[BUFFER_SIZE - 1] = '\0';
+    strncpy(input_items[input_idx].value, value, BUFFER_SIZE - 1);
+    input_items[input_idx].value[BUFFER_SIZE - 1] = '\0';
+
+    return;
+}
+
+void omcClearInputValues(void) {
+
+    for (int i = 0; i < INPUT_PAIRS; i++) {
+        input_items[i].key[0] = '\0';
+        input_items[i].value[0] = '\0';
+    }
+    input_idx = 0;
+
+    return;
 }
 
 /* Returns nonzero if line is a string containing only whitespace or is empty */

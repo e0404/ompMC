@@ -178,6 +178,49 @@ MEX file after a parallel region has run crashes MATLAB. In practice this means 
 file is only picked up after restarting MATLAB. [BUILDING.md](BUILDING.md) explains why in
 detail.
 
+## Using ompMC from Python
+
+```sh
+pip install .
+```
+
+The wheel bundles the cross section data, PEGS files and spectra, so nothing has to be pointed at
+the source tree. Two calculations are available, sharing the same phantom, physics and spectra:
+
+```python
+import numpy as np, ompmc
+
+n = 32
+lateral, depth = np.linspace(-8.0, 8.0, n + 1), np.linspace(0.0, 16.0, n + 1)
+geometry = ompmc.Geometry(
+    lateral, lateral, depth, ["H2O521ICRU"],
+    density=np.full((n, n, n), 1.0, order="F"),
+    material=np.ones((n, n, n), dtype=np.int32, order="F"),
+)
+
+# One dense dose cube from a collimated beam
+dose, uncertainty = ompmc.calc_cube(
+    geometry,
+    ompmc.CollimatedSource(ssd=100.0, x_min=-2, x_max=2, y_min=-2, y_max=2),
+    ompmc.Spectrum.monoenergetic(6.0),
+    n_histories=100_000, n_batches=10,
+)
+
+# ... or one sparse column per beamlet, as scipy.sparse.csc_array
+dij = ompmc.calc_dij(geometry, beamlet_source, ompmc.Spectrum.default(),
+                     n_histories=100_000, progress=lambda p: print(f"{p:.0%}"))
+```
+
+- **Cubes must be Fortran ordered.** The transport indexes voxels with the first axis varying
+  fastest, so a C ordered cube would be a silently transposed phantom; it is rejected instead.
+- Material indices count from 1, matching matRad's `cubeMatIx`; 0 means vacuum.
+- `progress` is called with the fraction finished; returning `False` stops the run, as does Ctrl-C.
+- The GIL is released for the whole calculation, so the OpenMP threads run at full speed. The
+  engines keep their state in globals, so one calculation runs at a time per process: use
+  `multiprocessing`, not threads.
+- `ompmc.Physics(...)` carries the cut-offs, seeds, splitting factor and the variance-reduction
+  keys below.
+
 ## Variance reduction
 
 | Key (input file / `mcOpt`) | Effect |

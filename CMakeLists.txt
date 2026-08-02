@@ -6,6 +6,8 @@
 #
 #   omc_dosxyz   command line executable
 #   omc_matrad   MATLAB MEX file, built only when a MATLAB installation is found
+#   omc_python   Python extension module, built only with -DOMPMC_BUILD_PYTHON=ON
+#                which is what pip sets when it builds the wheel
 #
 # Typical use:
 #
@@ -612,6 +614,57 @@ if(OMPMC_OCT_ENABLED)
     endforeach()
 
     ompmc_enable_lto(omc_matrad_oct)
+endif()
+
+################################################################################
+# omc_python - Python extension user code, built as the module _ompmc
+################################################################################
+
+# Built through scikit-build-core (pip install .), which sets this option and
+# points CMake at the interpreter to build for. Building it from a plain CMake
+# invocation works too, as long as nanobind is importable.
+option(OMPMC_BUILD_PYTHON "Build the _ompmc Python extension module" OFF)
+
+if(OMPMC_BUILD_PYTHON)
+    # The binding is the only C++ in the project, so the language is enabled
+    # here rather than in project(): a plain C build must not need a C++
+    # compiler just because this option exists.
+    enable_language(CXX)
+    set(CMAKE_CXX_STANDARD 17)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+    find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development.Module)
+
+    # nanobind ships its CMake config inside the installed package
+    execute_process(
+        COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
+        OUTPUT_VARIABLE _ompmc_nanobind_dir
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _ompmc_nanobind_result)
+
+    if(NOT _ompmc_nanobind_result EQUAL 0)
+        message(FATAL_ERROR
+            "OMPMC_BUILD_PYTHON needs nanobind importable by "
+            "${Python_EXECUTABLE}. Install it with 'pip install nanobind'.")
+    endif()
+
+    list(APPEND CMAKE_PREFIX_PATH "${_ompmc_nanobind_dir}")
+    find_package(nanobind CONFIG REQUIRED)
+
+    nanobind_add_module(_ompmc STABLE_ABI NB_STATIC ucodes/omc_python/omc_python.cpp)
+    target_link_libraries(_ompmc PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(_ompmc)
+
+    if(MSVC)
+        target_compile_definitions(_ompmc PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    install(TARGETS _ompmc LIBRARY DESTINATION ompmc)
+
+    # The data the calculation reads is found relative to the package
+    install(DIRECTORY data pegs4 spectra DESTINATION ompmc)
 endif()
 
 ################################################################################

@@ -20,6 +20,8 @@
 *****************************************************************************/
 
 #include "ompmc.h"
+
+#include "omc_host.h"
 #include "omc_utilities.h"
 #include "omc_random.h"
 
@@ -234,8 +236,8 @@ void readXsecData(char *file, int *ndat,
     FILE *fp;
     
     if ((fp = fopen(file, "r")) == NULL) {
-        printf("Unable to open file: %s\n", file);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:readXsecData",
+            "Unable to open file: %s", file);
     }
     
     printf("Path to cross-section file : %s\n", file);
@@ -283,8 +285,8 @@ void readXsecData(char *file, int *ndat,
     }
     
     if (ok == 0) {
-        printf("Could not read the data file %s\n", file);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:readXsecData",
+            "Could not read the data file %s", file);
     }
 
     return;
@@ -488,8 +490,8 @@ void initPhotonData() {
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "data folder") != 1) {
-        printf("Can not find 'data folder' key on input file.\n");
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:initPhotonData",
+            "Can not find 'data folder' key on input file.");
     }
     removeSpaces(photon_xsection, buffer);
     
@@ -692,8 +694,8 @@ void listPhoton() {
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "output folder") != 1) {
-        printf("Can not find 'output folder' key on input file.\n");
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:listPhoton",
+            "Can not find 'output folder' key on input file.");
     }
     removeSpaces(output_folder, buffer);
     
@@ -704,8 +706,8 @@ void listPhoton() {
     /* List photon data to output file */
     FILE *fp;
     if ((fp = fopen(file_name, "w")) == NULL) {
-        printf("Unable to open file: %s\n", file_name);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:listPhoton",
+            "Unable to open file: %s", file_name);
     }
 
     fprintf(fp, "Listing photon data: \n");
@@ -766,8 +768,8 @@ void readFfData(double *xval, double **aff) {
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "pgs4form file") != 1) {
-        printf("Can not find 'pgs4form file' key on input file.\n");
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:readFfData",
+            "Can not find 'pgs4form file' key on input file.");
     }
     removeSpaces(pgs4form_file, buffer);
     
@@ -775,8 +777,8 @@ void readFfData(double *xval, double **aff) {
     FILE *fp;
     
     if ((fp = fopen(pgs4form_file, "r")) == NULL) {
-        printf("Unable to open file: %s\n", pgs4form_file);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:readFfData",
+            "Unable to open file: %s", pgs4form_file);
     }
 
     printf("Path to pgs4form file : %s\n", pgs4form_file);
@@ -814,9 +816,9 @@ void readFfData(double *xval, double **aff) {
     }
     
     if (ok == 0) {
-        printf("Could not read atomic form factors file %s", 
+        omcFail("ompMC:readFfData",
+            "Could not read atomic form factors file %s", 
                 pgs4form_file);
-        exit(EXIT_FAILURE);
     }
     
     return;
@@ -1046,8 +1048,8 @@ void listRayleigh() {
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "output folder") != 1) {
-        printf("Can not find 'output folder' key on input file.\n");
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:listRayleigh",
+            "Can not find 'output folder' key on input file.");
     }
     removeSpaces(output_folder, buffer);
     
@@ -1058,8 +1060,8 @@ void listRayleigh() {
     /* List rayleigh data to output file */
     FILE *fp;
     if ((fp = fopen(file_name, "w")) == NULL) {
-        printf("Unable to open file: %s\n", file_name);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:listRayleigh",
+            "Unable to open file: %s", file_name);
     }
 
     fprintf(fp, "Listing rayleigh data: \n");
@@ -1381,8 +1383,8 @@ void listPair() {
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "output folder") != 1) {
-        printf("Can not find 'output folder' key on input file.\n");
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:listPair",
+            "Can not find 'output folder' key on input file.");
     }
     removeSpaces(output_folder, buffer);
     
@@ -1393,8 +1395,8 @@ void listPair() {
     /* List pair data to output file */
     FILE *fp;
     if ((fp = fopen(file_name, "w")) == NULL) {
-        printf("Unable to open file: %s\n", file_name);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:listPair",
+            "Unable to open file: %s", file_name);
     }
     
     fprintf(fp, "Listing pair data: \n");
@@ -2260,8 +2262,8 @@ void listElectron(void) {
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "output folder") != 1) {
-        printf("Can not find 'output folder' key on input file.\n");
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:listElectron",
+            "Can not find 'output folder' key on input file.");
     }
     removeSpaces(output_folder, buffer);
     
@@ -2272,8 +2274,8 @@ void listElectron(void) {
     /* List electron data to output file */
     FILE *fp;
     if ((fp = fopen(file_name, "w")) == NULL) {
-        printf("Unable to open file: %s\n", file_name);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:listElectron",
+            "Unable to open file: %s", file_name);
     }
     
     fprintf(fp, "Listing electron data: \n");
@@ -2464,8 +2466,8 @@ void initSpinData(int nmed) {
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "data folder") != 1) {
-        printf("Can not find 'data folder' key on input file.\n");
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:initSpinData",
+            "Can not find 'data folder' key on input file.");
     }
     removeSpaces(data_folder, buffer);
     
@@ -2479,8 +2481,8 @@ void initSpinData(int nmed) {
      would translate CRLF byte pairs inside the records and stop reading at
      the first 0x1A byte, silently corrupting the spin tables. */
     if ((fp = fopen(spinms_file, "rb")) == NULL) {
-        printf("Unable to open file: %s\n", spinms_file);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:initSpinData",
+            "Unable to open file: %s", spinms_file);
     }
     
     printf("Path to spin data file : %s\n", spinms_file);
@@ -2498,8 +2500,8 @@ void initSpinData(int nmed) {
     /* Read spin file version */
     char version[33];
     if (fread(version, 1, 32, fp) != 32) {
-        printf("Could not read the version header of %s\n", spinms_file);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:initSpinData",
+            "Could not read the version header of %s", spinms_file);
     }
     version[32] = '\0';
     printf("\t%s\n", version);
@@ -2510,17 +2512,17 @@ void initSpinData(int nmed) {
      short below would be read byte-swapped. */
     char endianess[5];
     if (fread(endianess, 1, 4, fp) != 4) {
-        printf("Could not read the endianess marker of %s\n", spinms_file);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:initSpinData",
+            "Could not read the endianess marker of %s", spinms_file);
     }
     endianess[4] = '\0';
     printf("\tspin file endianess : %s\n", endianess);
 
     if (strncmp(endianess, "1234", 4) != 0) {
-        printf("The spin data file %s has the wrong byte order for this "
+        omcFail("ompMC:initSpinData",
+            "The spin data file %s has the wrong byte order for this "
                "machine (marker '%s', expected '1234'). Regenerate it on a "
-               "machine of this endianness.\n", spinms_file, endianess);
-        exit(EXIT_FAILURE);
+               "machine of this endianness.", spinms_file, endianess);
     }
 
     /* Read values for spin and b2, max and min values */
@@ -2532,8 +2534,8 @@ void initSpinData(int nmed) {
         fread(&espin_max, 4, 1, fp) != 1 ||
         fread(&b2spin_min, 4, 1, fp) != 1 ||
         fread(&b2spin_max, 4, 1, fp) != 1) {
-        printf("Could not read the grid limits of %s\n", spinms_file);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:initSpinData",
+            "Could not read the grid limits of %s", spinms_file);
     }
 
     /* Save information on spin data struct */
@@ -2542,8 +2544,8 @@ void initSpinData(int nmed) {
     /* Skip the rest of the first record */
     float algo[276];
     if (fread(&algo, 263, 4, fp) != 4) {
-        printf("Could not read the first record of %s\n", spinms_file);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:initSpinData",
+            "Could not read the first record of %s", spinms_file);
     }
     
     int nener = MXE_SPIN;
@@ -2633,14 +2635,14 @@ void initSpinData(int nmed) {
         rewind(fp);
         if (fread(&spin_buffer[0], 4, spin_file_len/4, fp) !=
                 (size_t)(spin_file_len/4)) {
-            printf("Could not read the spin data records.\n");
-            exit(EXIT_FAILURE);
+            omcFail("ompMC:initSpinData",
+                "Could not read the spin data records.");
         }
         rewind(fp);
         if (fread(&spin_buffer_int[0], 2, spin_file_len/2, fp) !=
                 (size_t)(spin_file_len/2)) {
-            printf("Could not read the spin data records.\n");
-            exit(EXIT_FAILURE);
+            omcFail("ompMC:initSpinData",
+                "Could not read the spin data records.");
         }
         
         int irec, i2_array[512], ii2;
@@ -3058,8 +3060,8 @@ void listSpin() {
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "output folder") != 1) {
-        printf("Can not find 'output folder' key on input file.\n");
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:listSpin",
+            "Can not find 'output folder' key on input file.");
     }
     removeSpaces(output_folder, buffer);
     
@@ -3070,8 +3072,8 @@ void listSpin() {
     /* List spin data to output file */
     FILE *fp;    
     if ((fp = fopen(file_name, "w")) == NULL) {
-        printf("Unable to open file: %s\n", file_name);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:listSpin",
+            "Unable to open file: %s", file_name);
     }
     
     fprintf(fp, "Listing spin data: \n");
@@ -3303,8 +3305,8 @@ void readRutherfordMscat(int nmed) {
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "data folder") != 1) {
-        printf("Can not find 'data folder' key on input file.\n");
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:readRutherfordMscat",
+            "Can not find 'data folder' key on input file.");
     }
     removeSpaces(data_folder, buffer);
     
@@ -3315,8 +3317,8 @@ void readRutherfordMscat(int nmed) {
     /* Open multi-scattering file */
     FILE *fp;
     if ((fp = fopen(msnew_file, "r")) == NULL) {
-        printf("Unable to open file: %s\n", msnew_file);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:readRutherfordMscat",
+            "Unable to open file: %s", msnew_file);
     }
     
     printf("Path to multi-scattering data file : %s\n", msnew_file);
@@ -3625,8 +3627,8 @@ void listMscat() {
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "output folder") != 1) {
-        printf("Can not find 'output folder' key on input file.\n");
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:listMscat",
+            "Can not find 'output folder' key on input file.");
     }
     removeSpaces(output_folder, buffer);
     
@@ -3637,8 +3639,8 @@ void listMscat() {
     /* List mscat data to output file */
     FILE *fp;
     if ((fp = fopen(file_name, "w")) == NULL) {
-        printf("Unable to open file: %s\n", file_name);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:listMscat",
+            "Unable to open file: %s", file_name);
     }
     
     fprintf(fp, "Listing multi-scattering data: \n");
@@ -5612,16 +5614,27 @@ void initMediaData(){
     
     /* Check if all requested media was found */
     if (nmedia_found < media.nmed) {
-        printf("The following media were not found or could not be read "
-               "from pegs file:\n");
+        /* Collected into one message rather than printed one per line: the
+         host may be showing this as a single exception. */
+        char missing[BUFFER_SIZE] = "";
         for (int i=0; i<media.nmed; i++) {
             if (media_found[i] == 0) {
-                printf("\t %s\n", media.med_names[i]);
+                if (missing[0] != '\0') {
+                    strncat(missing, ", ",
+                            sizeof(missing) - strlen(missing) - 1);
+                }
+                strncat(missing, media.med_names[i],
+                        sizeof(missing) - strlen(missing) - 1);
             }
         }
-        exit(EXIT_FAILURE);
+
+        free(media_found);
+        omcFail("ompMC:initMediaData",
+            "The following media were not found or could not be read from the "
+            "pegs file: %s", missing);
     }
-    
+
+
     /* Initialize the photon data using the specified cross-section files */
     initPhotonData();
     
@@ -5647,8 +5660,8 @@ int readPegsFile(int *media_found) {
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "pegs file") != 1) {
-        printf("Can not find 'pegs file' key on input file.\n");
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:readPegsFile",
+            "Can not find 'pegs file' key on input file.");
     }
     removeSpaces(pegs_file, buffer);
     
@@ -5656,8 +5669,8 @@ int readPegsFile(int *media_found) {
     FILE *fp;
     
     if ((fp = fopen(pegs_file, "r")) == NULL) {
-        printf("Unable to open file: %s\n", pegs_file);
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:readPegsFile",
+            "Unable to open file: %s", pegs_file);
     }
 
     printf("Path to pegs file : %s\n", pegs_file);
@@ -6104,8 +6117,8 @@ void initVrt(void) {
 
     /* Get nsplit parameter, it decides if photon splitting is enabled */
     if (getInputValue(buffer, "nsplit") != 1) {
-        printf("Can not find 'nsplit' key on input file.\n");
-        exit(EXIT_FAILURE);
+        omcFail("ompMC:initVrt",
+            "Can not find 'nsplit' key on input file.");
     }
     vrt.nsplit = atoi(buffer);
     if(vrt.nsplit > 1) {

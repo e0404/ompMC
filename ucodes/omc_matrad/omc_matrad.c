@@ -958,20 +958,22 @@ static mxArray *builtinWaitbarHandle = NULL;
 static const char *progressMessage =
     "calculate dose influence matrix for photons (ompMC) ...";
 
-static void reportProgress(double progress, void *user) {
+static int reportProgress(double progress, void *user) {
 
     (void)user;
 
+    /* Always 1: the MATLAB interface has no way of asking to stop, and a
+     partial dose influence matrix is not something it could hand back. */
     if (progressCallback != NULL) {
         mxArray *progressArg = mxCreateDoubleScalar(progress);
         mxArray *cbArgs[2] = { progressCallback, progressArg };
         mexCallMATLAB(0, NULL, 2, cbArgs, "feval");
         mxDestroyArray(progressArg);
-        return;
+        return 1;
     }
 
     if (verbose_flag <= 1)
-        return;
+        return 1;
 
     mxArray *progressArg = mxCreateDoubleScalar(progress);
     mxArray *messageArg = mxCreateString(progressMessage);
@@ -988,6 +990,8 @@ static void reportProgress(double progress, void *user) {
 
     mxDestroyArray(progressArg);
     mxDestroyArray(messageArg);
+
+    return 1;
 }
 
 static void closeProgress(void) {

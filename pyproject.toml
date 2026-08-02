@@ -1,0 +1,48 @@
+[build-system]
+requires = ["scikit-build-core >=0.10", "nanobind >=2.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "ompmc"
+description = "OpenMP parallel Monte Carlo photon and electron transport in voxel geometries"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Edgardo Doerner", email = "edoerner@fis.puc.cl" }]
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: C",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = ["numpy >=1.22", "scipy >=1.8"]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/e0404/ompMC"
+
+[project.optional-dependencies]
+test = ["pytest >=7"]
+
+[tool.scikit-build]
+cmake.version = ">=3.20"
+wheel.packages = ["ucodes/omc_python/ompmc"]
+sdist.exclude = ["build/", "output/", "phantoms/", ".github/"]
+
+[tool.scikit-build.cmake.define]
+OMPMC_BUILD_PYTHON = "ON"
+OMPMC_BUILD_DOSXYZ = "OFF"
+OMPMC_BUILD_MATRAD_MEX = "OFF"
+OMPMC_BUILD_MATRAD_OCT = "OFF"
+OMPMC_BUILD_TESTS = "OFF"
+
+# The version lives in the CMake project() call, the single source of truth the
+# C code's OMPMC_VERSION_STRING also comes from.
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "CMakeLists.txt"
+regex = 'project\(ompMC\s+VERSION (?P<value>[0-9]+\.[0-9]+\.[0-9]+)'
+
+[tool.pytest.ini_options]
+testpaths = ["ucodes/omc_python/tests"]

@@ -84,8 +84,14 @@ struct OmcCubeOptions {
 
 struct OmcCubeCallbacks {
     /* About to start a batch; ibatch counts from 0 and firstHistory is the
-     index of its first history. Optional. Called on the master thread. */
-    void (*batch)(int ibatch, int nbatch, uint64_t firstHistory, void *user);
+     index of its first history. Optional. Called on the master thread.
+
+     Return 0 to abandon the calculation: it stops before that batch, tears
+     its state down and returns 0 without touching dose[] or uncertainty[].
+     There is no partial result to keep -- the batches are averaged, so a run
+     that stopped halfway would be a dose with no meaning. Return nonzero to
+     carry on. */
+    int (*batch)(int ibatch, int nbatch, uint64_t firstHistory, void *user);
 
     void *user;
 };
@@ -103,12 +109,14 @@ struct OmcCubeSummary {
 
  uncertainty is the RELATIVE uncertainty of the dose in that voxel, and is
  0.9999999 wherever nothing was deposited -- the convention the .3ddose format
- expects. */
-void omcCalcCube(const struct OmcCubeOptions *options,
-                 const struct OmcSsdSource *source,
-                 const struct OmcSpectrum *spectrum,
-                 double *dose, double *uncertainty,
-                 const struct OmcCubeCallbacks *callbacks,
-                 struct OmcCubeSummary *summary);
+ expects.
+
+ Returns nonzero when the run finished, 0 when the batch callback stopped it. */
+int omcCalcCube(const struct OmcCubeOptions *options,
+                const struct OmcSsdSource *source,
+                const struct OmcSpectrum *spectrum,
+                double *dose, double *uncertainty,
+                const struct OmcCubeCallbacks *callbacks,
+                struct OmcCubeSummary *summary);
 
 #endif

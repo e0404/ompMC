@@ -1,14 +1,15 @@
 # Building ompMC
 
-ompMC is built with [CMake](https://cmake.org/) (3.20 or newer). Two user codes
-are produced:
+ompMC is built with [CMake](https://cmake.org/) (3.20 or newer). Each user code
+in [ucodes/](ucodes/) becomes one target:
 
-| Target       | Kind                | Output                                          |
-|--------------|---------------------|-------------------------------------------------|
-| `omc_dosxyz` | command line binary | `build/bin/omc_dosxyz[.exe]`                     |
-| `omc_matrad` | MATLAB MEX file     | `build/bin/omc_matrad.mexw64`, `.mexa64`, `.mexmaca64`, … |
+| Target       | Kind                  | Output                                          |
+|--------------|-----------------------|-------------------------------------------------|
+| `omc_dosxyz` | command line binary   | `build/bin/omc_dosxyz[.exe]`                     |
+| `omc_matrad` | MATLAB MEX file       | `build/bin/omc_matrad.mexw64`, `.mexa64`, `.mexmaca64`, … |
+| `_ompmc`     | Python extension      | installed into the `ompmc` package, see [The Python extension](#the-python-extension) |
 
-Both link against the `ompmc_core` static library built from `src/`.
+They all link against the `ompmc_core` static library built from `src/`.
 
 `ompmc.c` calls four functions it does not define — `ausgab()` for scoring and
 `howfar()`, `hownear()`, `regionIndex()` for the geometry. All four live in the
@@ -35,8 +36,28 @@ into the same sampling tables.
 
 A user code is then only a translator: `omc_matrad.c` converts `mxArray`s into
 those structs and appends the columns it gets back to a MATLAB sparse matrix,
-`omc_dosxyz.c` reads an input file and writes a `.3ddose`, and nothing about
-either host reaches the engines.
+`omc_dosxyz.c` reads an input file and writes a `.3ddose`,
+[ucodes/omc_python/omc_python.cpp](ucodes/omc_python/omc_python.cpp) does the same for numpy arrays,
+and nothing about any of those hosts reaches the engines.
+
+## The Python extension
+
+```sh
+pip install .          # or: pip install -e . for a development install
+```
+
+scikit-build-core drives the same CMake project with `OMPMC_BUILD_PYTHON=ON`,
+which is the only configuration that needs a C++ compiler — the binding is the
+only C++ in the tree, so `enable_language(CXX)` sits inside that option rather
+than in `project()`. nanobind must be importable by the interpreter being built
+for; the build asks it for its CMake package directory.
+
+On Windows build the extension with the same compiler CPython uses (MSVC).
+Mixing toolchains between the MEX file and the extension is not wrong, but it
+does change the last bits of a dose: a MinGW-built MEX file and an MSVC-built
+extension agree on the sparsity pattern exactly and on the total dose to 3e-16,
+while individual voxels differ by up to 2e-10 because their math libraries round
+`log`/`exp` differently. Built with the same compiler they agree to 6e-16.
 
 ## Quick start
 

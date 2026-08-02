@@ -374,8 +374,8 @@ void outputResults(char *output_file, int iout,
 
 static double tbegin;
 
-static void reportBatch(int ibatch, int nbatch, uint64_t firstHistory,
-                        void *user) {
+static int reportBatch(int ibatch, int nbatch, uint64_t firstHistory,
+                       void *user) {
 
     (void)nbatch;
     (void)user;
@@ -389,7 +389,8 @@ static void reportBatch(int ibatch, int nbatch, uint64_t firstHistory,
            (omc_get_time() - tbegin),
            (unsigned long long)firstHistory);
 
-    return;
+    /* Nothing to stop the run for: it is the whole point of the program */
+    return 1;
 }
 
 /******************************************************************************/

@@ -108,15 +108,23 @@ struct OmcDijCallbacks {
                     const double *dose, const double *variance, void *user);
 
     /* Fraction of the whole calculation finished, in [0,1]. Optional; called
-     once per batch and once per beamlet, also on the master thread. */
-    void (*progress)(double fraction, void *user);
+     once per batch and once per beamlet, also on the master thread.
+
+     Return 0 to abandon the calculation. It stops after the current batch,
+     tears its state down and returns normally, having reported fewer
+     beamlets than were asked for -- omcCalcDij() tells the caller how many
+     through its return value, and anything already handed to beamlet() stays
+     valid. Return nonzero to carry on. */
+    int (*progress)(double fraction, void *user);
 
     void *user;                 // passed back to both, untouched
 };
 
-void omcCalcDij(const struct OmcDijOptions *options,
-                const struct OmcBeamletSource *source,
-                const struct OmcSpectrum *spectrum,
-                const struct OmcDijCallbacks *callbacks);
+/* Returns the number of beamlets reported through the beamlet callback, which
+ is source->nbeamlets unless the progress callback asked to stop early. */
+int omcCalcDij(const struct OmcDijOptions *options,
+               const struct OmcBeamletSource *source,
+               const struct OmcSpectrum *spectrum,
+               const struct OmcDijCallbacks *callbacks);
 
 #endif

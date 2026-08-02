@@ -367,10 +367,10 @@ static void accumulateResults(int nbatch) {
 
 /******************************************************************************/
 
-void omcCalcDij(const struct OmcDijOptions *opt,
-                const struct OmcBeamletSource *src,
-                const struct OmcSpectrum *spec,
-                const struct OmcDijCallbacks *callbacks) {
+int omcCalcDij(const struct OmcDijOptions *opt,
+               const struct OmcBeamletSource *src,
+               const struct OmcSpectrum *spec,
+               const struct OmcDijCallbacks *callbacks) {
 
     if (opt->sourceGeometry != OMC_SOURCE_POINT &&
         opt->sourceGeometry != OMC_SOURCE_GAUSSIAN) {
@@ -428,7 +428,12 @@ void omcCalcDij(const struct OmcDijOptions *opt,
     double *dose = NULL;
     double *variance = NULL;
 
-    for(int ibeamlet=0; ibeamlet<src->nbeamlets; ibeamlet++) {
+    /* Set when the progress callback asks to stop; the loops then unwind to
+     the cleanup below rather than returning from the middle of the run. */
+    int aborted = 0;
+    int ibeamlet;
+
+    for(ibeamlet=0; ibeamlet<src->nbeamlets && !aborted; ibeamlet++) {
         for (int ibatch=0; ibatch<nbatch; ibatch++) {
             int ihist;
 
@@ -451,11 +456,21 @@ void omcCalcDij(const struct OmcDijOptions *opt,
             /* Accumulate results of current batch for statistical analysis */
             accumEndep(1.0/(double)nperbatch);
 
-            if (callbacks->progress) {
-                callbacks->progress(((double)ibeamlet
-                                     + (double)(ibatch+1)/nbatch)
-                                    /src->nbeamlets, callbacks->user);
+            if (callbacks->progress &&
+                !callbacks->progress(((double)ibeamlet
+                                      + (double)(ibatch+1)/nbatch)
+                                     /src->nbeamlets, callbacks->user)) {
+                aborted = 1;
+                break;
             }
+        }
+
+        if (aborted) {
+            /* Leave the partly filled accumulators out of the results: this
+             beamlet did not get all of its batches, so its statistics mean
+             nothing. */
+            resetBeamScore();
+            break;
         }
 
         /* Output of results for current beamlet */
@@ -507,9 +522,12 @@ void omcCalcDij(const struct OmcDijOptions *opt,
          variance of one beamlet no longer leaks into the next. */
         resetBeamScore();
 
-        if (callbacks->progress) {
-            callbacks->progress((double)(ibeamlet+1)/(double)src->nbeamlets,
-                                callbacks->user);
+        if (callbacks->progress &&
+            !callbacks->progress((double)(ibeamlet+1)/(double)src->nbeamlets,
+                                 callbacks->user)) {
+            /* Reported in full, so this beamlet counts; the loop's own
+             increment runs before the condition sees the flag. */
+            aborted = 1;
         }
     }
 
@@ -530,5 +548,7 @@ void omcCalcDij(const struct OmcDijOptions *opt,
     source = NULL;
     spectrum = NULL;
 
-    return;
+    /* ibeamlet is the loop's own counter: incremented past every beamlet that
+     was reported, and left at the one that was abandoned mid-batch. */
+    return ibeamlet;
 }

@@ -297,12 +297,12 @@ static void accumulateResults(int nhist, int nbatch,
 
 /******************************************************************************/
 
-void omcCalcCube(const struct OmcCubeOptions *opt,
-                 const struct OmcSsdSource *src,
-                 const struct OmcSpectrum *spec,
-                 double *dose, double *uncertainty,
-                 const struct OmcCubeCallbacks *callbacks,
-                 struct OmcCubeSummary *summary) {
+int omcCalcCube(const struct OmcCubeOptions *opt,
+                const struct OmcSsdSource *src,
+                const struct OmcSpectrum *spec,
+                double *dose, double *uncertainty,
+                const struct OmcCubeCallbacks *callbacks,
+                struct OmcCubeSummary *summary) {
 
     if (opt->nbatch < 2) {
         /* The batch variance below divides by nbatch - 1 */
@@ -343,11 +343,15 @@ void omcCalcCube(const struct OmcCubeOptions *opt,
       initStack();
     }
 
+    int aborted = 0;
+
     for (int ibatch=0; ibatch<nbatch; ibatch++) {
-        if (callbacks && callbacks->batch) {
-            callbacks->batch(ibatch, nbatch,
-                             (uint64_t)ibatch*(uint64_t)nperbatch,
-                             callbacks->user);
+        if (callbacks && callbacks->batch &&
+            !callbacks->batch(ibatch, nbatch,
+                              (uint64_t)ibatch*(uint64_t)nperbatch,
+                              callbacks->user)) {
+            aborted = 1;
+            break;
         }
 
         int ihist;
@@ -371,7 +375,7 @@ void omcCalcCube(const struct OmcCubeOptions *opt,
 
     /* The fraction of the incident energy that stayed in the phantom, while
      the scoring arrays still hold energies rather than doses */
-    if (summary) {
+    if (summary && !aborted) {
         double etot = 0.0;
         for (int irl=1; irl<gridsize+1; irl++) {
             etot += score.accum_endep[irl];
@@ -384,7 +388,9 @@ void omcCalcCube(const struct OmcCubeOptions *opt,
 
     /* The normalization is per batch, not per run: each batch contributed
      nperbatch histories and the batches are averaged afterwards. */
-    accumulateResults(nperbatch, nbatch, dose, uncertainty);
+    if (!aborted) {
+        accumulateResults(nperbatch, nbatch, dose, uncertainty);
+    }
 
     cleanScore();
 
@@ -399,5 +405,5 @@ void omcCalcCube(const struct OmcCubeOptions *opt,
     source = NULL;
     spectrum = NULL;
 
-    return;
+    return !aborted;
 }

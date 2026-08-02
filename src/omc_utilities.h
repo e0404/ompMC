@@ -43,6 +43,17 @@ void parseInputFile(char *file_name);
 /* Copy the value of the selected input item to the char pointer */
 int getInputValue(char *dest, char *key);
 
+/* Set one key/value pair directly, for hosts that get their configuration
+ from somewhere other than a file -- a MATLAB struct, a Python dict. Replaces
+ the value when the key is already there. Both strings are copied, and are
+ truncated at BUFFER_SIZE-1 characters. */
+void omcSetInputValue(const char *key, const char *value);
+
+/* Forget every key/value pair. Hosts that stay resident between runs -- a MEX
+ file, a Python module -- have to start each run from a clean table rather
+ than inheriting the previous one. */
+void omcClearInputValues(void);
+
 /* Returns nonzero if line is a string containing only whitespace or is empty */
 int lineBlack(char *line);
 
