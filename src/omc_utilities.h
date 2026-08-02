@@ -37,6 +37,13 @@ https://github.com/bmaynard/iniReader */
 #define INPUT_PAIRS 80
 #define INPUT_EXT ".inp"  // extension of input files
 
+/* A path assembled by appending one of the data file names to a folder read
+ from the input table. The folder is a value, so it is at most BUFFER_SIZE-1
+ characters, and the names appended to it are short. Sizing these buffers by
+ hand is how a Python package installed under a long temporary directory used
+ to run off the end of a 128 byte array. */
+#define PATH_SIZE (BUFFER_SIZE + 32)
+
 /* Parse a configuration file */
 void parseInputFile(char *file_name);
 

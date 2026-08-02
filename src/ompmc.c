@@ -486,7 +486,7 @@ double kn_sigma0(double e) {
 void initPhotonData() {
     
     /* Get file path from input data */
-    char photon_xsection[128];
+    char photon_xsection[BUFFER_SIZE];
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "data folder") != 1) {
@@ -501,17 +501,17 @@ void initPhotonData() {
     double **photo_xsec_data0 = (double**) malloc(MXELEMENT*sizeof(double*));
     double **photo_xsec_data1 = (double**) malloc(MXELEMENT*sizeof(double*));
     
-    char xsection_file[256];
-    strcpy(xsection_file, photon_xsection);
-    strcat(xsection_file, "xcom_photo.data");
+    char xsection_file[PATH_SIZE];
+    snprintf(xsection_file, sizeof(xsection_file), "%sxcom_photo.data",
+             photon_xsection);
     readXsecData(xsection_file, photo_ndat, photo_xsec_data0, photo_xsec_data1);
     
     int *rayleigh_ndat = (int*) malloc(MXELEMENT*sizeof(int));
     double **rayleigh_xsec_data0 = (double**) malloc(MXELEMENT*sizeof(double*));
     double **rayleigh_xsec_data1 = (double**) malloc(MXELEMENT*sizeof(double*));
     
-    strcpy(xsection_file, photon_xsection);
-    strcat(xsection_file, "xcom_rayleigh.data");
+    snprintf(xsection_file, sizeof(xsection_file), "%sxcom_rayleigh.data",
+             photon_xsection);
     readXsecData(xsection_file, rayleigh_ndat, rayleigh_xsec_data0,
                  rayleigh_xsec_data1);
     
@@ -519,8 +519,8 @@ void initPhotonData() {
     double **pair_xsec_data0 = (double**) malloc(MXELEMENT*sizeof(double*));
     double **pair_xsec_data1 = (double**) malloc(MXELEMENT*sizeof(double*));
     
-    strcpy(xsection_file, photon_xsection);
-    strcat(xsection_file, "xcom_pair.data");
+    snprintf(xsection_file, sizeof(xsection_file), "%sxcom_pair.data",
+             photon_xsection);
     readXsecData(xsection_file, pair_ndat, pair_xsec_data0, pair_xsec_data1);
     
     /* We do not consider bound compton scattering, therefore there is no
@@ -530,8 +530,8 @@ void initPhotonData() {
     double **triplet_xsec_data0 = (double**) malloc(MXELEMENT*sizeof(double*));
     double **triplet_xsec_data1 = (double**) malloc(MXELEMENT*sizeof(double*));
     
-    strcpy(xsection_file, photon_xsection);
-    strcat(xsection_file, "xcom_triplet.data");
+    snprintf(xsection_file, sizeof(xsection_file), "%sxcom_triplet.data",
+             photon_xsection);
     readXsecData(xsection_file, triplet_ndat, triplet_xsec_data0,
                  triplet_xsec_data1);
     
@@ -690,7 +690,7 @@ void cleanPhoton() {
 void listPhoton() {
 
     /* Get file path from input data */
-    char output_folder[128];
+    char output_folder[BUFFER_SIZE];
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "output folder") != 1) {
@@ -699,9 +699,8 @@ void listPhoton() {
     }
     removeSpaces(output_folder, buffer);
     
-    char file_name[256];
-    strcpy(file_name, output_folder);
-    strcat(file_name, "photon_data.lst");    
+    char file_name[PATH_SIZE];
+    snprintf(file_name, sizeof(file_name), "%sphoton_data.lst", output_folder);
 
     /* List photon data to output file */
     FILE *fp;
@@ -764,7 +763,7 @@ void listPhoton() {
 void readFfData(double *xval, double **aff) {
     
     /* Get file path from input data */
-    char pgs4form_file[128];
+    char pgs4form_file[BUFFER_SIZE];
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "pgs4form file") != 1) {
@@ -1044,7 +1043,7 @@ void cleanRayleigh() {
 void listRayleigh() {
        
     /* Get file path from input data */
-    char output_folder[128];
+    char output_folder[BUFFER_SIZE];
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "output folder") != 1) {
@@ -1053,9 +1052,9 @@ void listRayleigh() {
     }
     removeSpaces(output_folder, buffer);
     
-    char file_name[256];
-    strcpy(file_name, output_folder);
-    strcat(file_name, "rayleigh_data.lst");
+    char file_name[PATH_SIZE];
+    snprintf(file_name, sizeof(file_name), "%srayleigh_data.lst",
+             output_folder);
     
     /* List rayleigh data to output file */
     FILE *fp;
@@ -1379,7 +1378,7 @@ void cleanPair() {
 void listPair() {
     
     /* Get file path from input data */
-    char output_folder[128];
+    char output_folder[BUFFER_SIZE];
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "output folder") != 1) {
@@ -1388,9 +1387,8 @@ void listPair() {
     }
     removeSpaces(output_folder, buffer);
     
-    char file_name[256];
-    strcpy(file_name, output_folder);
-    strcat(file_name, "pair_data.lst");
+    char file_name[PATH_SIZE];
+    snprintf(file_name, sizeof(file_name), "%spair_data.lst", output_folder);
     
     /* List pair data to output file */
     FILE *fp;
@@ -2258,7 +2256,7 @@ void cleanElectron() {
 void listElectron(void) {
 
     /* Get file path from input data */
-    char output_folder[128];
+    char output_folder[BUFFER_SIZE];
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "output folder") != 1) {
@@ -2267,9 +2265,9 @@ void listElectron(void) {
     }
     removeSpaces(output_folder, buffer);
     
-    char file_name[256];
-    strcpy(file_name, output_folder);
-    strcat(file_name, "electron_data.lst");
+    char file_name[PATH_SIZE];
+    snprintf(file_name, sizeof(file_name), "%selectron_data.lst",
+             output_folder);
     
     /* List electron data to output file */
     FILE *fp;
@@ -2462,7 +2460,7 @@ void listElectron(void) {
 void initSpinData(int nmed) {
     
     /* Get file path from input data */
-    char data_folder[128];
+    char data_folder[BUFFER_SIZE];
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "data folder") != 1) {
@@ -2471,9 +2469,8 @@ void initSpinData(int nmed) {
     }
     removeSpaces(data_folder, buffer);
     
-    char spinms_file[256];
-    strcpy(spinms_file, data_folder);
-    strcat(spinms_file, "spinms.data");
+    char spinms_file[PATH_SIZE];
+    snprintf(spinms_file, sizeof(spinms_file), "%sspinms.data", data_folder);
     
     /* Open spinms file */
     FILE *fp;
@@ -3056,7 +3053,7 @@ void cleanSpin() {
 void listSpin() {
     
     /* Get file path from input data */
-    char output_folder[128];
+    char output_folder[BUFFER_SIZE];
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "output folder") != 1) {
@@ -3065,9 +3062,8 @@ void listSpin() {
     }
     removeSpaces(output_folder, buffer);
     
-    char file_name[256];
-    strcpy(file_name, output_folder);
-    strcat(file_name, "spin_data.lst");
+    char file_name[PATH_SIZE];
+    snprintf(file_name, sizeof(file_name), "%sspin_data.lst", output_folder);
     
     /* List spin data to output file */
     FILE *fp;    
@@ -3301,7 +3297,7 @@ void sscat(int imed, int qel, double chia2, double elke, double beta2,
 void readRutherfordMscat(int nmed) {
     
     /* Get file path from input data */
-    char data_folder[128];
+    char data_folder[BUFFER_SIZE];
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "data folder") != 1) {
@@ -3310,9 +3306,8 @@ void readRutherfordMscat(int nmed) {
     }
     removeSpaces(data_folder, buffer);
     
-    char msnew_file[256];
-    strcpy(msnew_file, data_folder);
-    strcat(msnew_file, "msnew.data");
+    char msnew_file[PATH_SIZE];
+    snprintf(msnew_file, sizeof(msnew_file), "%smsnew.data", data_folder);
 
     /* Open multi-scattering file */
     FILE *fp;
@@ -3623,7 +3618,7 @@ void cleanMscat() {
 void listMscat() {
     
     /* Get file path from input data */
-    char output_folder[128];
+    char output_folder[BUFFER_SIZE];
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "output folder") != 1) {
@@ -3632,9 +3627,8 @@ void listMscat() {
     }
     removeSpaces(output_folder, buffer);
     
-    char file_name[256];
-    strcpy(file_name, output_folder);
-    strcat(file_name, "mscat_data.lst");
+    char file_name[PATH_SIZE];
+    snprintf(file_name, sizeof(file_name), "%smscat_data.lst", output_folder);
     
     /* List mscat data to output file */
     FILE *fp;

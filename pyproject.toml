@@ -86,7 +86,7 @@ skip = ["*-musllinux_*", "*-win32"]
 # its own diagnosis with it -- an abort message, an OpenMP runtime error and
 # pytest's own faulthandler traceback all go to the real stderr or nowhere.
 test-requires = ["pytest"]
-test-command = 'pytest {package}/ucodes/omc_python/tests -m "not mex" -x -s'
+test-command = 'pytest {package}/ucodes/omc_python/tests -m "not mex" -s'
 
 [tool.cibuildwheel.macos]
 # Apple's clang carries no OpenMP runtime. CMakeLists.txt asks brew --prefix

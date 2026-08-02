@@ -78,7 +78,8 @@ jobs:
         if: failure() && runner.os == 'macOS'
         run: |
           shopt -s nullglob
-          reports=(~/Library/Logs/DiagnosticReports/*.ips)
+          reports=(~/Library/Logs/DiagnosticReports/*.ips
+                   /Library/Logs/DiagnosticReports/*.ips)
           if [ ${#reports[@]} -eq 0 ]; then
             echo "no crash reports were written"
             exit 0

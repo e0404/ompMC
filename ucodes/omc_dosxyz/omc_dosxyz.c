@@ -63,7 +63,7 @@ extern struct Media media;
 void initPhantom() {
     
     /* Get phantom file path from input data */
-    char phantom_file[128];
+    char phantom_file[BUFFER_SIZE];
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "phantom file") != 1) {
@@ -205,7 +205,7 @@ static void initSource(void) {
     /* Get spectrum file path from input data. Without one the source is
      monoenergetic and the energy has to be given instead. */
     if (getInputValue(buffer, "spectrum file") == 1) {
-        char spectrum_file[128];
+        char spectrum_file[BUFFER_SIZE];
         removeSpaces(spectrum_file, buffer);
 
         omcSpectrumFromFile(&spectrum, spectrum_file);
@@ -300,7 +300,7 @@ void outputResults(char *output_file, int iout,
     }
 
     /* Get file path from input data */
-    char output_folder[128];
+    char output_folder[BUFFER_SIZE];
     char buffer[BUFFER_SIZE];
 
     if (getInputValue(buffer, "output folder") != 1) {
