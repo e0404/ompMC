@@ -255,6 +255,7 @@ def test_engine_errors_become_python_exceptions(water_phantom):
 REFERENCE = Path(__file__).resolve().parent / "mex_reference.mat"
 
 
+@pytest.mark.mex
 @pytest.mark.skipif(not REFERENCE.is_file(),
                     reason="no MEX reference; regenerate it with "
                            "ucodes/omc_matrad/export_reference.m")
@@ -268,6 +269,11 @@ def test_matches_mex(matrad_fixture):
 
     This is the test that keeps the two interfaces from drifting apart, and
     the reason the engines were pulled out of the user codes at all.
+
+    Marked "mex" so it can be deselected: the stored reference comes from one
+    particular MEX build on one machine, so the sparsity pattern is only
+    guaranteed against a build sharing its math library. The wheel CI, which
+    builds on four other toolchains, runs -m "not mex" for that reason.
     """
     scipy_io = pytest.importorskip("scipy.io")
 

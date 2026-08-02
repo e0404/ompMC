@@ -184,6 +184,10 @@ detail.
 pip install .
 ```
 
+which compiles the extension for the interpreter it is run with; a C++ compiler and a working
+OpenMP runtime are all it needs. Prebuilt wheels for Linux, macOS and Windows come out of the
+`wheels` workflow and carry their own OpenMP runtime, so they need neither.
+
 The wheel bundles the cross section data, PEGS files and spectra, so nothing has to be pointed at
 the source tree. Two calculations are available, sharing the same phantom, physics and spectra:
 

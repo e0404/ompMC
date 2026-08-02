@@ -633,7 +633,14 @@ if(OMPMC_BUILD_PYTHON)
     set(CMAKE_CXX_STANDARD 17)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-    find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development.Module)
+    # SKBUILD_SABI_COMPONENT is set to Development.SABIModule by
+    # scikit-build-core when wheel.py-api asks for a limited API build, and to
+    # the empty string otherwise -- including on the Pythons that are older
+    # than the requested ABI, where it silently falls back to a version
+    # specific wheel. nanobind's STABLE_ABI below is a no-op without that
+    # component, so the two settings have to travel together.
+    find_package(Python 3.9 REQUIRED
+        COMPONENTS Interpreter Development.Module ${SKBUILD_SABI_COMPONENT})
 
     # nanobind ships its CMake config inside the installed package
     execute_process(

@@ -59,6 +59,41 @@ extension agree on the sparsity pattern exactly and on the total dose to 3e-16,
 while individual voxels differ by up to 2e-10 because their math libraries round
 `log`/`exp` differently. Built with the same compiler they agree to 6e-16.
 
+That difference is also why the test suite's `test_matches_mex`, which holds the
+extension against a stored MEX result, is marked `mex`: it is a regression test
+against one particular build, not a portability test. `pytest -m "not mex"`
+skips it, which is what the wheel CI does.
+
+### Wheels
+
+`pip install .` compiles for the interpreter it is run with. Redistributable
+wheels come out of [.github/workflows/wheels.yml](.github/workflows/wheels.yml),
+which runs cibuildwheel with the `[tool.cibuildwheel]` configuration in
+`pyproject.toml`; `pipx run cibuildwheel --platform <os>` reproduces it locally.
+
+Two things about a wheel differ from a local build:
+
+- **The OpenMP runtime travels with it.** auditwheel copies `libgomp` in on
+  Linux and delocate copies Homebrew's `libomp.dylib` in on macOS. On Windows
+  MSVC's `/openmp` links `vcomp140.dll`, which is not part of Windows but of
+  the Visual C++ redistributable, so the repair step is told to vendor it
+  explicitly (`delvewheel repair --add-dll vcomp140.dll`).
+- **One wheel serves many Pythons.** `wheel.py-api = "cp312"` turns on
+  nanobind's `STABLE_ABI`, so the 3.12 build is tagged `abi3` and loads under
+  every later Python too. scikit-build-core signals this to CMake through
+  `SKBUILD_SABI_COMPONENT`, which is why `find_package(Python ...)` interpolates
+  that variable — without the `Development.SABIModule` component nanobind
+  silently builds a version specific module instead. On 3.9 to 3.11, where the
+  stable ABI is not usable, scikit-build-core ignores the setting and emits one
+  wheel per version.
+
+The macOS wheels are tagged for the macOS release of the runner that built them
+(15.0 for x86-64, 14.0 for arm64) rather than for something older. The bundled
+`libomp.dylib` is a Homebrew bottle built for that release, and dyld refuses to
+load a library built for a newer system than the one running, so a lower tag
+would promise support the wheel does not have. Older macOS installs build from
+the source distribution.
+
 ## Quick start
 
 ```sh
