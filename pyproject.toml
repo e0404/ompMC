@@ -80,8 +80,13 @@ skip = ["*-musllinux_*", "*-win32"]
 # MEX build on one machine, and holding four other toolchains to that build's
 # exact sparsity pattern would be testing libm, not ompMC. It stays a local
 # test -- see its docstring.
+#
+# -s, because the engine writes through C stdio: without it pytest redirects
+# the file descriptors and a process that dies rather than fails a test takes
+# its own diagnosis with it -- an abort message, an OpenMP runtime error and
+# pytest's own faulthandler traceback all go to the real stderr or nowhere.
 test-requires = ["pytest"]
-test-command = 'pytest {package}/ucodes/omc_python/tests -m "not mex"'
+test-command = 'pytest {package}/ucodes/omc_python/tests -m "not mex" -x -s'
 
 [tool.cibuildwheel.macos]
 # Apple's clang carries no OpenMP runtime. CMakeLists.txt asks brew --prefix
