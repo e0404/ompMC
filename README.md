@@ -136,9 +136,29 @@ addpath('build/bin');
   and two edge vectors of its aperture
 - `mcOpt` — run settings: `nHistories`, `nBatches`, `nSplit`, `charge`, `global_ecut`,
   `global_pcut`, `randomSeeds`, `pegsFile`, `pgs4formFile`, `dataFolder`, `outputFolder`, and
-  optionally `spectrumFile`, `monoEnergy`, `sourceGeometry` (`'point'` or `'gaussian'`),
-  `sourceGaussianWidth`, `relDoseThreshold`, `verbose`, `progressCallback`, and the
-  variance-reduction keys below
+  optionally `spectrum`, `spectrumFile`, `monoEnergy`, `sourceGeometry` (`'point'` or
+  `'gaussian'`), `sourceGaussianWidth`, `relDoseThreshold`, `verbose`, `progressCallback`, and
+  the variance-reduction keys below
+
+`charge` picks the source particle: `-1` for electrons, `0` for photons, `+1` for positrons.
+
+The source spectrum can either be read from a `.spectrum` file (`spectrumFile`, default
+`./spectra/mohan6.spectrum`) or passed in directly as `mcOpt.spectrum`, a struct holding the
+same information:
+
+| Field | Meaning |
+| --- | --- |
+| `energy` | upper energy of each bin in MeV, strictly ascending vector |
+| `fluence` | relative number of particles per bin, same length, non-negative |
+| `eMin` | lower energy of the first bin in MeV, optional, default `0` |
+| `mode` | `0` for counts per bin (default), `1` for counts per MeV |
+
+```matlab
+mcOpt.spectrum = struct('energy', [1; 2; 3], 'fluence', [0.2; 0.5; 0.3]);
+```
+
+Within a bin the energy is sampled uniformly, as it is for a spectrum read from file. If both
+`spectrum` and `spectrumFile` are given, the passed spectrum wins and the file is ignored.
 
 `progressCallback`, if given, is a function handle called with a single scalar in `[0,1]` once
 per batch and once per finished beamlet; it replaces the built-in `waitbar` and owns any

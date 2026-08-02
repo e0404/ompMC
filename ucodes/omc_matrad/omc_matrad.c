@@ -154,7 +154,16 @@ struct OmcConfig {
     //Source Parameters
     double monoEnergy;
     char * spectrumFile;
-    //TODO: passable spectrum
+
+    /* Spectrum handed over directly from MATLAB in mcOpt.spectrum, used
+     instead of reading spectrumFile when given. The two pointers alias the
+     caller's mxArrays, which stay alive for the whole call, and are NULL
+     when no spectrum was passed. */
+    const double *spectrumEnergy;   // upper energy of each bin, MeV, ascending
+    const double *spectrumFluence;  // relative number of particles per bin
+    int spectrumNbins;
+    double spectrumEnMin;           // lower energy of the first bin, MeV
+    int spectrumMode;               // 0 : counts/bin, 1 : counts/MeV
 
     enum sourceGeometryType sourceGeometry;
     double sourceGaussianWidth; //Assuming 5mm FWHM penumbra if the source is gaussian
@@ -177,6 +186,148 @@ static mxArray *getRequiredField(const mxArray *opts, const char *name) {
     return field;
 }
 
+/* Fetch a numeric vector field of the spectrum struct. Returns the data
+ pointer and, through n, its length. Optional fields come back NULL when
+ absent; a required one that is missing, or any field that is not a real
+ double vector, is an error. */
+static const double *getSpectrumVector(const mxArray *spec, const char *name,
+                                       int required, size_t *n) {
+
+    mxArray *field = mxGetField(spec, 0, name);
+    if (field == NULL) {
+        if (required) {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidSpectrum",
+                "Field '%s' is missing from the spectrum struct.", name);
+        }
+        *n = 0;
+        return NULL;
+    }
+
+    if (!mxIsDouble(field) || mxIsComplex(field) || mxIsSparse(field)) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidSpectrum",
+            "Field 'spectrum.%s' must be a real double vector.", name);
+    }
+
+    const mwSize *dims = mxGetDimensions(field);
+    if (mxGetNumberOfDimensions(field) != 2 || (dims[0] != 1 && dims[1] != 1)) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidSpectrum",
+            "Field 'spectrum.%s' must be a vector.", name);
+    }
+
+    *n = mxGetNumberOfElements(field);
+    return mxGetPr(field);
+}
+
+/* A spectrum passed in through mcOpt.spectrum, as an alternative to reading
+ one from disk. It mirrors the contents of a .spectrum file and is given as a
+ struct with the fields
+
+    energy   : upper energy of each bin in MeV, strictly ascending
+    fluence  : relative number of particles in each bin, same length
+    eMin     : lower energy of the first bin in MeV, optional, default 0
+    mode     : 0 for counts/bin (default), 1 for counts/MeV
+
+ The arrays are only validated here; they are turned into the sampling tables
+ in initSource(), together with the ones read from file. */
+static void parseSpectrum(const mxArray *spec) {
+
+    if (!mxIsStruct(spec) || mxGetNumberOfElements(spec) != 1) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidSpectrum",
+            "Option 'spectrum' must be a 1x1 struct with fields 'energy' and "
+            "'fluence'.");
+    }
+
+    size_t nEnergy, nFluence;
+    const double *energy = getSpectrumVector(spec, "energy", 1, &nEnergy);
+    const double *fluence = getSpectrumVector(spec, "fluence", 1, &nFluence);
+
+    if (nEnergy != nFluence) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidSpectrum",
+            "'spectrum.energy' has %d elements but 'spectrum.fluence' has %d.",
+            (int) nEnergy, (int) nFluence);
+    }
+    if (nEnergy == 0) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidSpectrum",
+            "The spectrum is empty.");
+    }
+
+    /* Lower edge of the first bin. Everything below it is never sampled, so
+     0 is the safe default: it makes the first bin span [0, energy(1)]. */
+    double enmin = 0.0;
+    mxArray *field = mxGetField(spec, 0, "eMin");
+    if (field != NULL) {
+        if (!mxIsDouble(field) || mxIsComplex(field) ||
+            mxGetNumberOfElements(field) != 1) {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidSpectrum",
+                "Field 'spectrum.eMin' must be a real scalar.");
+        }
+        enmin = mxGetScalar(field);
+    }
+
+    int imode = 0;
+    field = mxGetField(spec, 0, "mode");
+    if (field != NULL) {
+        if (!mxIsDouble(field) || mxIsComplex(field) ||
+            mxGetNumberOfElements(field) != 1) {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidSpectrum",
+                "Field 'spectrum.mode' must be a real scalar, 0 for counts "
+                "per bin or 1 for counts per MeV.");
+        }
+        imode = (int) mxGetScalar(field);
+        if (imode != 0 && imode != 1) {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidSpectrum",
+                "Field 'spectrum.mode' is %d, expected 0 for counts per bin "
+                "or 1 for counts per MeV.", imode);
+        }
+    }
+
+    /* The bin edges have to be usable as such: ascending, and above the lower
+     edge of the first bin. A descending or repeated entry would come out of
+     the sampling below as a negative or zero-width bin rather than as an
+     obvious failure. */
+    if (enmin < 0.0) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidSpectrum",
+            "'spectrum.eMin' is %f MeV, it cannot be negative.", enmin);
+    }
+    if (energy[0] <= enmin) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidSpectrum",
+            "The first bin of the spectrum ends at %f MeV, which is not above "
+            "its lower edge 'eMin' = %f MeV.", energy[0], enmin);
+    }
+
+    double fluenceSum = 0.0;
+    for (size_t i = 0; i < nEnergy; i++) {
+        if (!mxIsFinite(energy[i])) {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidSpectrum",
+                "'spectrum.energy' entry %d is not finite.", (int) i + 1);
+        }
+        if (i > 0 && energy[i] <= energy[i - 1]) {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidSpectrum",
+                "'spectrum.energy' must be strictly ascending, but entry %d "
+                "(%f MeV) does not exceed entry %d (%f MeV).",
+                (int) i + 1, energy[i], (int) i, energy[i - 1]);
+        }
+        if (!(fluence[i] >= 0.0)) {   /* also catches NaN */
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidSpectrum",
+                "'spectrum.fluence' entry %d is %f, it must be non-negative.",
+                (int) i + 1, fluence[i]);
+        }
+        fluenceSum += fluence[i];
+    }
+    if (!(fluenceSum > 0.0) || !mxIsFinite(fluenceSum)) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidSpectrum",
+            "'spectrum.fluence' does not sum to a positive, finite value.");
+    }
+
+    omcConfig.spectrumEnergy = energy;
+    omcConfig.spectrumFluence = fluence;
+    omcConfig.spectrumNbins = (int) nEnergy;
+    omcConfig.spectrumEnMin = enmin;
+    omcConfig.spectrumMode = imode;
+
+    return;
+}
+
 /* Function used to parse input from matRad */
 void parseInput(int nrhs, const mxArray *prhs[]) {
     //Default values
@@ -184,6 +335,15 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     omcConfig.nBatch = 10;
     omcConfig.doseThreshold = 0.01;
     omcConfig.monoEnergy = 0.1;
+    /* Reset explicitly rather than relying on the zero initialization of the
+     global: the MEX file stays locked in memory, so a spectrum passed in one
+     call would otherwise still be pointed at by the next one, which no longer
+     owns those arrays. */
+    omcConfig.spectrumEnergy = NULL;
+    omcConfig.spectrumFluence = NULL;
+    omcConfig.spectrumNbins = 0;
+    omcConfig.spectrumEnMin = 0.0;
+    omcConfig.spectrumMode = 0;
     omcConfig.sourceGeometry = POINT;
     omcConfig.sourceGaussianWidth = 0.2123; //Assuming 5mm FWHM penumbra if the source is gaussian
     
@@ -303,13 +463,27 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
         strcpy(input_items[nInput].value,tmp);
     }
 
+    /* The spectrum can either be passed in directly or read from file, with
+     the passed one taking precedence when both are given. */
+    tmp_fieldpointer = mxGetField(mcOpt,0,"spectrum");
+    if (tmp_fieldpointer && !mxIsEmpty(tmp_fieldpointer)) {
+        parseSpectrum(tmp_fieldpointer);
+
+        if (mxGetField(mcOpt,0,"spectrumFile"))
+            mexPrintf("Both 'spectrum' and 'spectrumFile' were given, using "
+                "the passed spectrum and ignoring the file.\n");
+    }
+
     tmp_fieldpointer = mxGetField(mcOpt,0,"spectrumFile");
-    if (tmp_fieldpointer) {
+    if (omcConfig.spectrumEnergy != NULL) {
+        omcConfig.spectrumFile = NULL;
+    }
+    else if (tmp_fieldpointer) {
         size_t buflen = mxGetNumberOfElements(tmp_fieldpointer) + 1;
         omcConfig.spectrumFile = (char*) mxCalloc(buflen + 1,sizeof(char));
-        if (mxGetString(tmp_fieldpointer, omcConfig.spectrumFile, buflen) != 0) 
+        if (mxGetString(tmp_fieldpointer, omcConfig.spectrumFile, buflen) != 0)
             mexErrMsgIdAndTxt("MATLAB:explore:invalidStringArray","Invalid string for path to spectrum file!");
-        
+
     }
     else
     {
@@ -317,7 +491,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
         omcConfig.spectrumFile = (char*) mxCalloc(buflen + 1,sizeof(char));
         strcpy(omcConfig.spectrumFile, "./spectra/mohan6.spectrum");
     }
-   
+
     tmp_fieldpointer = mxGetField(mcOpt,0,"monoEnergy");
     if (tmp_fieldpointer)
         omcConfig.monoEnergy = mxGetScalar(tmp_fieldpointer);    
@@ -729,164 +903,260 @@ double hownear(void) {
 const int MXEBIN = 200;     // number of energy bins of spectrum
 const int INVDIM = 1000;    // number of bins in inverse CDF
 
-void initSource() {
-    
-    /* Get spectrum file path from input data */
-    char buffer[BUFFER_SIZE];
+/* Build the tables used to sample the incident energy, from a histogram of
+ nensrc bins with upper energies ensrcd[], lower edge enmin of the first bin
+ and per-bin probabilities srcpdf[] in counts/bin. Shared by the spectrum
+ read from file and the one passed in from MATLAB, so that both are sampled
+ in exactly the same way. */
+static void initSpectrumCdf(const double *ensrcd, const double *srcpdf,
+                            int nensrc, double enmin) {
 
-    char* fstatus;
-    
-    source.spectrum = 1;    /* energy spectrum as default case */    
-    
-    if (source.spectrum) {
-        //removeSpaces(omcConfig.spectrumFile, buffer);
-        
-        /* Open .source file */
-        FILE *fp;
-        
-        if ((fp = fopen(omcConfig.spectrumFile, "r")) == NULL) {
-            mexPrintf("Unable to open file: %s\n", omcConfig.spectrumFile);
-            exit(EXIT_FAILURE);
-        }
-        
-        if (verbose_flag > 2)
-            mexPrintf("Path to spectrum file : %s\n", omcConfig.spectrumFile);      
-        
-        /* Read spectrum file title */
-        fstatus = fgets(buffer, BUFFER_SIZE, fp);
-        if (fstatus == NULL)
-            mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Could not parse spectrum file.\n");
-        
-        if (verbose_flag > 1)
-            mexPrintf("Spectrum file title: %s", buffer);
+    if (verbose_flag > 1)
+        mexPrintf("Energy ranges from %f to %f MeV\n", enmin, ensrcd[nensrc - 1]);
 
-        
-        /* Read number of bins and spectrum type */
-        double enmin;   /* lower energy of first bin */
-        int nensrc;     /* number of energy bins in spectrum histogram */
-        int imode;      /* 0 : histogram counts/bin, 1 : counts/MeV*/
-        
-        fstatus = fgets(buffer, BUFFER_SIZE, fp);
-        if (fstatus == NULL)
-            mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Could not parse spectrum file.\n");
+    /* Initialization routine to calculate the inverse of the
+     cumulative probability distribution that is used during execution to
+     sample the incident particle energy. */
+    double *srccdf = malloc(nensrc*sizeof(double));
 
-        sscanf(buffer, "%d %lf %d", &nensrc, &enmin, &imode);
-        
-        if (nensrc > MXEBIN) {
-            mexPrintf("Number of energy bins = %d is greater than max allowed = "
-                   "%d. Increase MXEBIN macro!\n", nensrc, MXEBIN);
-            exit(EXIT_FAILURE);
-        }
-        
-        /* upper energy of bin i in MeV */
-        double *ensrcd = malloc(nensrc*sizeof(double));
-        /* prob. of finding a particle in bin i */
-        double *srcpdf = malloc(nensrc*sizeof(double));
-        
-        /* Read spectrum information */
-        for (int i=0; i<nensrc; i++) {
-            fstatus = fgets(buffer, BUFFER_SIZE, fp);
-            if (fstatus == NULL)
-                mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Could not parse spectrum file.\n");
+    srccdf[0] = srcpdf[0];
+    for (int i=1; i<nensrc; i++) {
+        srccdf[i] = srccdf[i-1] + srcpdf[i];
+    }
 
-            sscanf(buffer, "%lf %lf", &ensrcd[i], &srcpdf[i]);
-        }
-        if (verbose_flag > 2)
-            mexPrintf("Have read %d input energy bins from spectrum file.\n", nensrc);
-        
-        if (imode == 0) {
-            if (verbose_flag > 2)
-                mexPrintf("Counts/bin assumed.\n");
-        }
-        else if (imode == 1) {
-            if (verbose_flag > 2)
-                mexPrintf("Counts/MeV assumed.\n");
-            srcpdf[0] *= (ensrcd[0] - enmin);
-            for(int i=1; i<nensrc; i++) {
-                srcpdf[i] *= (ensrcd[i] - ensrcd[i - 1]);
+    double fnorm = 1.0/srccdf[nensrc - 1];
+    double binsok = 0.0;
+    source.deltak = INVDIM; /* number of elements in inverse CDF */
+    double gridsz = 1.0f/source.deltak;
+
+    for (int i=0; i<nensrc; i++) {
+        srccdf[i] *= fnorm;
+        if (i == 0) {
+            if (srccdf[0] <= 3.0*gridsz) {
+                binsok = 1.0;
             }
         }
         else {
-            mexPrintf("Invalid mode number in spectrum file.");
-            exit(EXIT_FAILURE);
-        }
-        
-        double ein = ensrcd[nensrc - 1];
-        if (verbose_flag > 1)
-            mexPrintf("Energy ranges from %f to %f MeV\n", enmin, ein);
-        
-        /* Initialization routine to calculate the inverse of the
-         cumulative probability distribution that is used during execution to
-         sample the incident particle energy. */
-        double *srccdf = malloc(nensrc*sizeof(double));
-        
-        srccdf[0] = srcpdf[0];
-        for (int i=1; i<nensrc; i++) {
-            srccdf[i] = srccdf[i-1] + srcpdf[i];
-        }
-        
-        double fnorm = 1.0/srccdf[nensrc - 1];
-        double binsok = 0.0;
-        source.deltak = INVDIM; /* number of elements in inverse CDF */
-        double gridsz = 1.0f/source.deltak;
-        
-        for (int i=0; i<nensrc; i++) {
-            srccdf[i] *= fnorm;
-            if (i == 0) {
-                if (srccdf[0] <= 3.0*gridsz) {
-                    binsok = 1.0;
-                }
-            }
-            else {
-                if ((srccdf[i] - srccdf[i - 1]) < 3.0*gridsz) {
-                    binsok = 1.0;
-                }
+            if ((srccdf[i] - srccdf[i - 1]) < 3.0*gridsz) {
+                binsok = 1.0;
             }
         }
-        
-        if (verbose_flag > 1 && binsok != 0.0) {            
-            mexPrintf("Warning! Some of normalized bin probabilities are so small that bins may be missed.\n");
+    }
+
+    if (verbose_flag > 1 && binsok != 0.0) {
+        mexPrintf("Warning! Some of normalized bin probabilities are so small that bins may be missed.\n");
+    }
+
+    /* Calculate cdfinv. This array allows the rapid sampling for the
+     energy by precomputing the results for a fine grid. */
+    source.cdfinv1 = malloc(source.deltak*sizeof(double));
+    source.cdfinv2 = malloc(source.deltak*sizeof(double));
+    double ak;
+
+    for (int k=0; k<source.deltak; k++) {
+        ak = (double)k*gridsz;
+        int i;
+
+        for (i=0; i<nensrc; i++) {
+            if (ak <= srccdf[i]) {
+                break;
+            }
         }
 
-        /* Calculate cdfinv. This array allows the rapid sampling for the
-         energy by precomputing the results for a fine grid. */
-        source.cdfinv1 = malloc(source.deltak*sizeof(double));
-        source.cdfinv2 = malloc(source.deltak*sizeof(double));
-        double ak;
-        
-        for (int k=0; k<source.deltak; k++) {
-            ak = (double)k*gridsz;
-            int i;
-            
-            for (i=0; i<nensrc; i++) {
-                if (ak <= srccdf[i]) {
-                    break;
-                }
-            }
-            
-            /* We should fall here only through the above break sentence. */
-            if (i != 0) {
-                source.cdfinv1[k] = ensrcd[i - 1];
-            }
-            else {
-                source.cdfinv1[k] = enmin;
-            }
-            source.cdfinv2[k] = ensrcd[i] - source.cdfinv1[k];
-            
+        /* We should fall here only through the above break sentence. */
+        if (i != 0) {
+            source.cdfinv1[k] = ensrcd[i - 1];
         }
-        
-        /* Cleaning */
-        fclose(fp);
-        free(ensrcd);
-        free(srcpdf);
-        free(srccdf);
+        else {
+            source.cdfinv1[k] = enmin;
+        }
+        source.cdfinv2[k] = ensrcd[i] - source.cdfinv1[k];
+
     }
-    else {  /* monoenergetic source */        
+
+    free(srccdf);
+
+    return;
+}
+
+/* Read the spectrum from the .spectrum file given in mcOpt.spectrumFile */
+static void initSpectrumFromFile(void) {
+
+    char buffer[BUFFER_SIZE];
+    char* fstatus;
+
+    //removeSpaces(omcConfig.spectrumFile, buffer);
+
+    /* Open .source file */
+    FILE *fp;
+
+    if ((fp = fopen(omcConfig.spectrumFile, "r")) == NULL) {
+        mexPrintf("Unable to open file: %s\n", omcConfig.spectrumFile);
+        exit(EXIT_FAILURE);
+    }
+
+    if (verbose_flag > 2)
+        mexPrintf("Path to spectrum file : %s\n", omcConfig.spectrumFile);
+
+    /* Read spectrum file title */
+    fstatus = fgets(buffer, BUFFER_SIZE, fp);
+    if (fstatus == NULL)
+        mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Could not parse spectrum file.\n");
+
+    if (verbose_flag > 1)
+        mexPrintf("Spectrum file title: %s", buffer);
+
+
+    /* Read number of bins and spectrum type */
+    double enmin;   /* lower energy of first bin */
+    int nensrc;     /* number of energy bins in spectrum histogram */
+    int imode;      /* 0 : histogram counts/bin, 1 : counts/MeV*/
+
+    fstatus = fgets(buffer, BUFFER_SIZE, fp);
+    if (fstatus == NULL)
+        mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Could not parse spectrum file.\n");
+
+    sscanf(buffer, "%d %lf %d", &nensrc, &enmin, &imode);
+
+    if (nensrc > MXEBIN) {
+        mexPrintf("Number of energy bins = %d is greater than max allowed = "
+               "%d. Increase MXEBIN macro!\n", nensrc, MXEBIN);
+        exit(EXIT_FAILURE);
+    }
+
+    /* upper energy of bin i in MeV */
+    double *ensrcd = malloc(nensrc*sizeof(double));
+    /* prob. of finding a particle in bin i */
+    double *srcpdf = malloc(nensrc*sizeof(double));
+
+    /* Read spectrum information */
+    for (int i=0; i<nensrc; i++) {
+        fstatus = fgets(buffer, BUFFER_SIZE, fp);
+        if (fstatus == NULL)
+            mexErrMsgIdAndTxt("matRad:omc_matrad:Error","Could not parse spectrum file.\n");
+
+        sscanf(buffer, "%lf %lf", &ensrcd[i], &srcpdf[i]);
+    }
+    if (verbose_flag > 2)
+        mexPrintf("Have read %d input energy bins from spectrum file.\n", nensrc);
+
+    if (imode == 0) {
+        if (verbose_flag > 2)
+            mexPrintf("Counts/bin assumed.\n");
+    }
+    else if (imode == 1) {
+        if (verbose_flag > 2)
+            mexPrintf("Counts/MeV assumed.\n");
+        srcpdf[0] *= (ensrcd[0] - enmin);
+        for(int i=1; i<nensrc; i++) {
+            srcpdf[i] *= (ensrcd[i] - ensrcd[i - 1]);
+        }
+    }
+    else {
+        mexPrintf("Invalid mode number in spectrum file.");
+        exit(EXIT_FAILURE);
+    }
+
+    initSpectrumCdf(ensrcd, srcpdf, nensrc, enmin);
+
+    /* Cleaning */
+    fclose(fp);
+    free(ensrcd);
+    free(srcpdf);
+
+    return;
+}
+
+/* Use the spectrum passed in through mcOpt.spectrum, already validated in
+ parseSpectrum(). The bin probabilities are copied because counts/MeV input
+ has to be scaled by the bin widths, and the array belongs to MATLAB. */
+static void initSpectrumFromArrays(void) {
+
+    int nensrc = omcConfig.spectrumNbins;
+    double enmin = omcConfig.spectrumEnMin;
+    const double *ensrcd = omcConfig.spectrumEnergy;
+
+    double *srcpdf = malloc(nensrc*sizeof(double));
+    for (int i=0; i<nensrc; i++) {
+        srcpdf[i] = omcConfig.spectrumFluence[i];
+    }
+
+    if (omcConfig.spectrumMode == 1) {
+        if (verbose_flag > 2)
+            mexPrintf("Counts/MeV assumed.\n");
+        srcpdf[0] *= (ensrcd[0] - enmin);
+        for (int i=1; i<nensrc; i++) {
+            srcpdf[i] *= (ensrcd[i] - ensrcd[i - 1]);
+        }
+    }
+    else if (verbose_flag > 2) {
+        mexPrintf("Counts/bin assumed.\n");
+    }
+
+    if (verbose_flag > 2)
+        mexPrintf("Have taken %d energy bins from the passed spectrum.\n", nensrc);
+
+    initSpectrumCdf(ensrcd, srcpdf, nensrc, enmin);
+
+    free(srcpdf);
+
+    return;
+}
+
+void initSource() {
+
+    /* Read the charge of the source particles from mcOpt.charge, which
+     parseInput() has put into the input items. Without this the field was
+     accepted and then ignored, leaving source.charge at its static zero, so
+     an electron or positron source silently ran as photons. */
+    char buffer[BUFFER_SIZE];
+    if (getInputValue(buffer, "charge") != 1) {
+        mexPrintf("Can not find 'charge' key on input file.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    char *endptr;
+    long charge = strtol(buffer, &endptr, 10);
+
+    /* strtol() stops at the first character it cannot use and returns 0 for a
+     string it could not read at all, which would quietly turn a bad value
+     into a photon source */
+    while (isspace((unsigned char)*endptr)) {
+        endptr++;
+    }
+    if (endptr == buffer || *endptr != '\0') {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidCharge",
+            "Option 'charge' is '%s', expected -1, 0 or +1.", buffer);
+    }
+    if (charge < -1 || charge > 1) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidCharge",
+            "Option 'charge' is %ld, expected -1 for electrons, 0 for photons "
+            "or +1 for positrons.", charge);
+    }
+    source.charge = (int)charge;
+
+    if (verbose_flag > 1) {
+        const char *particle = source.charge == 0 ? "photons" :
+            (source.charge < 0 ? "electrons" : "positrons");
+        mexPrintf("Source charge : %d (%s)\n", source.charge, particle);
+    }
+
+    source.spectrum = 1;    /* energy spectrum as default case */
+
+    if (source.spectrum) {
+        if (omcConfig.spectrumEnergy != NULL) {
+            initSpectrumFromArrays();
+        }
+        else {
+            initSpectrumFromFile();
+        }
+    }
+    else {  /* monoenergetic source */
         source.energy = omcConfig.monoEnergy;
         mexPrintf("%f monoenergetic source\n", source.energy);
-        
+
     }
-    
+
     /* Parse data of the beamlets */
     unsigned int nfields;
     mxArray *tmp_fieldpointer;

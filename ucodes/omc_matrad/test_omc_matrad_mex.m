@@ -130,6 +130,115 @@ if ~isequal(size(dijVar), expectedSize) || nnz(dijVar) == 0
 end
 fprintf('Variance output: %d nonzeros.\n', nnz(dijVar));
 
+%% mcOpt.spectrum replaces mcOpt.spectrumFile
+
+% The same spectrum, read in MATLAB and handed over as arrays, has to give the
+% same dose as letting the MEX file read the file itself. Both runs use the
+% same seeds and the same per-history random streams, so they only differ by
+% the order in which threads accumulate energy into a voxel.
+fid = fopen(mcOpt.spectrumFile, 'r');
+if fid < 0
+    error('ompMC:test:noSpectrumFile', ...
+        'Could not open the spectrum file %s.', mcOpt.spectrumFile);
+end
+cleanupSpectrum = onCleanup(@() fclose(fid));
+fgetl(fid);                                  % title line
+header = sscanf(fgetl(fid), '%d %f %d', 3);  % nBins, lower edge, mode
+bins = fscanf(fid, '%f %f', [2, header(1)])';
+clear cleanupSpectrum;
+
+if size(bins, 1) ~= header(1)
+    error('ompMC:test:badSpectrumFile', ...
+        'Read %d of the %d bins announced by %s.', ...
+        size(bins, 1), header(1), mcOpt.spectrumFile);
+end
+
+mcOptSpec = rmfield(mcOpt, 'spectrumFile');
+mcOptSpec.spectrum = struct('energy', bins(:, 1), 'fluence', bins(:, 2), ...
+    'eMin', header(2), 'mode', header(3));
+
+dijSpec = omc_matrad(fixture.cubeRho, fixture.cubeMatIx, ...
+    fixture.mcGeo, fixture.mcSrc, mcOptSpec);
+
+if ~isequal(size(dijSpec), expectedSize)
+    error('ompMC:test:spectrumWrongSize', ...
+        'Dose influence matrix computed from a passed spectrum is %s, expected %s.', ...
+        mat2str(size(dijSpec)), mat2str(expectedSize));
+end
+
+totalDose = full(sum(dij(:)));
+relDiff = abs(full(sum(dijSpec(:))) - totalDose)/totalDose;
+if ~(relDiff < 1e-3)
+    error('ompMC:test:spectrumMismatch', ...
+        ['Passing the spectrum gave a total dose differing by %.3g from ', ...
+         'reading the same spectrum from file.'], relDiff);
+end
+fprintf('Passed spectrum with %d bins reproduced the file result to %.3g relative.\n', ...
+    header(1), relDiff);
+
+% A malformed spectrum has to be rejected up front rather than sampled.
+mcOptBad = mcOptSpec;
+mcOptBad.spectrum.energy = flipud(mcOptBad.spectrum.energy);
+try
+    omc_matrad(fixture.cubeRho, fixture.cubeMatIx, ...
+        fixture.mcGeo, fixture.mcSrc, mcOptBad);
+    error('ompMC:test:badSpectrumAccepted', ...
+        'A spectrum with descending bin energies was accepted.');
+catch err
+    if ~strcmp(err.identifier, 'matRad:omc_matrad:invalidSpectrum')
+        rethrow(err);
+    end
+end
+fprintf('A spectrum with descending bin energies was rejected.\n');
+
+%% mcOpt.charge selects the source particle
+
+% charge used to be parsed and then ignored, so everything ran as photons.
+% An electron source deposits its energy in a completely different place than
+% a photon source of the same spectrum, which is what makes this detectable.
+if mcOpt.charge ~= 0
+    error('ompMC:test:fixtureNotPhotons', ...
+        'The fixture uses charge %d, this check assumes a photon fixture.', ...
+        mcOpt.charge);
+end
+
+mcOptElectron = mcOpt;
+mcOptElectron.charge = -1;
+dijElectron = omc_matrad(fixture.cubeRho, fixture.cubeMatIx, ...
+    fixture.mcGeo, fixture.mcSrc, mcOptElectron);
+
+electronDose = nonzeros(dijElectron);
+if isempty(electronDose) || ~all(isfinite(electronDose)) || any(electronDose < 0)
+    error('ompMC:test:badElectronDose', ...
+        'The electron source produced no usable dose (%d nonzeros).', ...
+        numel(electronDose));
+end
+
+% Same voxel grid, same beamlets, same spectrum: if charge were still ignored
+% the two runs would agree to within the accumulation order.
+sharedVoxels = nnz(dij & dijElectron)/nnz(dij | dijElectron);
+if sharedVoxels > 0.9
+    error('ompMC:test:chargeIgnored', ...
+        ['An electron source deposited in %.1f%% of the same voxels as the ', ...
+         'photon source; mcOpt.charge looks ignored.'], 100*sharedVoxels);
+end
+fprintf('Electron source scored in a different region (%.1f%% voxel overlap with photons).\n', ...
+    100*sharedVoxels);
+
+% An out-of-range charge has to be rejected rather than truncated to a photon.
+mcOptBadCharge = mcOpt;
+mcOptBadCharge.charge = 2;
+try
+    omc_matrad(fixture.cubeRho, fixture.cubeMatIx, ...
+        fixture.mcGeo, fixture.mcSrc, mcOptBadCharge);
+    error('ompMC:test:badChargeAccepted', 'A charge of 2 was accepted.');
+catch err
+    if ~strcmp(err.identifier, 'matRad:omc_matrad:invalidCharge')
+        rethrow(err);
+    end
+end
+fprintf('A charge of 2 was rejected.\n');
+
 %% mcOpt.progressCallback replaces the built-in waitbar
 
 % verbose = 2 would normally pop up a waitbar; a progressCallback should
