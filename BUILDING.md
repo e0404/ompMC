@@ -10,6 +10,17 @@ are produced:
 
 Both link against the `ompmc_core` static library built from `src/`.
 
+`ompmc.c` calls four functions it does not define — `ausgab()` for scoring and
+`howfar()`, `hownear()`, `regionIndex()` for the geometry. All four live in the
+core library now, in [src/omc_score.c](src/omc_score.c) and
+[src/omc_geom.c](src/omc_geom.c), so every user code transports through the same
+rectilinear voxel phantom and only has to *fill* `struct Geom` from whatever it
+reads: an `.egsphant` file, cubes handed over by MATLAB, or arrays from another
+host. Shared code reports through `omcLog()`/`omcFail()`
+([src/omc_host.h](src/omc_host.h)) rather than `printf()` or
+`mexErrMsgIdAndTxt()`, and each host installs the sinks that give those meaning;
+both are called on the master thread only, never from inside a parallel region.
+
 ## Quick start
 
 ```sh

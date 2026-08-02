@@ -22,20 +22,12 @@
 #include <string.h>
 
 /*******************************************************************************
-* User code hooks the core library expects. rayleigh() reaches none of them --
-* it only touches the stack and the RNG -- but they have to link.
+* User code hook the core library expects. The geometry hooks it also expects
+* -- howfar(), hownear(), regionIndex() -- come from omc_geom.c in the library
+* now rather than being stubbed out here; rayleigh() reaches none of them, it
+* only touches the stack and the RNG.
 *******************************************************************************/
 int verbose_flag = 0;
-
-void howfar(int *idisc, int *irnew, double *ustep) {
-    (void)idisc; (void)irnew; (void)ustep;
-}
-double hownear(void) { return 0.0; }
-int regionIndex(double x, double y, double z) {
-    (void)x; (void)y; (void)z;
-    return 0;
-}
-void initRegions(void) { }
 
 /* The particle stack is thread local in the core library, so it has to be
  declared the same way here as the user codes do. */

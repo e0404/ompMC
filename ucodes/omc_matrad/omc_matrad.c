@@ -40,8 +40,14 @@
     #define printf(...) fprintf(stdout,__VA_ARGS__)
 #endif
 
-#define exit(EXIT_FAILURE) mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:invalid","Error in ompMC mex file. Abort!");
+/* Shared ompMC code reports through omcLog()/omcFail(); the sinks installed in
+ initHost() below turn those into mexPrintf() and mexErrMsgIdAndTxt(). What
+ remains of the old "#define exit(EXIT_FAILURE) mexErrMsgIdAndTxt(...)" trick
+ is gone with them: it hid the real message behind a generic one, and quietly
+ turned every exit() in scope into something that unwinds instead. */
 
+#include "omc_geom.h"
+#include "omc_host.h"
 #include "omc_utilities.h"
 #include "omc_random.h"
 #include "ompmc.h"
@@ -87,24 +93,6 @@ extern struct inputItems input_items[];     // key,value pairs
 extern int input_idx;                       // number of key,value pair
 
 //Data Types and Structs
-struct Geom {
-    int *med_indices;           // index of the media in each voxel
-    double *med_densities;      // density of the medium in each voxel
-    
-    int isize;                  // number of voxels on each direction
-    int jsize;
-    int ksize;
-    
-    double *xbounds;            // boundaries of voxels on each direction
-    double *ybounds;
-    double *zbounds;
-
-    double dxi, dyi, dzi;       /* reciprocal grid spacing per axis when that
-                                 axis is uniform, 0.0 when it is not; lets
-                                 regionIndex() locate a point with one
-                                 multiplication instead of a binary search */
-};
-struct Geom geometry;
 
 struct Source {
     int nmed;                   // number of media in phantom file
@@ -170,6 +158,50 @@ struct OmcConfig {
 };
 
 struct OmcConfig omcConfig;
+
+/******************************************************************************/
+/* Host sinks. Shared ompMC code calls omcLog()/omcFail() and these turn them
+ into the MATLAB equivalents. Both are only ever called on the master thread,
+ outside any parallel region, which is what makes calling into the MEX API
+ from here safe -- transport code that prints from inside a parallel region
+ keeps using printf(), redefined above. */
+
+static void mexLogSink(int level, const char *message, void *user) {
+
+    (void)user;
+
+    /* Warnings were unconditional before the sinks existed, and stay so.
+     Everything else follows the verbosity the caller asked for. */
+    if (level > OMC_LOG_WARNING && verbose_flag < level) {
+        return;
+    }
+
+    mexPrintf("%s\n", message);
+
+    return;
+}
+
+static void mexFailSink(const char *id, const char *message, void *user) {
+
+    (void)user;
+
+    /* Does not return: mexErrMsgIdAndTxt() unwinds back to MATLAB. The "%s"
+     is deliberate -- message is already formatted and may well contain a
+     stray percent sign from a file path. */
+    mexErrMsgIdAndTxt(id, "%s", message);
+}
+
+static void initHost(void) {
+
+    struct OmcHost host;
+    host.log = mexLogSink;
+    host.fail = mexFailSink;
+    host.user = NULL;
+
+    omcSetHost(&host);
+
+    return;
+}
 
 /* Fetch a required field of the MC options struct, failing with a clear
  error message instead of handing a NULL pointer to the MATLAB API, which
@@ -673,11 +705,7 @@ void initPhantom() {
 
     geometry.med_indices = (int*)mxGetPr(cubeMatIx);
 
-    /* Detect uniform voxel spacing for the fast point location used by
-     Woodcock photon tracking */
-    geometry.dxi = omcUniformSpacingInv(geometry.xbounds, geometry.isize);
-    geometry.dyi = omcUniformSpacingInv(geometry.ybounds, geometry.jsize);
-    geometry.dzi = omcUniformSpacingInv(geometry.zbounds, geometry.ksize);
+    omcGeomDetectSpacing();
 
     /* Summary with geometry information */
     if (verbose_flag > 1)
@@ -713,189 +741,6 @@ void cleanPhantom() {
     return;
 }
 
-void howfar(int *idisc, int *irnew, double *ustep) {
-    
-    int np = stack.np;
-    int irl = stack.p[np].ir;
-    double dist = 0.0;
-    
-    if (stack.p[np].ir == 0) {
-        /* The particle is outside the geometry, terminate history */
-        *idisc = 1;
-        return;
-    }
-    
-    /* If here, the particle is in the geometry, do transport checks */
-    int imax = geometry.isize;
-    int jmax = geometry.jsize;
-    int ijmax = imax*jmax;
-
-    /* First we need to decode the region number of the particle in terms of
-     the region indices in each direction. The memo makes this free whenever
-     this region was decoded, or staged as a neighbour, by an earlier call */
-    int irx, iry, irz;
-    omcCachedDecodeRegion(irl, imax, jmax, &irx, &iry, &irz);
-
-    /* Reciprocal direction cosines, cached so that a photon marching through
-     voxels divides only on its first step in a given direction */
-    double ui, vi, wi;
-    omcInvDir(stack.p[np].u, stack.p[np].v, stack.p[np].w, &ui, &vi, &wi);
-
-    /* Whenever the step is truncated to a voxel face the indices of the
-     neighbour behind it are known without any division; stage them so the
-     next call, which runs in that neighbour, hits the memo. */
-
-    /* Check in z-direction */
-    if (stack.p[np].w > 0.0) {
-        /* Going towards outer plane */
-        dist = (geometry.zbounds[irz+1] - stack.p[np].z)*wi;
-        if (dist < *ustep) {
-            *ustep = dist;
-            if (irz != (geometry.ksize - 1)) {
-                *irnew = irl + ijmax;
-                omcStageRegion(*irnew, irx, iry, irz + 1);
-            }
-            else {
-                *irnew = 0; /* leaving geometry */
-            }
-        }
-    }
-
-    else if (stack.p[np].w < 0.0) {
-        /* Going towards inner plane */
-        dist = -(stack.p[np].z - geometry.zbounds[irz])*wi;
-        if (dist < *ustep) {
-            *ustep = dist;
-            if (irz != 0) {
-                *irnew = irl - ijmax;
-                omcStageRegion(*irnew, irx, iry, irz - 1);
-            }
-            else {
-                *irnew = 0; /* leaving geometry */
-            }
-        }
-    }
-
-    /* Check in x-direction */
-    if (stack.p[np].u > 0.0) {
-        /* Going towards positive plane */
-        dist = (geometry.xbounds[irx+1] - stack.p[np].x)*ui;
-        if (dist < *ustep) {
-            *ustep = dist;
-            if (irx != (geometry.isize - 1)) {
-                *irnew = irl + 1;
-                omcStageRegion(*irnew, irx + 1, iry, irz);
-            }
-            else {
-                *irnew = 0; /* leaving geometry */
-            }
-        }
-    }
-
-    else if (stack.p[np].u < 0.0) {
-        /* Going towards negative plane */
-        dist = -(stack.p[np].x - geometry.xbounds[irx])*ui;
-        if (dist < *ustep) {
-            *ustep = dist;
-            if (irx != 0) {
-                *irnew = irl - 1;
-                omcStageRegion(*irnew, irx - 1, iry, irz);
-            }
-            else {
-                *irnew = 0; /* leaving geometry */
-            }
-        }
-    }
-
-    /* Check in y-direction */
-    if (stack.p[np].v > 0.0) {
-        /* Going towards positive plane */
-        dist = (geometry.ybounds[iry+1] - stack.p[np].y)*vi;
-        if (dist < *ustep) {
-            *ustep = dist;
-            if (iry != (geometry.jsize - 1)) {
-                *irnew = irl + imax;
-                omcStageRegion(*irnew, irx, iry + 1, irz);
-            }
-            else {
-                *irnew = 0; /* leaving geometry */
-            }
-        }
-    }
-
-    else if (stack.p[np].v < 0.0) {
-        /* Going towards negative plane */
-        dist = -(stack.p[np].y - geometry.ybounds[iry])*vi;
-        if (dist < *ustep) {
-            *ustep = dist;
-            if (iry != 0) {
-                *irnew = irl - imax;
-                omcStageRegion(*irnew, irx, iry - 1, irz);
-            }
-            else {
-                *irnew = 0; /* leaving geometry */
-            }
-        }
-    }
-
-    return;
-}
-
-int regionIndex(double x, double y, double z) {
-
-    /* Region containing the point, 0 if outside the phantom. Points exactly
-     on the outer boundaries count as inside, consistent with the clamping
-     of omcFindVoxelIndex(). */
-    if (x < geometry.xbounds[0] || x > geometry.xbounds[geometry.isize] ||
-        y < geometry.ybounds[0] || y > geometry.ybounds[geometry.jsize] ||
-        z < geometry.zbounds[0] || z > geometry.zbounds[geometry.ksize]) {
-        return 0;
-    }
-
-    int ix = omcVoxelIndexFast(geometry.xbounds, geometry.isize,
-                               geometry.dxi, x);
-    int iy = omcVoxelIndexFast(geometry.ybounds, geometry.jsize,
-                               geometry.dyi, y);
-    int iz = omcVoxelIndexFast(geometry.zbounds, geometry.ksize,
-                               geometry.dzi, z);
-
-    return 1 + ix + iy*geometry.isize + iz*geometry.isize*geometry.jsize;
-}
-
-double hownear(void) {
-
-    int np = stack.np;
-    int irl = stack.p[np].ir;
-    double tperp = 1.0E10;  /* perpendicular distance to closest boundary */
-    
-    if (irl == 0) {
-        /* Particle exiting geometry */
-        tperp = 0.0;
-    }
-    else {
-        /* In the geometry, do transport checks */
-
-        /* First we need to decode the region number of the particle in terms
-         of the region indices in each direction */
-        int irx, iry, irz;
-        omcCachedDecodeRegion(irl, geometry.isize, geometry.jsize,
-                              &irx, &iry, &irz);
-
-        /* Check in x-direction */
-        tperp = fmin(tperp, geometry.xbounds[irx+1] - stack.p[np].x);
-        tperp = fmin(tperp, stack.p[np].x - geometry.xbounds[irx]);
-        
-        /* Check in y-direction */
-        tperp = fmin(tperp, geometry.ybounds[iry+1] - stack.p[np].y);
-        tperp = fmin(tperp, stack.p[np].y - geometry.ybounds[iry]);
-        
-        /* Check in z-direction */
-        tperp = fmin(tperp, geometry.zbounds[irz+1] - stack.p[np].z);
-        tperp = fmin(tperp, stack.p[np].z - geometry.zbounds[irz]);
-    }
-    
-    return tperp;
-}
 /******************************************************************************/
 
 /******************************************************************************/
@@ -991,8 +836,8 @@ static void initSpectrumFromFile(void) {
     FILE *fp;
 
     if ((fp = fopen(omcConfig.spectrumFile, "r")) == NULL) {
-        mexPrintf("Unable to open file: %s\n", omcConfig.spectrumFile);
-        exit(EXIT_FAILURE);
+        omcFail("matRad:omc_matrad:spectrumFile",
+            "Unable to open spectrum file: %s", omcConfig.spectrumFile);
     }
 
     if (verbose_flag > 2)
@@ -1019,9 +864,9 @@ static void initSpectrumFromFile(void) {
     sscanf(buffer, "%d %lf %d", &nensrc, &enmin, &imode);
 
     if (nensrc > MXEBIN) {
-        mexPrintf("Number of energy bins = %d is greater than max allowed = "
-               "%d. Increase MXEBIN macro!\n", nensrc, MXEBIN);
-        exit(EXIT_FAILURE);
+        omcFail("matRad:omc_matrad:spectrumFile",
+            "Number of energy bins = %d is greater than max allowed = %d. "
+            "Increase MXEBIN macro!", nensrc, MXEBIN);
     }
 
     /* upper energy of bin i in MeV */
@@ -1053,8 +898,8 @@ static void initSpectrumFromFile(void) {
         }
     }
     else {
-        mexPrintf("Invalid mode number in spectrum file.");
-        exit(EXIT_FAILURE);
+        omcFail("matRad:omc_matrad:spectrumFile",
+            "Invalid mode number in spectrum file.");
     }
 
     initSpectrumCdf(ensrcd, srcpdf, nensrc, enmin);
@@ -1111,8 +956,8 @@ void initSource() {
      an electron or positron source silently ran as photons. */
     char buffer[BUFFER_SIZE];
     if (getInputValue(buffer, "charge") != 1) {
-        mexPrintf("Can not find 'charge' key on input file.\n");
-        exit(EXIT_FAILURE);
+        omcFail("matRad:omc_matrad:missingInput",
+            "Can not find 'charge' key on input file.");
     }
 
     char *endptr;
@@ -1340,8 +1185,8 @@ void outputResults(char *output_file, int iout, int nhist, int nbatch) {
     char buffer[BUFFER_SIZE];
     
     if (getInputValue(buffer, "output folder") != 1) {
-        mexPrintf("Can not find 'output folder' key on input file.\n");
-        exit(EXIT_FAILURE);
+        omcFail("matRad:omc_matrad:missingInput",
+            "Can not find 'output folder' key on input file.");
     }
     removeSpaces(output_folder, buffer);
     
@@ -1354,8 +1199,8 @@ void outputResults(char *output_file, int iout, int nhist, int nbatch) {
     
     FILE *fp;
     if ((fp = fopen(file_name, "w")) == NULL) {
-        mexPrintf("Unable to open file: %s\n", file_name);
-        exit(EXIT_FAILURE);
+        omcFail("matRad:omc_matrad:outputFile",
+            "Unable to open file: %s", file_name);
     }
     
     /* Grid dimensions */
@@ -1405,105 +1250,6 @@ void outputResults(char *output_file, int iout, int nhist, int nbatch) {
     return;
 }
 
-/******************************************************************************/
-/* Region-by-region definitions */
-void initRegions() {
-    
-    /* +1 : consider region surrounding phantom */
-    int nreg = geometry.isize*geometry.jsize*geometry.ksize + 1;
-    
-    /* Allocate memory for region data */
-    /* The cut-offs are per medium and live inside the struct, so only these
-     two scale with the geometry. */
-    region.med = malloc(nreg*sizeof(int));
-    region.rhof = malloc(nreg*sizeof(double));
-    
-    /* First get global energy cutoff parameters */
-    char buffer[BUFFER_SIZE];
-    if (getInputValue(buffer, "global ecut") != 1) {
-        mexPrintf("Can not find 'global ecut' key on input file.\n");
-        exit(EXIT_FAILURE);
-    }
-    double ecut = atof(buffer);
-    
-    if (getInputValue(buffer, "global pcut") != 1) {
-        mexPrintf("Can not find 'global pcut' key on input file.\n");
-        exit(EXIT_FAILURE);
-    }
-    double pcut = atof(buffer);
-    
-    /* Transport cut-offs, per medium rather than per voxel. Slot 0 stands for
-     vacuum, so the table is indexed by medium + 1. Doing this once per medium
-     also means the warnings below are printed once each, rather than once per
-     voxel of the medium. */
-    region.pcut[0] = 0.0;
-    region.ecut[0] = 0.0;
-
-    for (int imed = 0; imed < media.nmed; imed++) {
-        /* Check if global cut-off values are within PEGS data */
-        if (pegs_data.ap[imed] <= pcut) {
-            region.pcut[imed + 1] = pcut;
-        } else {
-            mexPrintf("Warning!, global pcut value is below PEGS's pcut value "
-                   "%f for medium %d, using PEGS value.\n",
-                   pegs_data.ap[imed], imed);
-            region.pcut[imed + 1] = pegs_data.ap[imed];
-        }
-        if (pegs_data.ae[imed] <= ecut) {
-            region.ecut[imed + 1] = ecut;
-        } else {
-            mexPrintf("Warning!, global ecut value is below PEGS's ecut value "
-                   "%f for medium %d, using PEGS value.\n",
-                   pegs_data.ae[imed], imed);
-            region.ecut[imed + 1] = pegs_data.ae[imed];
-        }
-    }
-
-    /* Initialize transport parameters on each region. Region 0 is outside the
-     geometry */
-    region.med[0] = VACUUM;
-    region.rhof[0] = 0.0;
-
-    /* Largest density ratio per medium, the basis of the Woodcock majorant */
-    for (int imed = 0; imed < media.nmed; imed++) {
-        region.rhof_max[imed] = 0.0;
-    }
-
-    for (int i=1; i<nreg; i++) {
-
-        /* -1 : EGS counts media from 1. Substract 1 to get medium index */
-        int imed = geometry.med_indices[i - 1] - 1;
-
-        /* The cut-off tables are indexed by this, so a bad material index in
-         the input would read past them rather than merely give odd physics */
-        if (imed < VACUUM || imed >= media.nmed) {
-            mexErrMsgIdAndTxt("matRad:omc_matrad:Error",
-                "Voxel %d has material index %d, outside the %d media given.",
-                i - 1, imed + 1, media.nmed);
-        }
-
-        region.med[i] = imed;
-
-        if (imed == VACUUM) {
-            region.rhof[i] = 0.0F;
-        }
-        else {
-            if (geometry.med_densities[i - 1] == 0.0F) {
-                region.rhof[i] = 1.0;
-            }
-            else {
-                region.rhof[i] =
-                    geometry.med_densities[i - 1]/pegs_data.rho[imed];
-            }
-
-            if (region.rhof[i] > region.rhof_max[imed]) {
-                region.rhof_max[imed] = region.rhof[i];
-            }
-        }
-    }
-
-    return;
-}
 
 void initHistory(int ibeamlet) {
 
@@ -1848,6 +1594,9 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
 
     mexPrintf("Running ompMC version %s...\n", OMPMC_VERSION_STRING);
 
+    /* Route the shared code's diagnostics into MATLAB before anything that
+     might have something to report runs */
+    initHost();
 
     parseInput(nrhs, prhs);
     

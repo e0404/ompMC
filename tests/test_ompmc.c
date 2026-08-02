@@ -24,21 +24,13 @@
 
 /*******************************************************************************
 * ompmc.c is compiled into the same library as the code under test and refers
-* to these, so they have to exist even though most tests never reach them.
-* ausgab() is not among them: it comes from omc_score.c and is exercised
-* directly below.
+* to this, so it has to exist even though most tests never reach it. The
+* geometry hooks it also refers to -- howfar(), hownear(), regionIndex() --
+* used to be stubbed out here; they now come from omc_geom.c in the library
+* itself, and no test reaches them. ausgab() likewise comes from omc_score.c
+* and is exercised directly below.
 *******************************************************************************/
 int verbose_flag = 0;
-
-void howfar(int *idisc, int *irnew, double *ustep) {
-    (void)idisc; (void)irnew; (void)ustep;
-}
-double hownear(void) { return 0.0; }
-int regionIndex(double x, double y, double z) {
-    (void)x; (void)y; (void)z;
-    return 0;
-}
-void initRegions(void) { }
 
 /* The particle stack is thread local in the core library, so it has to be
  declared the same way here as the user codes do. */
