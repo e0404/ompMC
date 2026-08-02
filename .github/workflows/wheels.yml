@@ -69,6 +69,26 @@ jobs:
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
 
+      # A test process that dies from a signal rather than failing a test
+      # leaves nothing in the log: whatever it had written to stdout is still
+      # sitting in a buffer. macOS keeps a report for it with the termination
+      # reason and a backtrace of every thread, which is the only way to see
+      # what happened.
+      - name: Dump the macOS crash reports
+        if: failure() && runner.os == 'macOS'
+        run: |
+          shopt -s nullglob
+          reports=(~/Library/Logs/DiagnosticReports/*.ips)
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "no crash reports were written"
+            exit 0
+          fi
+          for f in "${reports[@]}"; do
+            echo "===================================================== $f"
+            head -c 40000 "$f"
+            echo
+          done
+
       - name: Upload the wheels
         uses: actions/upload-artifact@v7
         with:
