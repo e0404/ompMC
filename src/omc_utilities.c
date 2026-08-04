@@ -139,7 +139,9 @@ void parseInputFile(char *input_file) {
     fclose(fp);
     
     if(verbose_flag) {
-        for (int i = 0; i<input_idx; i++) {
+        /* input_idx is the index of the last pair, not a count, so the last
+         one has to be included here too */
+        for (int i = 0; i <= input_idx; i++) {
             printf("key = %s, value = %s\n", input_items[i].key,
                    input_items[i].value);
         }
@@ -153,12 +155,13 @@ void parseInputFile(char *input_file) {
 
 /* Copy the value of the selected input item to the char pointer */
 int getInputValue(char *dest, char *key) {
-    
-    /* Check to see if anything got parsed */
-    if (input_idx == 0) {
-        return 0;
-    }
-    
+
+    /* No "nothing got parsed" guard on input_idx here. It used to return early
+     when input_idx was 0, but parseInputFile() leaves input_idx at the index
+     of the LAST pair, so a file holding exactly one pair also ends at 0 and
+     every lookup against it failed. An empty table needs no guard: it either
+     leaves input_idx at -1, so the loop below does not run, or holds empty
+     keys, which no real key compares equal to. */
     for (int i = 0; i <= input_idx; i++) {
         /* Keys are stored trimmed, so exact comparison is safe. The substring
          match used before let a short key like "ecut" answer for
@@ -191,9 +194,13 @@ void omcSetInputValue(const char *key, const char *value) {
             key, INPUT_PAIRS);
     }
 
-    /* Index 0 is left empty by the file parser, which counts from 1 and uses
-     input_idx as the index of the last pair rather than as a count. Follow
-     that so the two ways of filling the table can be mixed. */
+    /* input_idx is the index of the last stored pair rather than a count --
+     that is what parseInputFile() leaves behind and what getInputValue()
+     scans up to -- so appending pre-increments. On a table that was never
+     filled this skips slot 0, which costs one of INPUT_PAIRS entries and is
+     otherwise harmless: its key stays the empty string and matches nothing.
+     Following the same convention is what lets the two ways of filling the
+     table be mixed. */
     input_idx++;
     strncpy(input_items[input_idx].key, key, BUFFER_SIZE - 1);
     input_items[input_idx].key[BUFFER_SIZE - 1] = '\0';

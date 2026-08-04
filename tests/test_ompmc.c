@@ -13,6 +13,9 @@
 *****************************************************************************/
 
 #include "ompmc.h"
+#include "omc_engine_cube.h"
+#include "omc_geom.h"
+#include "omc_host.h"
 #include "omc_random.h"
 #include "omc_score.h"
 #include "omc_utilities.h"
@@ -618,6 +621,316 @@ static void test_reset_beam_score_clears_both_accumulators(void) {
 }
 
 /*******************************************************************************
+* Input item table (omc_utilities.c)
+*
+* parseInputFile() leaves input_idx at the INDEX OF THE LAST pair, not at a
+* count, and the lookups scan 0..input_idx inclusive. The tests below pin that
+* convention down at both ends, because the two differ by one exactly when the
+* table holds a single pair -- which is where the lookup used to give up.
+*******************************************************************************/
+
+/* Write an input deck next to the test executable and parse it back. The name
+ is given to parseInputFile() without the extension, the way the user codes
+ pass -i. */
+static void writeAndParse(const char *stem, const char *contents) {
+
+    char path[256];
+    snprintf(path, sizeof(path), "%s%s", stem, INPUT_EXT);
+
+    FILE *fp = fopen(path, "w");
+    if (fp == NULL) {
+        printf("  FAIL cannot write %s\n", path);
+        tests_failed++;
+        return;
+    }
+    fputs(contents, fp);
+    fclose(fp);
+
+    /* parseInputFile() appends from wherever input_idx already stands, so the
+     table has to start empty for the count to mean anything. */
+    omcClearInputValues();
+
+    char stem_buf[256];
+    snprintf(stem_buf, sizeof(stem_buf), "%s", stem);
+    parseInputFile(stem_buf);
+
+    remove(path);
+}
+
+/* The regression test for the "check to see if anything got parsed" early
+ return: one pair leaves input_idx == 0, which that guard could not tell apart
+ from an empty table, so every lookup against a one line deck failed. */
+static void test_input_value_finds_a_single_parsed_pair(void) {
+
+    writeAndParse("test_input_one", "ncase = 4242\n");
+
+    CHECK(input_idx == 0);
+
+    char value[BUFFER_SIZE] = "";
+    CHECK(getInputValue(value, "ncase") == 1);
+    CHECK(strcmp(value, "4242") == 0);
+
+    omcClearInputValues();
+}
+
+static void test_input_value_finds_every_parsed_pair(void) {
+
+    writeAndParse("test_input_many",
+                  "# a comment line, skipped\n"
+                  "ncase = 20000\n"
+                  "\n"
+                  "  global ecut =  0.700  \n"
+                  "charge = -1\n");
+
+    /* Three pairs, so the last one sits at index 2 */
+    CHECK(input_idx == 2);
+
+    char value[BUFFER_SIZE];
+
+    /* Including the last pair, which the scan has to reach */
+    CHECK(getInputValue(value, "charge") == 1);
+    CHECK(strcmp(value, "-1") == 0);
+
+    /* And the first */
+    CHECK(getInputValue(value, "ncase") == 1);
+    CHECK(strcmp(value, "20000") == 0);
+
+    /* Keys and values are stored trimmed */
+    CHECK(getInputValue(value, "global ecut") == 1);
+    CHECK(strcmp(value, "0.700") == 0);
+
+    /* A short key must not answer for a longer one it is a substring of */
+    CHECK(getInputValue(value, "ecut") == 0);
+    CHECK(getInputValue(value, "nbatch") == 0);
+
+    omcClearInputValues();
+}
+
+/* An empty table has to answer "not found" rather than read a stale or
+ uninitialised slot -- that is the job the removed guard was doing badly. */
+static void test_input_value_on_an_empty_table(void) {
+
+    omcClearInputValues();
+
+    char value[BUFFER_SIZE] = "untouched";
+    CHECK(getInputValue(value, "ncase") == 0);
+    CHECK(strcmp(value, "untouched") == 0);
+}
+
+/* Programmatic filling follows the same convention, so a single pair set that
+ way is equally findable, and the two ways of filling can be mixed. */
+static void test_set_input_value_round_trips(void) {
+
+    omcClearInputValues();
+
+    omcSetInputValue("ncase", "10");
+    char value[BUFFER_SIZE] = "";
+    CHECK(getInputValue(value, "ncase") == 1);
+    CHECK(strcmp(value, "10") == 0);
+
+    /* Setting a known key replaces rather than appends */
+    int idx_before = input_idx;
+    omcSetInputValue("ncase", "20");
+    CHECK(input_idx == idx_before);
+    CHECK(getInputValue(value, "ncase") == 1);
+    CHECK(strcmp(value, "20") == 0);
+
+    omcSetInputValue("charge", "0");
+    CHECK(getInputValue(value, "charge") == 1);
+    CHECK(strcmp(value, "0") == 0);
+    CHECK(getInputValue(value, "ncase") == 1);
+    CHECK(strcmp(value, "20") == 0);
+
+    omcClearInputValues();
+    CHECK(getInputValue(value, "ncase") == 0);
+    CHECK(getInputValue(value, "charge") == 0);
+}
+
+/* A deck parsed from file and then overridden programmatically, which is what
+ a host does when it takes a deck and changes one setting. */
+static void test_set_input_value_appends_after_a_parsed_file(void) {
+
+    writeAndParse("test_input_mixed", "ncase = 100\n");
+
+    omcSetInputValue("charge", "-1");
+
+    char value[BUFFER_SIZE];
+    CHECK(getInputValue(value, "ncase") == 1);
+    CHECK(strcmp(value, "100") == 0);
+    CHECK(getInputValue(value, "charge") == 1);
+    CHECK(strcmp(value, "-1") == 0);
+
+    /* Replacing the parsed pair works too */
+    omcSetInputValue("ncase", "200");
+    CHECK(getInputValue(value, "ncase") == 1);
+    CHECK(strcmp(value, "200") == 0);
+
+    omcClearInputValues();
+}
+
+/*******************************************************************************
+* SSD source field indices (omc_engine_cube.c)
+*
+* omcSsdSourceInit() turns the collimator rectangle into the voxel index range
+* it covers. The upper index search used to start one below the lower index,
+* which reads xbounds[-1] whenever the field reaches the edge of the phantom --
+* the ordinary case, since the rectangle is clamped to the phantom first.
+*******************************************************************************/
+
+enum { FIELD_NX = 8, FIELD_NY = 6 };
+
+/* Bounds arrays with one guard element in front, so that xbounds[-1] is a
+ defined read with a value chosen to be caught rather than tolerated: it is
+ above every field edge used below, so the pre-fix loop would find its first
+ condition false straight away and leave the upper index at -1. */
+static double field_xstore[FIELD_NX + 2];
+static double field_ystore[FIELD_NY + 2];
+
+#define FIELD_GUARD 1.0e30
+
+static void silentLog(int level, const char *message, void *user) {
+    (void)level; (void)message; (void)user;
+}
+
+static void setUpFieldGeometry(void) {
+
+    field_xstore[0] = FIELD_GUARD;
+    for (int i = 0; i <= FIELD_NX; i++) {
+        field_xstore[i + 1] = -4.0 + 1.0*i;     /* -4 .. 4, 1 cm voxels */
+    }
+
+    field_ystore[0] = FIELD_GUARD;
+    for (int j = 0; j <= FIELD_NY; j++) {
+        field_ystore[j + 1] = -3.0 + 1.0*j;     /* -3 .. 3, 1 cm voxels */
+    }
+
+    geometry.isize = FIELD_NX;
+    geometry.jsize = FIELD_NY;
+    geometry.xbounds = &field_xstore[1];
+    geometry.ybounds = &field_ystore[1];
+
+    /* omcSsdSourceInit() logs the ranges it found; the test does not need to
+     see them. */
+    struct OmcHost quiet = {silentLog, NULL, NULL};
+    omcSetHost(&quiet);
+}
+
+static void tearDownFieldGeometry(void) {
+
+    omcSetHost(NULL);
+    geometry.xbounds = NULL;
+    geometry.ybounds = NULL;
+    geometry.isize = 0;
+    geometry.jsize = 0;
+
+    /* The guards must still be intact: nothing may write through xbounds[-1] */
+    CHECK(field_xstore[0] == FIELD_GUARD);
+    CHECK(field_ystore[0] == FIELD_GUARD);
+}
+
+/* The regression test. A field flush against the low edge of the phantom
+ leaves the lower index at 0, which is where the old seed of "lower index - 1"
+ went out of bounds. */
+static void test_ssd_source_field_at_the_low_phantom_edge(void) {
+
+    setUpFieldGeometry();
+
+    struct OmcSsdSource src = {0};
+    src.ssd = 90.0;
+    src.xinl = -4.0;    /* exactly xbounds[0] */
+    src.xinu = -2.0;    /* end of the second voxel */
+    src.yinl = -3.0;    /* exactly ybounds[0] */
+    src.yinu = -1.0;
+
+    omcSsdSourceInit(&src);
+
+    CHECK(src.ixinl == 0);
+    CHECK(src.ixinu == 1);
+    CHECK(src.iyinl == 0);
+    CHECK(src.iyinu == 1);
+
+    CHECK_CLOSE(src.xsize, 2.0, 1.0e-12);
+    CHECK_CLOSE(src.ysize, 2.0, 1.0e-12);
+
+    tearDownFieldGeometry();
+}
+
+/* A field that starts below the phantom is clamped to it, and lands in the
+ same place as one starting exactly on the edge. */
+static void test_ssd_source_field_is_clamped_to_the_phantom(void) {
+
+    setUpFieldGeometry();
+
+    struct OmcSsdSource src = {0};
+    src.xinl = -50.0;
+    src.xinu =  50.0;
+    src.yinl = -50.0;
+    src.yinu =  50.0;
+
+    omcSsdSourceInit(&src);
+
+    /* The whole phantom, and no index past the last voxel */
+    CHECK(src.ixinl == 0);
+    CHECK(src.ixinu == FIELD_NX - 1);
+    CHECK(src.iyinl == 0);
+    CHECK(src.iyinu == FIELD_NY - 1);
+
+    CHECK_CLOSE(src.xinl, -4.0, 1.0e-12);
+    CHECK_CLOSE(src.xinu,  4.0, 1.0e-12);
+    CHECK_CLOSE(src.xsize, 8.0, 1.0e-12);
+    CHECK_CLOSE(src.ysize, 6.0, 1.0e-12);
+
+    tearDownFieldGeometry();
+}
+
+/* Away from the edge the result is unchanged from what the old seed produced,
+ which is the other half of the fix being a no-op there. */
+static void test_ssd_source_field_inside_the_phantom(void) {
+
+    setUpFieldGeometry();
+
+    struct OmcSsdSource src = {0};
+    src.xinl = -1.5;    /* inside voxel 2, spanning -2 .. -1 */
+    src.xinu =  2.5;    /* inside voxel 6, spanning  2 ..  3 */
+    src.yinl = -0.5;    /* inside voxel 2, spanning -1 ..  0 */
+    src.yinu =  1.5;    /* inside voxel 4, spanning  1 ..  2 */
+
+    omcSsdSourceInit(&src);
+
+    CHECK(src.ixinl == 2);
+    CHECK(src.ixinu == 6);
+    CHECK(src.iyinl == 2);
+    CHECK(src.iyinu == 4);
+
+    tearDownFieldGeometry();
+}
+
+/* A zero width rectangle is the documented way to ask for a pencil beam, and
+ an upper edge below the lower one is normalised to one. */
+static void test_ssd_source_pencil_beam(void) {
+
+    setUpFieldGeometry();
+
+    struct OmcSsdSource src = {0};
+    src.xinl = -4.0;
+    src.xinu = -4.0;    /* zero width against the low edge */
+    src.yinl =  0.5;
+    src.yinu = -7.0;    /* upper below lower, and below the phantom */
+
+    omcSsdSourceInit(&src);
+
+    CHECK(src.ixinl == 0);
+    CHECK(src.ixinu == 0);
+    CHECK(src.ixinu >= src.ixinl);
+
+    CHECK(src.iyinu >= src.iyinl);
+    CHECK_CLOSE(src.xsize, 0.0, 1.0e-12);
+    CHECK_CLOSE(src.ysize, 0.0, 1.0e-12);
+
+    tearDownFieldGeometry();
+}
+
+/*******************************************************************************
 * Klein-Nishina total cross section (ompmc.c)
 *******************************************************************************/
 static void test_kn_sigma0_is_positive_and_falls_with_energy(void) {
@@ -668,6 +981,17 @@ int main(void) {
     RUN(test_score_tracks_touched_voxels_only);
     RUN(test_score_beam_voxels_are_sorted_and_unique);
     RUN(test_reset_beam_score_clears_both_accumulators);
+
+    RUN(test_input_value_finds_a_single_parsed_pair);
+    RUN(test_input_value_finds_every_parsed_pair);
+    RUN(test_input_value_on_an_empty_table);
+    RUN(test_set_input_value_round_trips);
+    RUN(test_set_input_value_appends_after_a_parsed_file);
+
+    RUN(test_ssd_source_field_at_the_low_phantom_edge);
+    RUN(test_ssd_source_field_is_clamped_to_the_phantom);
+    RUN(test_ssd_source_field_inside_the_phantom);
+    RUN(test_ssd_source_pencil_beam);
 
     RUN(test_kn_sigma0_is_positive_and_falls_with_energy);
 

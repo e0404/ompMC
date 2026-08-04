@@ -75,7 +75,14 @@ void omcSsdSourceInit(struct OmcSsdSource *src) {
         src->ixinl++;
     }
 
-    src->ixinu = src->ixinl - 1;
+    /* The upper index is never below the lower one, so start the search at
+     ixinl. Starting one below it, as this used to, reads xbounds[-1] whenever
+     the field begins at or before the first boundary -- which is the ordinary
+     case, since xinl was just clamped up to xbounds[0]. For ixinl > 0 the two
+     are equivalent: at ixinl - 1 both loop conditions hold by construction
+     (xbounds[ixinl - 1] <= xinl <= xinu and xbounds[ixinl] < xinl <= xinu),
+     so the first iteration only ever steps back up to ixinl. */
+    src->ixinu = src->ixinl;
     while ((geometry.xbounds[src->ixinu] <= src->xinu) &&
            (geometry.xbounds[src->ixinu + 1] < src->xinu)) {
         src->ixinu++;
@@ -105,12 +112,13 @@ void omcSsdSourceInit(struct OmcSsdSource *src) {
            (geometry.ybounds[src->iyinl + 1] < src->yinl)) {
         src->iyinl++;
     }
-    src->iyinu = src->iyinl - 1;
+    /* Starts at iyinl for the same reason the x search above does */
+    src->iyinu = src->iyinl;
     while ((geometry.ybounds[src->iyinu] <= src->yinu) &&
            (geometry.ybounds[src->iyinu + 1] < src->yinu)) {
         src->iyinu++;
     }
-    omcLog(OMC_LOG_INFO, "j index ranges over i = %d to %d",
+    omcLog(OMC_LOG_INFO, "j index ranges over j = %d to %d",
            src->iyinl, src->iyinu);
 
     /* Calculate collimator sizes */
