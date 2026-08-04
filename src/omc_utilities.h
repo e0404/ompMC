@@ -73,6 +73,19 @@ struct inputItems {
     char value[BUFFER_SIZE];
 };
 
+/* The key/value table itself. Declared here rather than left for each user
+ code to declare extern for itself, because that is how the two halves of the
+ invariant below drifted apart in the first place.
+
+ input_idx is the NUMBER of pairs stored, and they occupy input_items[0] up to
+ input_items[input_idx - 1]. An empty table is input_idx == 0, with no slot to
+ look at -- which is what makes "is this table empty" answerable at all.
+
+ Anything filling the table directly rather than through omcSetInputValue()
+ has to leave it that way. */
+extern struct inputItems input_items[INPUT_PAIRS];
+extern int input_idx;
+
 
 /******************************************************************************/
 

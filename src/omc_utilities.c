@@ -35,8 +35,13 @@
     #define printf(...) fprintf(stderr,__VA_ARGS__)
 #endif
 
-struct inputItems input_items[];     // key,value pairs
-int input_idx;                       // number of key,value pair
+/* The one definition of the table omc_utilities.h declares. It used to be
+ written twice in this file: a tentative definition of incomplete type here,
+ and the real one at the bottom. Legal C, since the type is completed before
+ the end of the translation unit, but there is no reason to make a reader work
+ that out. */
+struct inputItems input_items[INPUT_PAIRS];     // key,value pairs
+int input_idx = 0;                              // number of key,value pairs
 
 /* Thread-local geometry memo declared in omc_utilities.h. Zero initialized,
  which marks both halves as empty. */
@@ -135,13 +140,14 @@ void parseInputFile(char *input_file) {
         input_idx++;
     }
 
-    input_idx--;
+    /* No decrement here. This used to leave input_idx at the index of the last
+     pair while every other way of filling the table left a count, and the two
+     differ by one exactly when the file holds a single pair -- which is the
+     case whose lookups then failed. */
     fclose(fp);
-    
+
     if(verbose_flag) {
-        /* input_idx is the index of the last pair, not a count, so the last
-         one has to be included here too */
-        for (int i = 0; i <= input_idx; i++) {
+        for (int i = 0; i < input_idx; i++) {
             printf("key = %s, value = %s\n", input_items[i].key,
                    input_items[i].value);
         }
@@ -157,12 +163,11 @@ void parseInputFile(char *input_file) {
 int getInputValue(char *dest, char *key) {
 
     /* No "nothing got parsed" guard on input_idx here. It used to return early
-     when input_idx was 0, but parseInputFile() leaves input_idx at the index
-     of the LAST pair, so a file holding exactly one pair also ends at 0 and
-     every lookup against it failed. An empty table needs no guard: it either
-     leaves input_idx at -1, so the loop below does not run, or holds empty
-     keys, which no real key compares equal to. */
-    for (int i = 0; i <= input_idx; i++) {
+     when input_idx was 0, which a one pair table was indistinguishable from
+     back when this counted to the last index instead of counting pairs. Now
+     that input_idx is a count, an empty table is 0 and the loop simply does
+     not run. */
+    for (int i = 0; i < input_idx; i++) {
         /* Keys are stored trimmed, so exact comparison is safe. The substring
          match used before let a short key like "ecut" answer for
          "global ecut", depending only on storage order. */
@@ -177,10 +182,10 @@ int getInputValue(char *dest, char *key) {
 
 void omcSetInputValue(const char *key, const char *value) {
 
-    /* Replace the value if this key is already known. getInputValue() walks
-     up to and including input_idx, so a duplicate would be found only by
-     storage order. */
-    for (int i = 0; i <= input_idx && i < INPUT_PAIRS; i++) {
+    /* Replace the value if this key is already known, so that a host can
+     override one setting of a deck it just parsed without the table growing a
+     second entry that only storage order would decide between. */
+    for (int i = 0; i < input_idx; i++) {
         if (strcmp(input_items[i].key, key) == 0) {
             strncpy(input_items[i].value, value, BUFFER_SIZE - 1);
             input_items[i].value[BUFFER_SIZE - 1] = '\0';
@@ -188,24 +193,21 @@ void omcSetInputValue(const char *key, const char *value) {
         }
     }
 
-    if (input_idx >= INPUT_PAIRS - 1) {
+    if (input_idx >= INPUT_PAIRS) {
         omcFail("ompMC:input:tooManyItems",
             "Cannot store input item '%s': the table holds at most %d pairs.",
             key, INPUT_PAIRS);
     }
 
-    /* input_idx is the index of the last stored pair rather than a count --
-     that is what parseInputFile() leaves behind and what getInputValue()
-     scans up to -- so appending pre-increments. On a table that was never
-     filled this skips slot 0, which costs one of INPUT_PAIRS entries and is
-     otherwise harmless: its key stays the empty string and matches nothing.
-     Following the same convention is what lets the two ways of filling the
-     table be mixed. */
-    input_idx++;
+    /* Append at the count and then raise it, so the first pair set on a
+     cleared table lands in slot 0. Pre-incrementing instead, as this used to,
+     left slot 0 permanently empty and the table one pair short of the
+     INPUT_PAIRS it advertises. */
     strncpy(input_items[input_idx].key, key, BUFFER_SIZE - 1);
     input_items[input_idx].key[BUFFER_SIZE - 1] = '\0';
     strncpy(input_items[input_idx].value, value, BUFFER_SIZE - 1);
     input_items[input_idx].value[BUFFER_SIZE - 1] = '\0';
+    input_idx++;
 
     return;
 }
@@ -254,8 +256,5 @@ int lineBlack(char *line) {
     *str_trimmed = '\0';
     return;
 }
-
-struct inputItems input_items[INPUT_PAIRS];     // key,value pairs
-int input_idx = 0;                              // number of key,value pair
 
 /******************************************************************************/

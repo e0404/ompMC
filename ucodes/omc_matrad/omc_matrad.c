@@ -81,9 +81,6 @@ mxArray *progressCallback;
  fills from mcGeo, and the input items it fills from mcOpt. */
 extern struct Media media;
 
-extern struct inputItems input_items[];     // key,value pairs
-extern int input_idx;                       // number of key,value pair
-
 /* Everything parsed out of the MC options struct that the engine does not
  take through struct OmcDijOptions: where the spectrum comes from, and the
  file paths. */
@@ -388,7 +385,12 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
 
     mxArray* tmp2;
     int status;
-    int nInput = 0;
+
+    /* Every block below raises nInput before it writes, so starting one below
+     zero is what puts the first pair in slot 0. It used to start at 0 and
+     leave that slot empty, which only worked because the lookup scanned one
+     past the last pair; input_idx is a count now (see omc_utilities.h). */
+    int nInput = -1;
         
     tmp_fieldpointer = mxGetField(mcOpt,0,"nHistories");
 
@@ -634,12 +636,13 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
         dijOptions.relDoseThreshold = mxGetScalar(tmp_fieldpointer);
     
     
-    input_idx = nInput;
-    
+    /* nInput is the index the last block wrote, so the count is one more */
+    input_idx = nInput + 1;
+
     if (verbose_flag > 1)
     {
         mexPrintf("Input Options:\n");
-        for (int iInput = 0; iInput < nInput; iInput++)
+        for (int iInput = 0; iInput < input_idx; iInput++)
             mexPrintf("%s: %s\n",input_items[iInput].key,input_items[iInput].value);
     }
           

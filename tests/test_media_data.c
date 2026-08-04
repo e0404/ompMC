@@ -41,8 +41,6 @@ int verbose_flag = 0;
 extern struct Media media;
 extern struct Photon photon_data;
 extern struct Rayleigh rayleigh_data;
-extern struct inputItems input_items[];
-extern int input_idx;
 
 /*******************************************************************************
 * Assertion harness

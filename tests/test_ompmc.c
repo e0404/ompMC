@@ -192,13 +192,10 @@ static void test_heap_sort_orders_values_and_indices(void) {
 
 /* initRandom() reads its seeds through getInputValue(), so stage them the way
  the user codes do rather than parsing a file. */
-extern struct inputItems input_items[];
-extern int input_idx;
-
 static void seedRandom(const char *seeds) {
     strcpy(input_items[0].key, "rng seeds");
     strcpy(input_items[0].value, seeds);
-    input_idx = 1;
+    input_idx = 1;      /* one pair, in slot 0 */
     initRandom();
     setRandomHistory(0);
 }
@@ -623,10 +620,12 @@ static void test_reset_beam_score_clears_both_accumulators(void) {
 /*******************************************************************************
 * Input item table (omc_utilities.c)
 *
-* parseInputFile() leaves input_idx at the INDEX OF THE LAST pair, not at a
-* count, and the lookups scan 0..input_idx inclusive. The tests below pin that
-* convention down at both ends, because the two differ by one exactly when the
-* table holds a single pair -- which is where the lookup used to give up.
+* input_idx is the NUMBER of pairs stored, in slots 0..input_idx-1, however
+* the table was filled. The tests below pin that down at both ends: the table
+* used to be filled two different ways -- the file parser counting to the last
+* index, everything else counting pairs -- which agreed only when there were
+* at least two of them, and papered over the difference with a lookup that
+* scanned one slot past the end.
 *******************************************************************************/
 
 /* Write an input deck next to the test executable and parse it back. The name
@@ -658,13 +657,14 @@ static void writeAndParse(const char *stem, const char *contents) {
 }
 
 /* The regression test for the "check to see if anything got parsed" early
- return: one pair leaves input_idx == 0, which that guard could not tell apart
- from an empty table, so every lookup against a one line deck failed. */
+ return: one pair used to leave input_idx == 0, which that guard could not
+ tell apart from an empty table, so every lookup against a one line deck
+ failed. */
 static void test_input_value_finds_a_single_parsed_pair(void) {
 
     writeAndParse("test_input_one", "ncase = 4242\n");
 
-    CHECK(input_idx == 0);
+    CHECK(input_idx == 1);
 
     char value[BUFFER_SIZE] = "";
     CHECK(getInputValue(value, "ncase") == 1);
@@ -682,8 +682,8 @@ static void test_input_value_finds_every_parsed_pair(void) {
                   "  global ecut =  0.700  \n"
                   "charge = -1\n");
 
-    /* Three pairs, so the last one sits at index 2 */
-    CHECK(input_idx == 2);
+    /* Three pairs, in slots 0, 1 and 2 */
+    CHECK(input_idx == 3);
 
     char value[BUFFER_SIZE];
 
@@ -724,6 +724,12 @@ static void test_set_input_value_round_trips(void) {
     omcClearInputValues();
 
     omcSetInputValue("ncase", "10");
+
+    /* The first pair set on a cleared table goes into slot 0. Pre-incrementing
+     instead left that slot permanently empty, costing one of INPUT_PAIRS. */
+    CHECK(input_idx == 1);
+    CHECK(strcmp(input_items[0].key, "ncase") == 0);
+
     char value[BUFFER_SIZE] = "";
     CHECK(getInputValue(value, "ncase") == 1);
     CHECK(strcmp(value, "10") == 0);
@@ -744,6 +750,66 @@ static void test_set_input_value_round_trips(void) {
     omcClearInputValues();
     CHECK(getInputValue(value, "ncase") == 0);
     CHECK(getInputValue(value, "charge") == 0);
+}
+
+/* The table has to hold the INPUT_PAIRS it advertises, all of them reachable.
+ Skipping slot 0 quietly made the real capacity one less. */
+static void test_set_input_value_fills_the_whole_table(void) {
+
+    omcClearInputValues();
+
+    char key[BUFFER_SIZE], value[BUFFER_SIZE];
+    for (int i = 0; i < INPUT_PAIRS; i++) {
+        snprintf(key, sizeof(key), "key%d", i);
+        snprintf(value, sizeof(value), "%d", i);
+        omcSetInputValue(key, value);
+    }
+
+    CHECK(input_idx == INPUT_PAIRS);
+
+    /* Every one of them still findable, the first and the last included */
+    for (int i = 0; i < INPUT_PAIRS; i++) {
+        snprintf(key, sizeof(key), "key%d", i);
+        char expect[BUFFER_SIZE];
+        snprintf(expect, sizeof(expect), "%d", i);
+
+        value[0] = '\0';
+        CHECK(getInputValue(value, key) == 1);
+        CHECK(strcmp(value, expect) == 0);
+    }
+
+    /* A full table still replaces rather than overflowing */
+    omcSetInputValue("key0", "replaced");
+    CHECK(input_idx == INPUT_PAIRS);
+    CHECK(getInputValue(value, "key0") == 1);
+    CHECK(strcmp(value, "replaced") == 0);
+
+    omcClearInputValues();
+}
+
+/* A cleared table is empty, not "one empty pair" -- the distinction the count
+ exists to make. */
+static void test_clear_input_values_empties_the_table(void) {
+
+    omcSetInputValue("ncase", "10");
+    omcSetInputValue("charge", "0");
+    CHECK(input_idx > 0);
+
+    omcClearInputValues();
+    CHECK(input_idx == 0);
+
+    /* And the next pair set starts again from slot 0 rather than after the
+     pairs that are gone */
+    omcSetInputValue("charge", "-1");
+    CHECK(input_idx == 1);
+    CHECK(strcmp(input_items[0].key, "charge") == 0);
+
+    char value[BUFFER_SIZE];
+    CHECK(getInputValue(value, "ncase") == 0);
+    CHECK(getInputValue(value, "charge") == 1);
+    CHECK(strcmp(value, "-1") == 0);
+
+    omcClearInputValues();
 }
 
 /* A deck parsed from file and then overridden programmatically, which is what
@@ -986,6 +1052,8 @@ int main(void) {
     RUN(test_input_value_finds_every_parsed_pair);
     RUN(test_input_value_on_an_empty_table);
     RUN(test_set_input_value_round_trips);
+    RUN(test_set_input_value_fills_the_whole_table);
+    RUN(test_clear_input_values_empties_the_table);
     RUN(test_set_input_value_appends_after_a_parsed_file);
 
     RUN(test_ssd_source_field_at_the_low_phantom_edge);

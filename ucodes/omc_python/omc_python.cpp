@@ -503,7 +503,7 @@ NB_MODULE(_ompmc, m) {
         [](Cube density, IntCube material, Vector x_bounds, Vector y_bounds,
            Vector z_bounds, std::vector<std::string> materials,
            IntVector i_beam, Triples source, Triples corner, Triples side1,
-           Triples side2, nb::dict options, nb::dict input_items,
+           Triples side2, nb::dict options, nb::dict inputItems,
            nb::dict spectrum, nb::object progress, int verbosity) {
 
         /* --- everything in this block runs with the GIL held --- */
@@ -562,7 +562,7 @@ NB_MODULE(_ompmc, m) {
 
         installHost();
         verbose_flag = verbosity;
-        applyInputItems(input_items);
+        applyInputItems(inputItems);
 
         DijContext ctx;
         ctx.wantVariance = opt.wantVariance != 0;
@@ -606,7 +606,7 @@ NB_MODULE(_ompmc, m) {
     m.def("calc_cube",
         [](Cube density, IntCube material, Vector x_bounds, Vector y_bounds,
            Vector z_bounds, std::vector<std::string> materials,
-           nb::dict options, nb::dict input_items, nb::dict spectrum,
+           nb::dict options, nb::dict inputItems, nb::dict spectrum,
            nb::object progress, int verbosity) {
 
         GeometryInput geo = parseGeometry(density, material, x_bounds,
@@ -630,7 +630,7 @@ NB_MODULE(_ompmc, m) {
 
         installHost();
         verbose_flag = verbosity;
-        applyInputItems(input_items);
+        applyInputItems(inputItems);
 
         const size_t gridsize = (size_t)geo.isize*(size_t)geo.jsize
                                 *(size_t)geo.ksize;
