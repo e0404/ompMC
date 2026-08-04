@@ -245,6 +245,24 @@ static void accumulateResults(int nhist, int nbatch,
         for (int iy=0; iy<geometry.jsize; iy++) {
             for (int ix=0; ix<geometry.isize; ix++) {
                 irl = 1 + ix + iy*imax + iz*ijmax;
+
+                /* Nothing is reported in air, so decide that before the
+                 conversion below rather than by overwriting its result
+                 afterwards. A voxel of density 0 -- vacuum, which a host
+                 handing over its own density cube may well contain -- gives a
+                 mass of 0, and the Gy conversion then divided by it. The
+                 answer stored was still right, because this test overwrote
+                 it, but the division raised the divide by zero flag (and, for
+                 a voxel that collected nothing, the invalid flag on the 0*inf
+                 that followed) for a result that was thrown away. */
+                if (geometry.med_densities[irl-1] < 0.044) {
+                    dose[irl - 1] = 0.0;
+                    if (uncertainty) {
+                        uncertainty[irl - 1] = 0.9999999;
+                    }
+                    continue;
+                }
+
                 endep = score.accum_endep[irl];
                 endep2 = score.accum_endep2[irl];
 
@@ -283,12 +301,6 @@ static void accumulateResults(int nhist, int nbatch,
 
                 } else {    /* Output mean deposited energy */
                     endep /= inc_fluence;
-                }
-
-                /* Zero dose in air */
-                if(geometry.med_densities[irl-1] < 0.044) {
-                    endep = 0.0;
-                    unc_endep = 0.9999999;
                 }
 
                 /* Store output quantities */
