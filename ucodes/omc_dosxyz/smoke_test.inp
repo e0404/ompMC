@@ -11,7 +11,7 @@ mono energy = 6.0
 charge = 0
 collimator bounds = -2.5 2.5 -2.5 2.5
 ssd = 90.0
-# end source definition
+# stop source definition
 
 # start MC control
 ncase  = 20000
@@ -39,4 +39,4 @@ esave = 2.0
 # start ompMC environment
 data folder = ./data/
 output folder = ./output/
-# start ompMC environment
+# stop ompMC environment
