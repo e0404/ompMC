@@ -21,6 +21,7 @@
 #include "omc_utilities.h"
 
 #include <math.h>
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -618,6 +619,40 @@ static void test_reset_beam_score_clears_both_accumulators(void) {
 }
 
 /*******************************************************************************
+* A host whose sinks the tests can see
+*
+* omcFail() must not return, so a test that wants to reach one has to give it
+* somewhere to go. omc_host.h names longjmp() as how an embedded host ends a
+* failure without taking the process with it, which is what the Python module
+* does; this is the same thing on a smaller scale.
+*******************************************************************************/
+
+static void silentLog(int level, const char *message, void *user) {
+    (void)level; (void)message; (void)user;
+}
+
+static jmp_buf fail_jmp;
+static char fail_id[128];
+static int fail_seen;
+
+static void catchingFail(const char *id, const char *message, void *user) {
+
+    (void)message; (void)user;
+    snprintf(fail_id, sizeof(fail_id), "%s", id != NULL ? id : "");
+    fail_seen = 1;
+    longjmp(fail_jmp, 1);
+}
+
+static void installFailCatcher(void) {
+
+    fail_seen = 0;
+    fail_id[0] = '\0';
+
+    struct OmcHost catcher = {silentLog, catchingFail, NULL};
+    omcSetHost(&catcher);
+}
+
+/*******************************************************************************
 * Input item table (omc_utilities.c)
 *
 * input_idx is the NUMBER of pairs stored, in slots 0..input_idx-1, however
@@ -628,10 +663,9 @@ static void test_reset_beam_score_clears_both_accumulators(void) {
 * scanned one slot past the end.
 *******************************************************************************/
 
-/* Write an input deck next to the test executable and parse it back. The name
- is given to parseInputFile() without the extension, the way the user codes
- pass -i. */
-static void writeAndParse(const char *stem, const char *contents) {
+/* Write an input deck next to the test executable. The name is given to
+ parseInputFile() without the extension, the way the user codes pass -i. */
+static int writeDeck(const char *stem, const char *contents) {
 
     char path[256];
     snprintf(path, sizeof(path), "%s%s", stem, INPUT_EXT);
@@ -640,10 +674,26 @@ static void writeAndParse(const char *stem, const char *contents) {
     if (fp == NULL) {
         printf("  FAIL cannot write %s\n", path);
         tests_failed++;
-        return;
+        return 0;
     }
     fputs(contents, fp);
     fclose(fp);
+
+    return 1;
+}
+
+static void removeDeck(const char *stem) {
+
+    char path[256];
+    snprintf(path, sizeof(path), "%s%s", stem, INPUT_EXT);
+    remove(path);
+}
+
+static void writeAndParse(const char *stem, const char *contents) {
+
+    if (!writeDeck(stem, contents)) {
+        return;
+    }
 
     /* parseInputFile() appends from wherever input_idx already stands, so the
      table has to start empty for the count to mean anything. */
@@ -653,7 +703,7 @@ static void writeAndParse(const char *stem, const char *contents) {
     snprintf(stem_buf, sizeof(stem_buf), "%s", stem);
     parseInputFile(stem_buf);
 
-    remove(path);
+    removeDeck(stem);
 }
 
 /* The regression test for the "check to see if anything got parsed" early
@@ -812,6 +862,79 @@ static void test_clear_input_values_empties_the_table(void) {
     omcClearInputValues();
 }
 
+/* A deck with more pairs than the table holds used to be written straight
+ past the end of input_items. It has to stop at the edge and say so. */
+static void test_parse_input_file_rejects_an_overfull_deck(void) {
+
+    /* One line per slot, plus a few the table cannot take */
+    char deck[(INPUT_PAIRS + 4)*24];
+    size_t used = 0;
+    for (int i = 0; i < INPUT_PAIRS + 4; i++) {
+        used += (size_t)snprintf(deck + used, sizeof(deck) - used,
+                                 "key%d = %d\n", i, i);
+    }
+
+    if (!writeDeck("test_input_overfull", deck)) {
+        return;
+    }
+
+    omcClearInputValues();
+    installFailCatcher();
+
+    char stem[256];
+    snprintf(stem, sizeof(stem), "%s", "test_input_overfull");
+
+    if (setjmp(fail_jmp) == 0) {
+        parseInputFile(stem);
+        CHECK(!"parseInputFile() accepted more pairs than the table holds");
+    }
+
+    omcSetHost(NULL);
+
+    CHECK(fail_seen == 1);
+    CHECK(strcmp(fail_id, "ompMC:input:tooManyItems") == 0);
+
+    /* Filled to the brim and not one past it */
+    CHECK(input_idx == INPUT_PAIRS);
+
+    /* What did fit is intact, so the message is about a full table rather
+     than about whatever the overflow had already scribbled over */
+    char value[BUFFER_SIZE];
+    CHECK(getInputValue(value, "key0") == 1);
+    CHECK(strcmp(value, "0") == 0);
+
+    removeDeck("test_input_overfull");
+    omcClearInputValues();
+}
+
+/* The same edge from the programmatic side */
+static void test_set_input_value_rejects_one_pair_too_many(void) {
+
+    omcClearInputValues();
+
+    char key[BUFFER_SIZE];
+    for (int i = 0; i < INPUT_PAIRS; i++) {
+        snprintf(key, sizeof(key), "key%d", i);
+        omcSetInputValue(key, "1");
+    }
+    CHECK(input_idx == INPUT_PAIRS);
+
+    installFailCatcher();
+
+    if (setjmp(fail_jmp) == 0) {
+        omcSetInputValue("one too many", "1");
+        CHECK(!"omcSetInputValue() accepted a pair past INPUT_PAIRS");
+    }
+
+    omcSetHost(NULL);
+
+    CHECK(fail_seen == 1);
+    CHECK(strcmp(fail_id, "ompMC:input:tooManyItems") == 0);
+    CHECK(input_idx == INPUT_PAIRS);
+
+    omcClearInputValues();
+}
+
 /* A deck parsed from file and then overridden programmatically, which is what
  a host does when it takes a deck and changes one setting. */
 static void test_set_input_value_appends_after_a_parsed_file(void) {
@@ -853,10 +976,6 @@ static double field_xstore[FIELD_NX + 2];
 static double field_ystore[FIELD_NY + 2];
 
 #define FIELD_GUARD 1.0e30
-
-static void silentLog(int level, const char *message, void *user) {
-    (void)level; (void)message; (void)user;
-}
 
 static void setUpFieldGeometry(void) {
 
@@ -1054,6 +1173,8 @@ int main(void) {
     RUN(test_set_input_value_round_trips);
     RUN(test_set_input_value_fills_the_whole_table);
     RUN(test_clear_input_values_empties_the_table);
+    RUN(test_parse_input_file_rejects_an_overfull_deck);
+    RUN(test_set_input_value_rejects_one_pair_too_many);
     RUN(test_set_input_value_appends_after_a_parsed_file);
 
     RUN(test_ssd_source_field_at_the_low_phantom_edge);

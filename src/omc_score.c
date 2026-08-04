@@ -95,15 +95,47 @@ void scoreSource(double ein) {
     return;
 }
 
+/* A relaxed atomic load and store of one beam_flag byte.
+
+ The unlocked read in markDirty() below is a deliberate double check and the
+ algorithm tolerates a stale answer, but "benign race" is not a category the C
+ memory model has: an unsynchronised read concurrent with a write is a data
+ race, and therefore undefined, however bounded the consequences look. Spell
+ both sides out as atomic so there is no race to reason about.
+
+ Relaxed is the whole ordering this needs. A thread that reads 1 only has to
+ learn that the voxel is claimed; it never touches beam_list, and the list is
+ read in accumEndep(), getBeamVoxels() and resetBeamScore(), all of which run
+ outside the parallel region and so are already ordered after every write by
+ the join barrier.
+
+ OpenMP's own atomic read/write would say this in one line, but they are
+ OpenMP 3.1 and MSVC compiles /openmp as 2.0, where both are a hard error
+ (C3005). Hence the intrinsics. Both sides stay a single instruction on the
+ targets this builds for: a relaxed byte load is a plain mov. */
+#if defined(__GNUC__) || defined(__clang__)
+    #define OMC_FLAG_LOAD(p)      __atomic_load_n((p), __ATOMIC_RELAXED)
+    #define OMC_FLAG_STORE(p, v)  __atomic_store_n((p), (v), __ATOMIC_RELAXED)
+#elif defined(_MSC_VER)
+    /* An aligned byte access is indivisible on every architecture MSVC
+     targets, so what is actually needed here is only that the compiler not
+     invent, cache or reorder the accesses, which volatile gives. */
+    #define OMC_FLAG_LOAD(p)      (*(volatile unsigned char *)(p))
+    #define OMC_FLAG_STORE(p, v)  (*(volatile unsigned char *)(p) = (v))
+#else
+    #define OMC_FLAG_LOAD(p)      (*(volatile unsigned char *)(p))
+    #define OMC_FLAG_STORE(p, v)  (*(volatile unsigned char *)(p) = (v))
+#endif
+
 /* Record that irl has received energy from this beamlet.
 
- The unlocked read of beam_flag is a deliberate double check. Within a beamlet
- the flag only ever goes from 0 to 1 -- it is reset in resetBeamScore(),
- outside any parallel region -- so a read can only be stale in the direction
- of reporting 0 for a voxel another thread has just claimed. That costs one
- needless lock acquisition and nothing else, because the decision is retaken
- under the lock. Reading 1 is always truthful. The list therefore holds each
- voxel exactly once, and cannot overflow its gridsize+1 entries.
+ Within a beamlet the flag only ever goes from 0 to 1 -- it is reset in
+ resetBeamScore(), outside any parallel region -- so a read can only be stale
+ in the direction of reporting 0 for a voxel another thread has just claimed.
+ That costs one needless lock acquisition and nothing else, because the
+ decision is retaken under the lock. Reading 1 is always truthful. The list
+ therefore holds each voxel exactly once, and cannot overflow its gridsize+1
+ entries.
 
  The locked path runs at most once per voxel per beamlet. After the first
  batch has mapped out the beamlet's footprint it essentially stops firing,
@@ -116,8 +148,10 @@ static void claimVoxel(int irl) {
 
     #pragma omp critical (ompmc_score_dirty)
     {
+        /* This read needs no atomic of its own: every write to the flag is
+         either in this critical section or outside the parallel region. */
         if (!score.beam_flag[irl]) {
-            score.beam_flag[irl] = 1;
+            OMC_FLAG_STORE(&score.beam_flag[irl], 1);
             score.beam_list[score.beam_count] = irl;
             score.beam_count++;
             score.beam_sorted = 0;
@@ -129,7 +163,7 @@ static void claimVoxel(int irl) {
 
 static inline void markDirty(int irl) {
 
-    if (!score.beam_flag[irl]) {
+    if (!OMC_FLAG_LOAD(&score.beam_flag[irl])) {
         claimVoxel(irl);
     }
 

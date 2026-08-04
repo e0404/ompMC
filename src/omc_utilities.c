@@ -114,6 +114,9 @@ void parseInputFile(char *input_file) {
         exit(EXIT_FAILURE);
     }
 
+    /* Set to the key of the pair that did not fit, if the table fills up */
+    const char *overflow_key = NULL;
+
     while (fgets(buf, BUFFER_SIZE , fp) != NULL) {
         /* Jumps lines labeled with #, together with only white
          spaced or empty ones. */
@@ -131,6 +134,16 @@ void parseInputFile(char *input_file) {
             continue;
         }
 
+        /* The table is a fixed size array, and nothing stopped a long enough
+         deck -- or a second call without omcClearInputValues() in between --
+         from walking off the end of it. Stop at the edge and report it rather
+         than storing the pair; a deck whose settings were silently dropped
+         would calculate with defaults nobody asked for. */
+        if (input_idx >= INPUT_PAIRS) {
+            overflow_key = key;
+            break;
+        }
+
         /* Store trimmed of surrounding whitespace, so that keys can be
          compared exactly rather than by substring */
         strcpy(input_items[input_idx].key, key);
@@ -145,6 +158,21 @@ void parseInputFile(char *input_file) {
      differ by one exactly when the file holds a single pair -- which is the
      case whose lookups then failed. */
     fclose(fp);
+
+    if (overflow_key != NULL) {
+        /* omcFail() does not return, and a host that carries on afterwards --
+         a MEX file throwing out, the Python module jumping back -- stays
+         resident, so hand the message a copy and let the buffers go first. */
+        char key_copy[BUFFER_SIZE];
+        char name_copy[PATH_SIZE];
+        snprintf(key_copy, sizeof(key_copy), "%s", overflow_key);
+        snprintf(name_copy, sizeof(name_copy), "%s", file_name);
+        free(file_name);
+
+        omcFail("ompMC:input:tooManyItems",
+            "Cannot store input item '%s' from %s: the table holds at most "
+            "%d pairs.", key_copy, name_copy, INPUT_PAIRS);
+    }
 
     if(verbose_flag) {
         for (int i = 0; i < input_idx; i++) {
