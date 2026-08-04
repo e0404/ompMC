@@ -1,0 +1,15 @@
+/******************************************************************************
+ ompMC - An OpenMP parallel implementation for Monte Carlo particle transport
+ simulations
+
+ Generated from ucodes/omc_matrad/omc_mex_soversion.c.in by CMake -- do not
+ edit the generated file.
+
+ Octave refuses to load a .mex file that does not define this symbol, with
+ "No SOVERSION found in .mex file function". It is the ABI version of the
+ liboctmex the file was built against; mkoctfile emits the same one-line
+ definition when it builds a .mex itself. Only the Octave user code needs
+ this, MATLAB neither requires nor looks at it.
+*****************************************************************************/
+
+const int __octave_mex_soversion__ = @Octave_MEX_SOVERSION@;

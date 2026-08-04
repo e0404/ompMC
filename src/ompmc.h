@@ -40,6 +40,13 @@ void ausgab(double edep);    // scoring function
 void howfar(int *idisc, int *irnew, double *ustep); // geometry functions
 double hownear(void);
 
+/* Region containing the point (x,y,z), 0 if the point lies outside the
+ geometry. Photon transport uses Woodcock (delta) tracking, which jumps to
+ arbitrary points instead of marching from voxel face to voxel face, so it
+ needs point location rather than howfar()'s directed distances. Electron
+ transport still uses howfar()/hownear(). */
+int regionIndex(double x, double y, double z);
+
 /*******************************************************************************
 * Definitions for Monte Carlo simulation of particle transport 
 *******************************************************************************/
@@ -52,25 +59,32 @@ double hownear(void);
 
 //typedef struct Stack Stack;
 
+/* One entry of the particle stack. The transport code works on a single
+ particle at a time, indexed by stack.np, and never sweeps a field across
+ particles, so these live together rather than in eleven parallel arrays: a
+ particle is then two cache lines and one page instead of eleven of each. */
+struct Particle {
+    double x;       // particle coordinates
+    double y;
+    double z;
+
+    double u;       // particle direction cosines
+    double v;
+    double w;
+
+    double e;       // total particle energy
+    double wt;      // particle weight
+    double dnear;   // perpendicular distance to nearest boundary
+
+    int iq;         // particle charge
+    int ir;         // current region
+};
+
 struct Stack {
     int np;         // stack pointer
-    int npold;       // stack pointer before interactions
-    
-    int *iq;        // particle charge
-    int *ir;        // current region
-    
-    double *e;      // total particle energy
-    
-    double *x;      // particle coordinates
-    double *y;
-    double *z;
-    
-    double *u;      // particle direction cosines
-    double *v;
-    double *w;
-    
-    double *dnear;  // perpendicular distance to nearest boundary
-    double *wt;     // particle weight
+    int npold;      // stack pointer before interactions
+
+    struct Particle *p;
 };
 
 /*
@@ -99,7 +113,9 @@ void selectAzimuthalAngle(double *costhe, double *sinthe);
 void uphi21(struct Uphi *uphi, double costhe, double sinthe);
 void uphi32(struct Uphi *uphi, double costhe, double sinthe);
 int pwlfInterval(int idx, double lvar, double *coef1, double *coef0);
-double pwlfEval(int idx, double lvar, double *coef1, double *coef0);
+/* coef holds interleaved {slope, intercept} pairs: entry idx at coef[2*idx]
+ and coef[2*idx + 1] */
+double pwlfEval(int idx, double lvar, const double *coef);
 
 /*******************************************************************************
 * Photon physical processes definitions
@@ -108,12 +124,17 @@ double pwlfEval(int idx, double lvar, double *coef1, double *coef0);
 #define MXGE 2000       // gamma mapped energy intervals
 #define SGMFP 1.0E-05   // smallest gamma mean free path
 
+/* The per-energy pwlf tables hold their {slope, intercept} coefficient
+ pairs interleaved -- entry i lives at [2*i] and [2*i + 1] -- so one lookup
+ touches one cache line instead of two. The per-medium mapping pairs
+ (ge0/ge1, eke0/eke1) stay separate: they are indexed by medium only and
+ always cache-resident. */
 struct Photon {
     double *ge0, *ge1;
-    double *gmfp0, *gmfp1;
-    double *gbr10, *gbr11;
-    double *gbr20, *gbr21;
-    double *cohe0, *cohe1;
+    double *gmfp;
+    double *gbr1;
+    double *gbr2;
+    double *cohe;
 };
 
 void readXsecData(char *file, int *ndat,
@@ -142,8 +163,7 @@ struct Rayleigh {
     double *fcum;
     double *b_array;
     double *c_array;
-    double *pmax0;
-    double *pmax1;
+    double *pmax;       /* interleaved pwlf pairs, see struct Photon */
     int *i_array;
 };
 
@@ -197,49 +217,37 @@ void photon(void);
 #define EPSEMFP 1.0E-5      // smallest electron mean free path
 #define SKIN_DEPTH_FOR_BCA 3
 
+/* All per-energy tables hold interleaved {slope, intercept} pwlf pairs,
+ see struct Photon. eke0/eke1 are the per-medium mapping coefficients and
+ stay separate. */
 struct Electron {
-    double *esig0;
-    double *esig1;
-    double *psig0;
-    double *psig1;
-    
-    double *ededx0;
-    double *ededx1;
-    double *pdedx0;
-    double *pdedx1;
-    
-    double *ebr10;
-    double *ebr11;
-    double *pbr10;
-    double *pbr11;
-    
-    double *pbr20;
-    double *pbr21;
-    
-    double *tmxs0;
-    double *tmxs1;
-    
-    double *blcce0;
-    double *blcce1;
-    
-    double *etae_ms0;
-    double *etae_ms1;
-    double *etap_ms0;
-    double *etap_ms1;
-    
-    double *q1ce_ms0;
-    double *q1ce_ms1;
-    double *q1cp_ms0;
-    double *q1cp_ms1;
-    
-    double *q2ce_ms0;
-    double *q2ce_ms1;
-    double *q2cp_ms0;
-    double *q2cp_ms1;
-    
+    double *esig;
+    double *psig;
+
+    double *ededx;
+    double *pdedx;
+
+    double *ebr1;
+    double *pbr1;
+
+    double *pbr2;
+
+    double *tmxs;
+
+    double *blcce;
+
+    double *etae_ms;
+    double *etap_ms;
+
+    double *q1ce_ms;
+    double *q1cp_ms;
+
+    double *q2ce_ms;
+    double *q2cp_ms;
+
     double *range_ep;
     double *e_array;
-    
+
     double *eke0;
     double *eke1;
     
@@ -409,11 +417,44 @@ int readPegsFile(int *media_found);
 #define VACUUM -1
 
 struct Region {
-    int *med;
-    double *rhof;
-    double *pcut;
-    double *ecut;
+    int *med;       // medium index, per region
+    double *rhof;   // mass density ratio, per region
+
+    /* Photon and electron transport cut-offs. These are a property of the
+     medium, not of the individual voxel: initRegions() sets them to
+     max(global cut, the medium's PEGS threshold), so every voxel of a given
+     medium held an identical copy. Storing them per medium instead keeps two
+     arrays the size of the whole geometry out of the transport loop's working
+     set -- on a 13.8M voxel dose grid that is 220 MB no longer being read at
+     random -- and leaves them permanently in L1.
+
+     Indexed by medium + 1, so that VACUUM (-1) lands on slot 0, which holds
+     zero for both. Use regionPcut()/regionEcut() rather than indexing this
+     directly. */
+    double pcut[MXMED + 1];
+    double ecut[MXMED + 1];
+
+    /* Largest mass density ratio among the voxels of each medium, filled by
+     the user code's initRegions(). Woodcock photon tracking builds its
+     majorant cross-section from these: for a given energy no voxel of
+     medium m can attenuate more strongly than rhof_max[m] times the
+     medium's tabulated inverse mean free path. Media without any voxel keep
+     zero and simply never bound the majorant. */
+    double rhof_max[MXMED];
 };
+
+extern struct Region region;
+
+/* Transport cut-offs for the region irl. region.med[irl] is on the same cache
+ line as the medium lookup the caller has almost always just done, so this
+ costs an L1 hit and an index into a table that never leaves L1. */
+static inline double regionPcut(int irl) {
+    return region.pcut[region.med[irl] + 1];
+}
+
+static inline double regionEcut(int irl) {
+    return region.ecut[region.med[irl] + 1];
+}
 
 void initRegions(void);  // this function must be defined in user code
 void cleanRegions(void);
@@ -427,6 +468,24 @@ void cleanRegions(void);
 struct Vrt {
     /* photon splitting */
     int nsplit; // number of times the photon is divided
+
+    /* Electron range rejection: an electron of total energy below esave
+     (MeV) whose residual CSDA range is shorter than the perpendicular
+     distance to the closest region boundary cannot leave its voxel, so its
+     remaining energy is deposited on the spot (positrons still emit their
+     annihilation photons). The approximation is that bremsstrahlung the
+     electron would have radiated below esave is absorbed locally; keep
+     esave modest (~2 MeV) so that loss stays negligible. 0 disables. */
+    double esave;
+
+    /* Unbiased Russian roulette of electrons at their creation point: a new
+     electron of total energy below e_rr (MeV) survives with probability
+     1/f_rr and carries f_rr times its weight; otherwise it is removed
+     without depositing. Unlike range rejection this also kills electrons in
+     the boundary-crossing zone, at the price of lumpier dose from the
+     amplified survivors. Enabled when e_rr > 0 and f_rr > 1. */
+    double e_rr;
+    double f_rr;
 };
 
 void initVrt(void);

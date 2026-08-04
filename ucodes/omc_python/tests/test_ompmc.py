@@ -1,0 +1,310 @@
+"""Tests for the ompMC Python interface.
+
+Only structural and physical properties are checked. ompMC seeds its random
+number generator per history, but threads accumulate energy into a voxel in
+whatever order they finish, so the last bits of a dose are not reproducible
+across runs and nothing here compares against stored numbers -- except
+test_matches_mex, which holds the two interfaces against each other.
+"""
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+import ompmc
+
+
+def test_version_and_data():
+    assert ompmc.__version__.count(".") == 2
+    root = ompmc.data_path()
+    assert (root / "data" / "msnew.data").is_file()
+    assert (root / "pegs4" / "700icru.pegs4dat").is_file()
+    assert (root / "spectra" / "mohan6.spectrum").is_file()
+
+
+class TestGeometryValidation:
+    """The cube layout has to be checked up front: a C ordered cube would be a
+    silently transposed phantom rather than an error."""
+
+    def make(self, **overrides):
+        n = 4
+        bounds = np.linspace(-1.0, 1.0, n + 1)
+        kwargs = dict(
+            x_bounds=bounds, y_bounds=bounds, z_bounds=bounds,
+            materials=["H2O521ICRU"],
+            density=np.full((n, n, n), 1.0, order="F"),
+            material=np.ones((n, n, n), dtype=np.int32, order="F"),
+        )
+        kwargs.update(overrides)
+        return ompmc.Geometry(**kwargs)
+
+    def test_accepts_a_valid_phantom(self):
+        geometry = self.make()
+        assert geometry.shape == (4, 4, 4)
+        assert geometry.n_voxels == 64
+
+    def test_rejects_c_ordered_cubes(self):
+        with pytest.raises(ValueError, match="Fortran"):
+            self.make(density=np.full((4, 4, 4), 1.0))
+
+    def test_rejects_wrong_dtype(self):
+        with pytest.raises(TypeError, match="int32"):
+            self.make(material=np.ones((4, 4, 4), dtype=np.int64, order="F"))
+
+    def test_rejects_material_index_out_of_range(self):
+        material = np.ones((4, 4, 4), dtype=np.int32, order="F")
+        material[0, 0, 0] = 5
+        with pytest.raises(ValueError, match="material indices"):
+            self.make(material=material)
+
+    def test_rejects_mismatched_bounds(self):
+        with pytest.raises(ValueError, match="boundaries describe"):
+            self.make(z_bounds=np.linspace(-1.0, 1.0, 6))
+
+    def test_rejects_descending_bounds(self):
+        with pytest.raises(ValueError, match="ascending"):
+            self.make(x_bounds=np.array([1.0, 0.5, 0.0, -0.5, -1.0]))
+
+
+class TestSpectrumValidation:
+
+    def test_from_histogram(self):
+        spectrum = ompmc.Spectrum.from_histogram([1.0, 2.0, 3.0],
+                                                 [0.2, 0.5, 0.3])
+        assert spectrum._payload["mode"] == 0
+
+    def test_rejects_descending_energies(self):
+        with pytest.raises(ValueError, match="ascending"):
+            ompmc.Spectrum.from_histogram([3.0, 2.0, 1.0], [1.0, 1.0, 1.0])
+
+    def test_rejects_negative_fluence(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            ompmc.Spectrum.from_histogram([1.0, 2.0], [1.0, -1.0])
+
+    def test_rejects_empty_spectrum(self):
+        with pytest.raises(ValueError, match="non-empty"):
+            ompmc.Spectrum.from_histogram([], [])
+
+    def test_rejects_nonpositive_mono_energy(self):
+        with pytest.raises(ValueError, match="positive"):
+            ompmc.Spectrum.monoenergetic(0.0)
+
+    def test_rejects_missing_file(self):
+        with pytest.raises(FileNotFoundError):
+            ompmc.Spectrum.from_file("no_such.spectrum")
+
+
+class TestCalcCube:
+
+    def test_deposits_dose_with_a_buildup_region(self, water_phantom,
+                                                 water_physics):
+        source = ompmc.CollimatedSource(ssd=100.0, x_min=-2.0, x_max=2.0,
+                                        y_min=-2.0, y_max=2.0)
+
+        dose, uncertainty = ompmc.calc_cube(
+            water_phantom, source, ompmc.Spectrum.monoenergetic(6.0),
+            water_physics, n_histories=4000, n_batches=4)
+
+        assert dose.shape == water_phantom.shape
+        assert uncertainty.shape == water_phantom.shape
+        assert np.all(np.isfinite(dose)) and np.all(dose >= 0.0)
+        assert dose.max() > 0.0
+
+        # 6 MeV photons deposit little at the surface and build up over the
+        # first centimetres; the entrance plane must be well below the peak.
+        depth = dose.sum(axis=(0, 1))
+        assert depth[0] < 0.7*depth.max()
+
+        # The beam is 4 cm wide in a 8 cm phantom, so the corners stay cold
+        assert dose[0, 0, :].max() < 0.1*dose.max()
+
+        # Voxels that received nothing carry the .3ddose convention
+        assert uncertainty[dose == 0.0].min() == pytest.approx(0.9999999)
+
+    def test_mean_energy_output(self, water_phantom, water_physics):
+        source = ompmc.CollimatedSource(ssd=100.0, x_min=-2.0, x_max=2.0,
+                                        y_min=-2.0, y_max=2.0)
+
+        energy, _ = ompmc.calc_cube(
+            water_phantom, source, ompmc.Spectrum.monoenergetic(6.0),
+            water_physics, n_histories=2000, n_batches=2, output_dose=False)
+
+        assert energy.max() > 0.0
+
+    def test_rejects_a_single_batch(self, water_phantom, water_physics):
+        source = ompmc.CollimatedSource(ssd=100.0, x_min=-1.0, x_max=1.0,
+                                        y_min=-1.0, y_max=1.0)
+        with pytest.raises(ValueError, match="at least 2"):
+            ompmc.calc_cube(water_phantom, source, n_batches=1)
+
+
+class TestCalcDij:
+
+    def test_matches_the_matrad_fixture_structurally(self, matrad_fixture):
+        f = matrad_fixture
+
+        dij = ompmc.calc_dij(
+            f["geometry"], f["source"], f["spectrum"], f["physics"],
+            n_histories=f["n_histories"], n_batches=f["n_batches"],
+            charge=f["charge"], rel_dose_threshold=f["rel_dose_threshold"],
+            gaussian_source=f["gaussian_source"],
+            source_width=f["source_width"])
+
+        n_voxels = f["geometry"].n_voxels
+        assert dij.shape == (n_voxels, f["source"].n_beamlets)
+        assert dij.nnz > 0
+
+        dose = dij.data
+        assert np.all(np.isfinite(dose)) and np.all(dose >= 0.0)
+
+        # Every beamlet has to deposit something
+        per_beamlet = np.asarray(dij.sum(axis=0)).ravel()
+        assert np.all(per_beamlet > 0.0)
+
+        # A CSC matrix holds ascending row indices within each column
+        for k in range(dij.shape[1]):
+            rows = dij.indices[dij.indptr[k]:dij.indptr[k + 1]]
+            assert np.all(np.diff(rows) > 0)
+
+    def test_variance_output(self, matrad_fixture):
+        f = matrad_fixture
+
+        dij, variance = ompmc.calc_dij(
+            f["geometry"], f["source"], f["spectrum"], f["physics"],
+            n_histories=2000, n_batches=4, variance=True)
+
+        assert variance.shape == dij.shape
+        assert variance.nnz == dij.nnz
+        assert np.all(variance.data >= 0.0)
+
+    def test_electrons_deposit_somewhere_else_than_photons(self, matrad_fixture):
+        f = matrad_fixture
+
+        photons = ompmc.calc_dij(f["geometry"], f["source"], f["spectrum"],
+                                 f["physics"], n_histories=2000, n_batches=2)
+        electrons = ompmc.calc_dij(f["geometry"], f["source"], f["spectrum"],
+                                   f["physics"], n_histories=2000, n_batches=2,
+                                   charge=-1)
+
+        shared = (photons.astype(bool).multiply(electrons.astype(bool))).nnz
+        union = photons.nnz + electrons.nnz - shared
+        assert shared/union < 0.5
+
+    def test_rejects_a_bad_charge(self, matrad_fixture):
+        f = matrad_fixture
+        with pytest.raises(ValueError, match="charge"):
+            ompmc.calc_dij(f["geometry"], f["source"], charge=2)
+
+
+class TestProgress:
+
+    def test_reports_monotonic_progress(self, matrad_fixture):
+        f = matrad_fixture
+        seen = []
+
+        ompmc.calc_dij(f["geometry"], f["source"], f["spectrum"], f["physics"],
+                       n_histories=1000, n_batches=2,
+                       progress=lambda p: seen.append(p))
+
+        assert seen, "the progress callback was never called"
+        assert all(0.0 <= p <= 1.0 for p in seen)
+        assert seen == sorted(seen)
+        assert seen[-1] == pytest.approx(1.0)
+
+    def test_returning_false_stops_the_calculation(self, matrad_fixture):
+        f = matrad_fixture
+        calls = []
+
+        def stop_after_two(fraction):
+            calls.append(fraction)
+            return len(calls) < 2
+
+        with pytest.raises(KeyboardInterrupt):
+            ompmc.calc_dij(f["geometry"], f["source"], f["spectrum"],
+                           f["physics"], n_histories=1000, n_batches=2,
+                           progress=stop_after_two)
+
+        # It stopped early rather than running every beamlet
+        assert len(calls) < 2*f["source"].n_beamlets
+
+    def test_an_exception_in_the_callback_surfaces(self, matrad_fixture):
+        f = matrad_fixture
+
+        def explode(fraction):
+            raise ZeroDivisionError("from the callback")
+
+        with pytest.raises(ZeroDivisionError, match="from the callback"):
+            ompmc.calc_dij(f["geometry"], f["source"], f["spectrum"],
+                           f["physics"], n_histories=1000, n_batches=2,
+                           progress=explode)
+
+
+def test_engine_errors_become_python_exceptions(water_phantom):
+    """omcFail() in the C code has to arrive as an exception, not a crash."""
+    physics = ompmc.Physics(pegs_file="no_such_file.pegs4dat")
+    source = ompmc.CollimatedSource(ssd=100.0, x_min=-1.0, x_max=1.0,
+                                    y_min=-1.0, y_max=1.0)
+
+    with pytest.raises(RuntimeError):
+        ompmc.calc_cube(water_phantom, source,
+                        ompmc.Spectrum.monoenergetic(1.0), physics,
+                        n_histories=100, n_batches=2)
+
+
+REFERENCE = Path(__file__).resolve().parent / "mex_reference.mat"
+
+
+@pytest.mark.mex
+@pytest.mark.skipif(not REFERENCE.is_file(),
+                    reason="no MEX reference; regenerate it with "
+                           "ucodes/omc_matrad/export_reference.m")
+def test_matches_mex(matrad_fixture):
+    """The Python and MATLAB interfaces must agree on the same inputs.
+
+    Both drive the same engine with the same per-history random streams, so
+    the only thing that may differ is the order in which threads accumulated
+    energy into a voxel -- which changes the last bits of a dose and nothing
+    else. The sparsity pattern has to be identical.
+
+    This is the test that keeps the two interfaces from drifting apart, and
+    the reason the engines were pulled out of the user codes at all.
+
+    Marked "mex" so it can be deselected: the stored reference comes from one
+    particular MEX build on one machine, so the sparsity pattern is only
+    guaranteed against a build sharing its math library. The wheel CI, which
+    builds on four other toolchains, runs -m "not mex" for that reason.
+    """
+    scipy_io = pytest.importorskip("scipy.io")
+
+    f = matrad_fixture
+    reference = scipy_io.loadmat(REFERENCE)
+
+    dij = ompmc.calc_dij(
+        f["geometry"], f["source"], f["spectrum"], f["physics"],
+        n_histories=f["n_histories"], n_batches=f["n_batches"],
+        charge=f["charge"], rel_dose_threshold=f["rel_dose_threshold"],
+        gaussian_source=f["gaussian_source"], source_width=f["source_width"])
+
+    assert dij.shape == tuple(np.asarray(reference["shape"]).ravel())
+    np.testing.assert_array_equal(dij.indptr,
+                                  np.asarray(reference["indptr"]).ravel())
+    np.testing.assert_array_equal(dij.indices,
+                                  np.asarray(reference["indices"]).ravel())
+
+    values = np.asarray(reference["values"]).ravel()
+
+    # The total is the compiler independent part: it agrees to machine
+    # precision no matter how the two were built.
+    total = abs(dij.data.sum() - values.sum())/values.sum()
+    assert total < 1e-12, f"total dose differs by {total:.3e}"
+
+    # Individual voxels are looser, because the two builds may not share a
+    # math library. Measured on this fixture: 6e-16 when the MEX file and the
+    # extension are both built with MSVC, 2e-10 when the MEX is MinGW built
+    # and the extension MSVC built -- last-ulp differences in log/exp move
+    # interaction points a little and redistribute dose between voxels
+    # without changing the total.
+    relative = np.abs(dij.data - values)/np.abs(values)
+    assert relative.max() < 1e-8, (
+        f"largest relative difference to the MEX result is {relative.max():.3e}")

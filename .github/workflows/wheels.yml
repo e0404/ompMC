@@ -1,0 +1,150 @@
+name: wheels
+
+# Binary wheels for the omc_python user code. The build matrix in build.yml
+# covers the C user codes and the MEX files on many more toolchains; this
+# workflow exists because a wheel needs things that plain CMake job does not:
+# a manylinux container, a repair step that vendors the OpenMP runtime into
+# the wheel, and one build per Python ABI.
+#
+# The build selection, the tests and the repair commands live in the
+# [tool.cibuildwheel] tables of pyproject.toml, so 'pipx run cibuildwheel'
+# locally does the same thing this workflow does.
+#
+# Not run on every branch push -- that would be twenty container builds for a
+# change to the C code that build.yml already covers. Use the Run workflow
+# button to build wheels from a branch.
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'ucodes/omc_python/**'
+      - 'CMakeLists.txt'
+      - 'pyproject.toml'
+      - '.github/workflows/wheels.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wheels:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          # A native ARM runner rather than QEMU emulation, which turns a
+          # four minute job into an hour.
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+          - name: windows-amd64
+            os: windows-2022
+          # The deployment targets are pinned to the runners' own macOS
+          # releases on purpose. The wheel carries a copy of Homebrew's
+          # libomp.dylib, and a Homebrew bottle is built for the OS it was
+          # poured on, so a wheel tagged for an older macOS would advertise
+          # support it does not have -- dyld refuses to load a dylib built
+          # for a newer system. Older macOS builds from the sdist instead.
+          - name: macos-x86_64
+            os: macos-15-intel
+            deployment_target: '15.0'
+          - name: macos-arm64
+            os: macos-14
+            deployment_target: '14.0'
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Build the wheels
+        uses: pypa/cibuildwheel@v4.1.1
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
+
+      # A test process that dies from a signal rather than failing a test
+      # leaves nothing in the log: whatever it had written to stdout is still
+      # sitting in a buffer. macOS keeps a report for it with the termination
+      # reason and a backtrace of every thread, which is the only way to see
+      # what happened.
+      - name: Dump the macOS crash reports
+        if: failure() && runner.os == 'macOS'
+        run: |
+          shopt -s nullglob
+          reports=(~/Library/Logs/DiagnosticReports/*.ips
+                   /Library/Logs/DiagnosticReports/*.ips)
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "no crash reports were written"
+            exit 0
+          fi
+          for f in "${reports[@]}"; do
+            echo "===================================================== $f"
+            head -c 40000 "$f"
+            echo
+          done
+
+      - name: Upload the wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: ompmc-wheels-${{ matrix.name }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: sdist
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Build the source distribution
+        run: pipx run build --sdist
+
+      # A source build is the fallback for every platform the matrix above
+      # does not cover, so check that the archive is complete enough to
+      # install from rather than only that it was produced.
+      - name: Install from the source distribution
+        run: |
+          set -euo pipefail
+          python3 -m venv sdist-venv
+          ./sdist-venv/bin/pip install dist/*.tar.gz
+          ./sdist-venv/bin/python -c "import ompmc; print(ompmc.__version__, ompmc.data_path())"
+
+      - name: Upload the source distribution
+        uses: actions/upload-artifact@v7
+        with:
+          name: ompmc-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # Publishing uses PyPI's trusted publishing, so there is no API token in the
+  # repository secrets: PyPI is configured to trust this workflow file in this
+  # repository. Until that is set up on the PyPI side the job fails, which is
+  # why it only ever runs on a v* tag of the upstream repository.
+  publish:
+    name: publish to PyPI
+    needs: [wheels, sdist]
+    if: github.repository == 'e0404/ompMC' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Collect the wheels and the sdist
+        uses: actions/download-artifact@v7
+        with:
+          pattern: ompmc-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1

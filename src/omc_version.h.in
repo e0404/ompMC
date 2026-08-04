@@ -1,0 +1,16 @@
+#ifndef OMC_VERSION_H
+#define OMC_VERSION_H
+/******************************************************************************
+ ompMC - An OpenMP parallel implementation for Monte Carlo particle transport
+ simulations
+
+ Generated from src/omc_version.h.in by CMake -- do not edit the generated
+ header, change the project() VERSION in CMakeLists.txt instead.
+*****************************************************************************/
+
+#define OMPMC_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define OMPMC_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define OMPMC_VERSION_PATCH @PROJECT_VERSION_PATCH@
+#define OMPMC_VERSION_STRING "@PROJECT_VERSION@"
+
+#endif  /* OMC_VERSION_H */

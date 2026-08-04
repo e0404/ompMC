@@ -1,0 +1,29 @@
+version: 2
+
+# Keeps the action versions in .github/workflows up to date. Dependabot opens a
+# pull request when a newer release of an action referenced there appears, which
+# runs the build workflow and therefore gets tested on every runner before it is
+# merged.
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      # One pull request for the routine patch and minor bumps; major bumps stay
+      # separate because they can require workflow changes of their own.
+      actions-minor:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch

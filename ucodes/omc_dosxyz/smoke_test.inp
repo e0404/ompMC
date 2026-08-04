@@ -1,0 +1,42 @@
+# Small omc_dosxyz run used as a build smoke test. All paths are relative to
+# the repository root, so run it from there:
+#
+#   ./build/bin/omc_dosxyz -i ucodes/omc_dosxyz/smoke_test.inp -o smoke_test
+#
+# The result lands in output/smoke_test.3ddose. The history count is kept low
+# on purpose; the numbers are not meant to be statistically meaningful.
+
+# start source definition
+mono energy = 6.0
+charge = 0
+collimator bounds = -2.5 2.5 -2.5 2.5
+ssd = 90.0
+# stop source definition
+
+# start MC control
+ncase  = 20000
+nbatch = 2
+rng seeds = 97 33
+# stop MC control
+
+# start geometry
+method of input = phantom
+phantom file = ./phantoms/WATER.egsphant
+# stop geometry
+
+# start MC transport
+global ecut = 0.521
+global pcut = 0.010
+pegs file = ./pegs4/521icru.pegs4dat
+pgs4form file = ./pegs4/pgs4form.dat
+# stop MC transport
+
+# start VRT
+nsplit = 20
+esave = 2.0
+# stop VRT
+
+# start ompMC environment
+data folder = ./data/
+output folder = ./output/
+# stop ompMC environment

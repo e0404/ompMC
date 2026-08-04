@@ -3,7 +3,7 @@
 /******************************************************************************
  ompMC - An OpenMP parallel implementation for Monte Carlo particle transport
  simulations
- 
+
  Copyright (C) 2020 Edgardo Doerner (edoerner@fis.puc.cl)
 
 
@@ -22,32 +22,36 @@
 *****************************************************************************/
 
 /*******************************************************************************
-* Implementation, based on the EGSnrc one, of the RANMAR random number 
-* generator (RNG), proposed by Marsaglia and Zaman. 
-* 
-* Following the EGSnrc implementation, it uses integers to store the state of 
-* the RNG and to generate the next number in the sequence. Only at the end the 
-* random numbers are converted to floating point numbers, due to performance 
-* reasons. 
-* 
-* Before using the RNG, it is needed to initialize the RNG by a call to 
-* initRandom(). 
+* Counter-based random number generator built on Philox4x32-10 (Salmon,
+* Moraes, Dror and Shaw, "Parallel random numbers: as easy as 1, 2, 3",
+* SC'11). It replaces the RANMAR port used previously.
+*
+* The generator is a pure function of a 64 bit key and a 128 bit counter.
+* The key comes from the 'rng seeds' input. The high 64 bits of the counter
+* hold the global history index, set through setRandomHistory() at the start
+* of every particle history; the low 64 bits count the draws within the
+* history. Every history therefore owns its own stream of 2^64 numbers,
+* determined only by the seeds and the history index -- never by the thread
+* that happens to simulate it or by how histories are scheduled.
+*
+* Before using the RNG, it is needed to initialize the RNG by a call to
+* initRandom().
 *******************************************************************************/
 
-#define NRANDOM 128     // number of random numbers generated in each call 
-                        // to setRandom().
+#include <stdint.h>
+
 #define BUFF_SIZE 256
 
+/* Scale factor turning 32 bit words into reals. Exact in binary floating
+ point. */
+#define TWOM32 (1.0/4294967296.0)
+
 struct Random {
-    int crndm;
-    int cdrndm;
-    int cmrndm;
-    int ixx;
-    int jxx;
-    int rng_seed;
-    int *urndm;
-    int *rng_array;
-    double twom24;
+    uint32_t key[2];    /* base key, taken from the 'rng seeds' input */
+    uint32_t ctr[4];    /* ctr[2],ctr[3] hold the history index; ctr[0],
+                         ctr[1] count the blocks drawn within the history */
+    int buf_pos;        /* next unread entry of buf; 4 means empty */
+    double buf[4];      /* one Philox block converted to reals in (0,1) */
 };
 
 #if defined(_MSC_VER)
@@ -63,18 +67,23 @@ struct Random {
     #define M_PI 3.14159265358979323846
 #endif
 
-/* Initialization function for the RANMAR random number generator (RNG) 
-proposed by Marsaglia and Zaman and adapted from the EGSnrc version to be 
-used in ompMC. */
+/* Read the 'rng seeds' input into the thread-local key and leave the
+ generator on a sentinel stream no real history uses. Call once per thread
+ before any setRandom(). */
 void initRandom(void);
 
-/* Generation function for the RANMAR random number generator (RNG) proposed 
-by Marsaglia and Zaman. It generates NRANDOM floating point numbers in 
-each call */
-void getRandom(void);
+/* Point the generator at the stream owned by global history index ihist.
+ Call at the start of every particle history; the index must be unique over
+ the whole run (across batches, and beamlets where applicable). */
+void setRandomHistory(uint64_t ihist);
 
-/* Get a single floating random number in [0,1) using the RANMAR RNG */
+/* Get a single floating random number in (0,1) from the current stream */
 double setRandom(void);
+
+/* One Philox4x32-10 block: 128 bit counter and 64 bit key in, four 32 bit
+ words out. Exposed for verification against the published test vectors. */
+void philox4x32(const uint32_t ctr[4], const uint32_t key[2],
+                uint32_t out[4]);
 
 void cleanRandom(void);
 

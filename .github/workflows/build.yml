@@ -1,0 +1,361 @@
+name: build
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The MEX file is compiled straight from CMake against the MATLAB headers and
+# import libraries, so building it never starts MATLAB and needs no license.
+# The MATLAB test step does start MATLAB, which MathWorks licenses free of
+# charge for public repositories.
+#
+# linux-arm64 builds omc_dosxyz only, since MathWorks publishes no Linux ARM
+# release at all.
+#
+# The two macOS jobs get their OpenMP runtime into the MEX file differently,
+# because Apple Silicon MATLAB ships bin/maca64/libomp.dylib while Intel MATLAB
+# ships no runtime a MEX file can bind to. CMake detects which case applies; see
+# the omc_matrad section of CMakeLists.txt.
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64-msvc
+            os: windows-2022
+            generator: Visual Studio 17 2022
+            cmake_extra: -A x64
+            matlab: true
+          - name: windows-x64-mingw
+            os: windows-2022
+            generator: MinGW Makefiles
+            mingw: true
+            matlab: true
+            # Octave 10 is the first release that moved the MEX entry points
+            # into liboctmex and that checks the ABI number of a .mex on load.
+            octave: '10.3.0'
+            # MinGW's bundled software log/exp are several times slower than
+            # the UCRT ones MSVC uses; openlibm recovers most of that.
+            openlibm: true
+          # The Octave matRad is tested against. Everything before Octave 10
+          # takes the other branch of cmake/FindOctave.cmake -- no liboctmex,
+          # so liboctinterp is linked, and no SOVERSION stub -- which is why
+          # it gets a job of its own rather than sharing one above. No MATLAB
+          # here: this job exists for the Octave MEX file.
+          - name: windows-x64-mingw-octave8
+            os: windows-2022
+            generator: MinGW Makefiles
+            mingw: true
+            matlab: false
+            octave: '8.4.0'
+            openlibm: true
+          # llvm-mingw is the fastest non-proprietary Windows toolchain for
+          # this code: clang uses native TLS where MinGW GCC emulates it with
+          # a function call per thread-local access (and the RNG state is
+          # thread local), which measured about 2x on the smoke case.
+          - name: windows-x64-llvm-mingw
+            os: windows-2022
+            generator: MinGW Makefiles
+            llvm_mingw: '20260616'
+            openlibm: true
+            matlab: true
+            octave: '10.3.0'
+          # Ubuntu 24.04 rather than 22.04 for its Octave 8.4, the version
+          # matRad is tested against; 22.04 still has Octave 6.
+          - name: linux-x64-gcc
+            os: ubuntu-24.04
+            generator: Unix Makefiles
+            matlab: true
+            octave: apt
+          - name: linux-arm64-gcc
+            os: ubuntu-24.04-arm
+            generator: Unix Makefiles
+            matlab: false     # setup-matlab has no Linux ARM release
+          - name: macos-x64
+            os: macos-15-intel     # macos-13 is retired; this is the Intel label
+            generator: Unix Makefiles
+            libomp: true
+            matlab: true
+          - name: macos-arm64
+            os: macos-14
+            generator: Unix Makefiles
+            libomp: true
+            matlab: true
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Install libomp
+        if: matrix.libomp
+        run: brew install libomp
+
+      - name: Set up MinGW-w64
+        if: matrix.mingw
+        shell: pwsh
+        run: |
+          $candidates = @(
+            'C:\mingw64\bin',
+            'C:\ProgramData\mingw64\mingw64\bin',
+            'C:\msys64\mingw64\bin',
+            (Join-Path $env:ChocolateyInstall 'lib\mingw\tools\install\mingw64\bin')
+          )
+          function Find-MinGW($paths) {
+            foreach ($p in $paths) {
+              if ($p -and (Test-Path (Join-Path $p 'gcc.exe')) -and
+                          (Test-Path (Join-Path $p 'mingw32-make.exe'))) {
+                return $p
+              }
+            }
+            return $null
+          }
+          $bin = Find-MinGW $candidates
+          if (-not $bin) {
+            Write-Host 'No usable MinGW-w64 on the image, installing it'
+            choco install mingw --no-progress -y
+            $bin = Find-MinGW $candidates
+          }
+          if (-not $bin) { throw 'MinGW-w64 not found' }
+          Write-Host "Using MinGW-w64 from $bin"
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          Add-Content -Path $env:GITHUB_ENV -Value "MINGW_BIN=$bin"
+          & (Join-Path $bin 'gcc.exe') --version
+
+      - name: Set up llvm-mingw
+        if: matrix.llvm_mingw
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ matrix.llvm_mingw }}"
+          curl -fsSL -o llvm-mingw.zip \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/$version/llvm-mingw-$version-ucrt-x86_64.zip"
+          unzip -q llvm-mingw.zip -d "$RUNNER_TEMP"
+          rm llvm-mingw.zip
+          bin="$RUNNER_TEMP/llvm-mingw-$version-ucrt-x86_64/bin"
+          # The toolchain ships its own mingw32-make, which the prepended PATH
+          # entry makes the one the MinGW Makefiles generator picks up.
+          cygpath -w "$bin" >> "$GITHUB_PATH"
+          echo "LLVM_MINGW_BIN=$(cygpath -m "$bin")" >> "$GITHUB_ENV"
+          "$bin/x86_64-w64-mingw32-clang.exe" --version
+
+      - name: Set up MATLAB
+        if: matrix.matlab
+        uses: matlab-actions/setup-matlab@v3
+        with:
+          # Pinned so that a new MATLAB release cannot break the build on its
+          # own. R2024b is available for all of the runners used here.
+          release: R2024b
+
+      - name: Locate the MATLAB installation
+        if: matrix.matlab
+        shell: bash
+        run: |
+          set -euo pipefail
+          matlab_bin="$(command -v matlab)"
+          # Follow the launcher symlink when there is one, so that we end up at
+          # the real matlabroot rather than at a directory of shims.
+          resolved="$(readlink -f "$matlab_bin" 2>/dev/null || echo "$matlab_bin")"
+          root="$(dirname "$(dirname "$resolved")")"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            root="$(cygpath -m "$root")"
+          fi
+          echo "matlabroot: $root"
+          test -f "$root/extern/include/mex.h"
+          echo "MATLAB_ROOT=$root" >> "$GITHUB_ENV"
+
+      # Octave ships no CMake package, so cmake/FindOctave.cmake locates it
+      # through octave-config; having Octave's bin directory on PATH is all
+      # the discovery needs.
+      #
+      # The MSVC job deliberately gets no Octave: Octave's Windows libraries
+      # are MinGW import libraries that MSVC cannot link, which is why only
+      # the two MinGW jobs build the .mex here.
+      - name: Install Octave (Linux)
+        if: matrix.octave && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # octave-dev, not liboctave-dev, is what carries mex.h here.
+          sudo apt-get install -y octave octave-dev
+          octave-config --version
+
+      # The official w64 build, pinned to the version under test, rather than
+      # a package manager: only these zips let the two Octave generations be
+      # tested deliberately.
+      - name: Install Octave (Windows)
+        if: matrix.octave && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = '${{ matrix.octave }}'
+          $zip = "$env:RUNNER_TEMP\octave-$version-w64.zip"
+          $dest = "$env:RUNNER_TEMP\octave"
+          Write-Host "Downloading Octave $version"
+          curl.exe -fsSL -o $zip "https://ftp.gnu.org/gnu/octave/windows/octave-$version-w64.zip"
+          # Expand-Archive is minutes slower than this on a ~700 MB archive.
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $dest)
+          Remove-Item $zip
+          # The archive unpacks to octave-<version>-w64/, whose layout has
+          # moved between releases, so locate octave-config instead.
+          $cfg = Get-ChildItem -Path $dest -Recurse -Filter 'octave-config.exe' `
+              -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $cfg) { throw "octave-config.exe not found under $dest" }
+          # Deliberately NOT added to PATH. The Windows build of Octave is an
+          # MSYS2 tree whose bin directory also carries gcc, g++, ld, cmake and
+          # ctest; putting it on PATH would quietly shadow the toolchain this
+          # job is meant to be testing. Hand CMake the prefix instead, the same
+          # way MATLAB_ROOT is handled above.
+          $prefix = Split-Path $cfg.DirectoryName -Parent
+          Write-Host "Using Octave from $prefix"
+          Add-Content -Path $env:GITHUB_ENV -Value "OCTAVE_ROOT=$prefix"
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(-S . -B build -G "${{ matrix.generator }}")
+          extra="${{ matrix.cmake_extra }}"
+          if [ -n "$extra" ]; then
+            args+=($extra)
+          fi
+          args+=(-DCMAKE_BUILD_TYPE=Release)
+          args+=(-DOMPMC_BUILD_MATRAD_MEX=${{ matrix.matlab && 'ON' || 'OFF' }})
+          args+=(-DOMPMC_BUILD_MATRAD_OCT=${{ matrix.octave && 'ON' || 'OFF' }})
+          args+=(-DOMPMC_WITH_OPENLIBM=${{ matrix.openlibm && 'ON' || 'OFF' }})
+          # The MinGW Makefiles generator would pick up whatever gcc is on the
+          # image; point it at the llvm-mingw clang explicitly.
+          if [ -n "${LLVM_MINGW_BIN:-}" ]; then
+            args+=("-DCMAKE_C_COMPILER=$LLVM_MINGW_BIN/x86_64-w64-mingw32-clang.exe")
+          fi
+          if [ -n "${MATLAB_ROOT:-}" ]; then
+            args+=("-DMatlab_ROOT_DIR=$MATLAB_ROOT")
+          fi
+          # Set by the Windows Octave step, which keeps Octave off PATH so its
+          # bundled gcc/cmake/ctest cannot shadow the toolchain under test.
+          if [ -n "${OCTAVE_ROOT:-}" ]; then
+            args+=("-DOctave_ROOT=$OCTAVE_ROOT")
+          fi
+          cmake "${args[@]}"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      # Runs the "unit", "media" and "smoke" tests registered in CMakeLists.txt
+      # (-C Release is needed on the multi-config generators -- MSVC and, in
+      # this matrix, that's it -- and ignored elsewhere).
+      - name: Run tests (ctest)
+        shell: bash
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Check the smoke test's .3ddose output
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The "smoke" ctest above already ran omc_dosxyz; a valid .3ddose
+          # starts with the voxel counts of the WATER phantom.
+          header="$(head -n 1 output/smoke_test.3ddose)"
+          echo "3ddose header: $header"
+          case "$header" in
+            *61*61*150*) ;;
+            *) echo "unexpected .3ddose header"; exit 1 ;;
+          esac
+          rm -f output/smoke_test.3ddose
+
+      # Loads the MEX file into MATLAB and runs a small dose calculation from a
+      # captured matRad plan, which the build step alone cannot check. This
+      # covers loading, the OpenMP parallel regions, and releasing the MEX file
+      # afterwards -- the last of which crashes MATLAB outright if the MEX file
+      # does not lock itself. MathWorks licenses MATLAB free of charge for
+      # public repositories, so no license secret is involved.
+      - name: Test the MEX file in MATLAB
+        if: matrix.matlab
+        uses: matlab-actions/run-command@v3
+        with:
+          command: addpath('build/bin'); addpath('ucodes/omc_matrad'); test_omc_matrad_mex
+
+      - name: Collect the artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cp build/bin/omc_dosxyz build/bin/omc_dosxyz.exe artifacts/ 2>/dev/null || true
+          cp build/bin/*.mex* artifacts/ 2>/dev/null || true
+          if [ "${{ matrix.mingw || false }}" = "true" ]; then
+            # The MinGW binaries need the GCC runtime next to them to be usable
+            # outside of this job.
+            for dll in libgomp-1.dll libgcc_s_seh-1.dll libwinpthread-1.dll; do
+              cp "$(cygpath -u "$MINGW_BIN")/$dll" artifacts/ 2>/dev/null || true
+            done
+          fi
+          if [ -n "${LLVM_MINGW_BIN:-}" ]; then
+            # The only non-system dependency of the llvm-mingw binaries.
+            cp "$(cygpath -u "$LLVM_MINGW_BIN")/libomp.dll" artifacts/
+          fi
+          ls -l artifacts
+
+      - name: Upload the artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ompmc-${{ matrix.name }}
+          path: artifacts/
+          if-no-files-found: error
+
+  # A single dedicated job rather than another matrix entry: gcov/lcov only
+  # understand GCC/Clang's coverage format, so there is nothing this would
+  # add on the MSVC job, and instrumentation (--coverage, -O0, no LTO) is not
+  # something the other jobs' binaries -- some of which get uploaded as
+  # artifacts -- should carry.
+  coverage:
+    name: coverage (linux-x64-gcc)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Install lcov
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lcov
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DOMPMC_BUILD_MATRAD_MEX=OFF \
+            -DOMPMC_BUILD_MATRAD_OCT=OFF \
+            -DOMPMC_COVERAGE=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run tests (ctest)
+        run: ctest --test-dir build --output-on-failure
+
+      # No --remove filtering step: geninfo only picks up .gcda files under
+      # build/, and every one of those compiles from this project's own
+      # src/tests/ucodes trees (Ubuntu's system getopt_long means the
+      # bundled src/compat shim is not even compiled in), so there is
+      # nothing external in coverage.info to strip out.
+      - name: Generate the coverage report
+        run: |
+          set -euo pipefail
+          lcov --capture --directory build --output-file coverage.info
+          lcov --summary coverage.info
+          genhtml coverage.info --output-directory coverage-html
+
+      - name: Upload the coverage report
+        uses: actions/upload-artifact@v7
+        with:
+          name: ompmc-coverage
+          path: coverage-html/
+          if-no-files-found: error

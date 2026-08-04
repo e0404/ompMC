@@ -1,0 +1,7 @@
+; A MEX file needs to export exactly one symbol. Stating it explicitly
+; matters on MinGW toolchains: GNU-style linkers only export everything as
+; long as nothing in the link carries an explicit __declspec(dllexport), and
+; openlibm's objects do -- without this file, linking openlibm in would leave
+; mexFunction unexported and MATLAB reporting a missing gateway function.
+EXPORTS
+    mexFunction
