@@ -47,39 +47,13 @@
 #ifndef OMC_ENGINE_DIJ_H
 #define OMC_ENGINE_DIJ_H
 
+/* enum OmcSourceGeometry and struct OmcBeamletSource live here: they describe
+ the source omc_engine_forward.h shares with this one. Included rather than
+ forward declared so that a host which only knows about the Dij engine keeps
+ compiling unchanged. */
+#include "omc_source_beamlet.h"
+
 struct OmcSpectrum;
-
-/* Where on the source the particles start. POINT is the classic point source;
- GAUSSIAN spreads the starting point over the collimator plane, which softens
- the penumbra. */
-enum OmcSourceGeometry {
-    OMC_SOURCE_POINT = 0,
-    OMC_SOURCE_GAUSSIAN
-};
-
-/* The beamlets. Per beam: the source position. Per beamlet: which beam it
- belongs to, and the corner plus two edge vectors of its aperture rectangle at
- isocentre. All arrays belong to the caller and must outlive the call. */
-struct OmcBeamletSource {
-    int nbeamlets;
-    const int *ibeam;           // index of the beam of each beamlet, 0 based
-
-    const double *xsource;      // coordinates of the source of each beam
-    const double *ysource;
-    const double *zsource;
-
-    const double *xcorner;      // coordinates of the beamlet corner
-    const double *ycorner;
-    const double *zcorner;
-
-    const double *xside1;       // first edge vector of the beamlet
-    const double *yside1;
-    const double *zside1;
-
-    const double *xside2;       // second edge vector of the beamlet
-    const double *yside2;
-    const double *zside2;
-};
 
 struct OmcDijOptions {
     int nhist;                  // total histories per beamlet

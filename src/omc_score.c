@@ -20,8 +20,10 @@
 *****************************************************************************/
 
 #include "omc_score.h"
+#include "omc_geom.h"
 #include "ompmc.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -244,3 +246,99 @@ void resetBeamScore(void) {
 }
 
 /******************************************************************************/
+
+/******************************************************************************/
+/* Turn what the batches accumulated into dose and its relative uncertainty,
+ and copy both out into the caller's arrays. Unlike the per beamlet
+ accumulation in omc_engine_dij.c this walks the whole grid: a voxel that
+ received nothing still has to come out with the 0.9999999 uncertainty the
+ .3ddose format expects.
+
+ Every engine producing a dense cube shares this, so that they cannot drift
+ apart on the air threshold, the empty voxel convention or the batch
+ variance. incFluence is what the accumulated energy is divided by: the
+ histories per batch where they all count the same (omc_engine_cube), or
+ 1.0 where the caller has already folded the fluence into the weights it
+ passed accumEndep() (omc_engine_forward). */
+
+void omcScoreToCube(int nbatch, double incFluence, int outputDose,
+                    double *dose, double *uncertainty) {
+
+    int irl;
+    int imax = geometry.isize;
+    int ijmax = geometry.isize*geometry.jsize;
+    double endep, endep2, unc_endep;
+
+    double inc_fluence = incFluence;
+    double mass;
+    int iz;
+
+    #pragma omp parallel for private(irl,endep,endep2,unc_endep,mass)
+    for (iz=0; iz<geometry.ksize; iz++) {
+        for (int iy=0; iy<geometry.jsize; iy++) {
+            for (int ix=0; ix<geometry.isize; ix++) {
+                irl = 1 + ix + iy*imax + iz*ijmax;
+
+                /* Air is always reported as zero dose. Handle it before the
+                 Gy conversion so a zero-density voxel cannot raise divide by
+                 zero (or 0*inf invalid-operation) flags for a value that
+                 would immediately be discarded. */
+                if (geometry.med_densities[irl-1] < 0.044) {
+                    dose[irl - 1] = 0.0;
+                    if (uncertainty) {
+                        uncertainty[irl - 1] = 0.9999999;
+                    }
+                    continue;
+                }
+
+                endep = score.accum_endep[irl];
+                endep2 = score.accum_endep2[irl];
+
+                /* First calculate mean deposited energy across batches and its
+                 uncertainty */
+                endep /= (double)nbatch;
+                endep2 /= (double)nbatch;
+
+                /* Batch approach uncertainty calculation */
+                if (endep != 0.0) {
+                    unc_endep = endep2 - endep*endep;
+                    unc_endep /= (double)(nbatch - 1);
+
+                    /* Relative uncertainty */
+                    unc_endep = sqrt(unc_endep)/endep;
+                }
+                else {
+                    endep = 0.0;
+                    unc_endep = 0.9999999;
+                }
+
+                /* We separate de calculation of dose, to give the user the
+                 option to output mean energy (outputDose=0) or deposited dose
+                 (outputDose=1) per incident fluence */
+
+                if (outputDose) {
+
+                    /* Convert deposited energy to dose */
+                    mass = (geometry.xbounds[ix+1] - geometry.xbounds[ix])*
+                        (geometry.ybounds[iy+1] - geometry.ybounds[iy])*
+                        (geometry.zbounds[iz+1] - geometry.zbounds[iz]);
+
+                    /* Transform deposited energy to Gy */
+                    mass *= geometry.med_densities[irl-1];
+                    endep *= 1.602E-10/(mass*inc_fluence);
+
+                } else {    /* Output mean deposited energy */
+                    endep /= inc_fluence;
+                }
+
+                /* Store output quantities */
+                dose[irl - 1] = endep;
+                if (uncertainty) {
+                    uncertainty[irl - 1] = unc_endep;
+                }
+            }
+        }
+    }
+
+    return;
+}

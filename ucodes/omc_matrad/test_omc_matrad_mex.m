@@ -337,6 +337,183 @@ fprintf('progressCallback invoked %d times, from %.4f to %.4f, no waitbar figure
 
 clear global progressLog;
 
+%% mcOpt.mode = 'forward_beamlet' is dij*w computed directly
+
+% The forward mode spreads its histories over the beamlets in proportion to
+% the weights instead of giving every beamlet the same number, and adds them
+% up into one cube. What comes out has to be what dij*w would have been, so
+% that is what it is held against here.
+%
+% Two things have to be lined up for the comparison to mean anything. The
+% reference dij must not be pruned, because relDoseThreshold drops low dose
+% voxels that the forward cube keeps; and nHistories counts the whole
+% calculation in the forward mode but one beamlet in the dij mode, so the
+% forward run gets nBixels times as many to reach the same statistics.
+
+nBixels = fixture.mcSrc.nBixels;
+
+weights = zeros(nBixels, 1);
+weights(1:2:end) = 1;        % every other beamlet open
+weights(2) = 0.25;           % and one that only partly transmits
+
+mcSrcWeighted = fixture.mcSrc;
+mcSrcWeighted.bixelWeights = weights;
+
+mcOptForward = mcOpt;
+mcOptForward.mode = 'forward_beamlet';
+mcOptForward.nHistories = mcOpt.nHistories*nBixels;
+
+tStart = tic;
+[doseCube, relUnc] = omc_matrad(fixture.cubeRho, fixture.cubeMatIx, ...
+    fixture.mcGeo, mcSrcWeighted, mcOptForward);
+fprintf('Forward calculation with %d histories took %.1f s.\n', ...
+    mcOptForward.nHistories, toc(tStart));
+
+if ~isequal(size(doseCube), size(fixture.cubeRho))
+    error('ompMC:test:forwardWrongSize', ...
+        'The forward dose cube is %s, expected %s.', ...
+        mat2str(size(doseCube)), mat2str(size(fixture.cubeRho)));
+end
+if issparse(doseCube)
+    error('ompMC:test:forwardSparse', 'The forward dose cube is sparse.');
+end
+if ~all(isfinite(doseCube(:))) || any(doseCube(:) < 0)
+    error('ompMC:test:forwardBadDose', ...
+        'The forward dose cube holds %d non-finite and %d negative entries.', ...
+        sum(~isfinite(doseCube(:))), sum(doseCube(:) < 0));
+end
+if ~(max(doseCube(:)) > 0)
+    error('ompMC:test:forwardNoDose', 'The forward dose cube is all zero.');
+end
+
+% The unpruned reference
+mcOptRef = mcOpt;
+mcOptRef.relDoseThreshold = 0;
+dijRef = omc_matrad(fixture.cubeRho, fixture.cubeMatIx, ...
+    fixture.mcGeo, fixture.mcSrc, mcOptRef);
+refCube = reshape(full(dijRef*weights), size(fixture.cubeRho));
+
+% The total is the part that does not depend on where the dose landed, so it
+% is the tightest thing to compare. The two runs draw different random
+% streams, so what is left is the statistical spread of a 50000 history
+% calculation, which is well inside a percent.
+forwardTotal = sum(doseCube(:));
+refTotal = sum(refCube(:));
+totalDiff = abs(forwardTotal - refTotal)/refTotal;
+
+if ~(totalDiff < 0.02)
+    error('ompMC:test:forwardTotalMismatch', ...
+        ['The forward cube holds %.4g Gy against %.4g Gy for dij*w, a ', ...
+         'relative difference of %.3g.'], forwardTotal, refTotal, totalDiff);
+end
+fprintf('Forward total dose agrees with dij*w to %.3g relative.\n', totalDiff);
+
+% Totals agreeing is not enough on its own: a cube written out with its axes
+% in the wrong order would still total the same. Comparing the profile along
+% each axis pins down where the dose actually went.
+%
+% This is a shape check, not a statistics one, and the tolerance is loose on
+% purpose. A single profile bin is a far noisier quantity than the total: at
+% the history count used here the two runs differ by up to 6% in one, and that
+% is genuine statistical spread rather than disagreement -- raising both runs
+% by a factor of 16 brings it down to 1.5%, which is the 1/sqrt(N) a Monte
+% Carlo owes you. What this catches is a cube whose axes came out permuted,
+% which is wrong by whole factors rather than by percents.
+for iAxis = 1:3
+    other = setdiff(1:3, iAxis);
+    forwardProfile = sum(sum(doseCube, other(1)), other(2));
+    refProfile = sum(sum(refCube, other(1)), other(2));
+
+    forwardProfile = forwardProfile(:);
+    refProfile = refProfile(:);
+
+    % Only where there is dose to compare; the tails are all noise.
+    hot = refProfile > 0.05*max(refProfile);
+    profileDiff = max(abs(forwardProfile(hot) - refProfile(hot)) ...
+                      ./refProfile(hot));
+
+    if ~(profileDiff < 0.15)
+        error('ompMC:test:forwardProfileMismatch', ...
+            ['The forward dose profile along axis %d differs from dij*w by ', ...
+             'up to %.3g where there is dose.'], iAxis, profileDiff);
+    end
+    fprintf('Axis %d profile agrees with dij*w to %.3g.\n', iAxis, profileDiff);
+end
+
+% The uncertainty cube follows the .3ddose convention omc_dosxyz uses: a
+% relative uncertainty everywhere there is dose, and 0.9999999 where there is
+% none.
+if ~isequal(size(relUnc), size(doseCube))
+    error('ompMC:test:forwardUncSize', ...
+        'The forward uncertainty cube is %s, expected %s.', ...
+        mat2str(size(relUnc)), mat2str(size(doseCube)));
+end
+if any(relUnc(:) < 0) || any(relUnc(:) > 1)
+    error('ompMC:test:forwardUncRange', ...
+        'The relative uncertainty leaves [0,1] in %d voxels.', ...
+        sum(relUnc(:) < 0 | relUnc(:) > 1));
+end
+if ~all(abs(relUnc(doseCube == 0) - 0.9999999) < 1e-9)
+    error('ompMC:test:forwardUncConvention', ...
+        'Voxels without dose do not carry the 0.9999999 uncertainty.');
+end
+fprintf('Uncertainty cube: median %.3g where there is dose.\n', ...
+    median(relUnc(doseCube > 0)));
+
+%% The forward mode rejects what it cannot use
+
+badCases = { ...
+    'wrongLength',  'matRad:omc_matrad:invalidField', ones(nBixels + 1, 1); ...
+    'negative',     'ompMC:forward:invalidWeight',    -ones(nBixels, 1); ...
+    'nonFinite',    'ompMC:forward:invalidWeight',    inf(nBixels, 1); ...
+    'sumOverflow',  'ompMC:forward:invalidWeight',    realmax*ones(nBixels, 1); ...
+    'allZero',      'ompMC:forward:noWeight',         zeros(nBixels, 1)};
+
+for iCase = 1:size(badCases, 1)
+    mcSrcBad = fixture.mcSrc;
+    mcSrcBad.bixelWeights = badCases{iCase, 3};
+
+    try
+        omc_matrad(fixture.cubeRho, fixture.cubeMatIx, ...
+            fixture.mcGeo, mcSrcBad, mcOptForward);
+        error('ompMC:test:badWeightsAccepted', ...
+            'Weights of case "%s" were accepted.', badCases{iCase, 1});
+    catch err
+        if ~strcmp(err.identifier, badCases{iCase, 2})
+            rethrow(err);
+        end
+    end
+end
+fprintf(['Weights that are the wrong length, negative, non-finite, ' ...
+    'overflowing in sum or all zero were rejected.\n']);
+
+% Without any weights at all the mode cannot run.
+try
+    omc_matrad(fixture.cubeRho, fixture.cubeMatIx, ...
+        fixture.mcGeo, fixture.mcSrc, mcOptForward);
+    error('ompMC:test:missingWeightsAccepted', ...
+        'The forward mode ran without mcSrc.bixelWeights.');
+catch err
+    if ~strcmp(err.identifier, 'matRad:omc_matrad:missingField')
+        rethrow(err);
+    end
+end
+fprintf('The forward mode without bixelWeights was rejected.\n');
+
+% And an unknown mode must not quietly fall back to the default.
+mcOptBadMode = mcOpt;
+mcOptBadMode.mode = 'forward_shape';
+try
+    omc_matrad(fixture.cubeRho, fixture.cubeMatIx, ...
+        fixture.mcGeo, fixture.mcSrc, mcOptBadMode);
+    error('ompMC:test:badModeAccepted', 'An unknown mcOpt.mode was accepted.');
+catch err
+    if ~strcmp(err.identifier, 'matRad:omc_matrad:invalidMode')
+        rethrow(err);
+    end
+end
+fprintf('An unknown mcOpt.mode was rejected.\n');
+
 %% Releasing the MEX file after a parallel region
 
 % This is the part that used to bring MATLAB down. Once an OpenMP parallel
