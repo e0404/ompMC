@@ -175,17 +175,25 @@ nitpick_ignore_regex = [
 
 # -- MATLAB domain -------------------------------------------------------
 
-# omc_matrad is a compiled MEX file with no .m source; ucodes/omc_matrad/
-# carries omc_matrad.m as a help-text-only stub next to it (MathWorks' own
-# convention for documenting a MEX file -- MATLAB always runs the MEX file
-# itself and only reads help/doc from the .m file), which this indexes
-# alongside the real recordProgressCallback.m helper.
-matlab_src_dir = str(ROOT_DIR / "ucodes" / "omc_matrad")
+# omc_matrad is a compiled MEX file with no .m source, so docs/_matlab/
+# carries a help-text-only omc_matrad.m stub for this to autodocument.
+# It deliberately does NOT live in ucodes/omc_matrad/ alongside the real
+# MEX file: build.yml's and CMakeLists.txt's MEX smoke test does
+# `addpath('build/bin'); addpath('ucodes/omc_matrad')`, and addpath()
+# prepends by default, so a same-named .m file placed there ends up
+# ahead of build/bin on the path and permanently shadows the compiled
+# MEX -- `exist('omc_matrad', 'file')` stops reporting 3 (MEX-file) and
+# every MATLAB/Octave CI job fails. docs/_matlab/ is never added to that
+# path, so the stub can only ever be seen by Sphinx.
+matlab_src_dir = str(DOCS_DIR / "_matlab")
 
 # -- HTML output ------------------------------------------------------------
 
 html_theme = "furo"
-html_static_path = ["_static"]
+# No custom CSS/JS yet -- an empty _static/ directory is invisible to git
+# (it tracks no empty directories) and disappears on a fresh checkout,
+# which -W turns into a build failure. Add html_static_path back along
+# with the directory once there is an actual asset to put in it.
 html_title = f"ompMC {version}"
 
 html_theme_options = {

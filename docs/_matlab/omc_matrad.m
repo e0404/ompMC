@@ -1,4 +1,4 @@
-function [dij, dijVar] = omc_matrad(cubeRho, cubeMatIx, mcGeo, mcSrc, mcOpt) %#ok<STOUT,INUSD>
+function [dij, dijVar] = omc_matrad(cubeRho, cubeMatIx, mcGeo, mcSrc, mcOpt)
 %OMC_MATRAD Monte Carlo dose calculation for matRad.
 %
 %   [dij, dijVar] = OMC_MATRAD(cubeRho, cubeMatIx, mcGeo, mcSrc, mcOpt)
