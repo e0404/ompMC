@@ -359,3 +359,9 @@ jobs:
           name: ompmc-coverage
           path: coverage-html/
           if-no-files-found: error
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.info

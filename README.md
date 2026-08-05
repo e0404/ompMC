@@ -1,5 +1,18 @@
 # ompMC
 
+[![Build](https://github.com/e0404/ompMC/actions/workflows/build.yml/badge.svg)](https://github.com/e0404/ompMC/actions/workflows/build.yml)
+[![Docs](https://github.com/e0404/ompMC/actions/workflows/docs.yml/badge.svg)](https://github.com/e0404/ompMC/actions/workflows/docs.yml)
+[![codecov](https://codecov.io/gh/e0404/ompMC/branch/master/graph/badge.svg)](https://codecov.io/gh/e0404/ompMC)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
+[![C](https://img.shields.io/badge/C-A8B9CC?logo=c&logoColor=white)](src/)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
+[![MATLAB](https://img.shields.io/badge/MATLAB-0076A8?logo=mathworks&logoColor=white)](ucodes/omc_matrad/)
+
+[![Windows](https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white)](.github/workflows/build.yml)
+[![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)](.github/workflows/build.yml)
+[![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)](.github/workflows/build.yml)
+
 > The original repository is **[edoerner/ompMC](https://github.com/edoerner/ompMC)** by Edgardo Doerner.
 > This repository is a fork under further development, aimed at integration into the
 > treatment planning toolkits **[matRad](https://github.com/e0404/matRad)** (`e0404/matRad`)
@@ -318,4 +331,4 @@ Windows x64 (MSVC and MinGW), Linux x64, Linux ARM64, macOS x64 and macOS ARM64.
 ## License
 
 GNU General Public License v3.0 — see [LICENSE](LICENSE).
-Copyright (C) 2018 Edgardo Doerner (edoerner@fis.puc.cl).
+Copyright (C) 2018-2026 Edgardo Doerner and Niklas Wahl.

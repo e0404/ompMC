@@ -8,10 +8,17 @@ description = "OpenMP parallel Monte Carlo photon and electron transport in voxe
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
-authors = [{ name = "Edgardo Doerner", email = "edoerner@fis.puc.cl" }]
+authors = [
+    { name = "Edgardo Doerner", email = "endoerner@gmail.com" },
+    { name = "Niklas Wahl", email = "n.wahl@dkfz-heidelberg.de" },
+]
+maintainers = [
+    { name = "Niklas Wahl", email = "n.wahl@dkfz-heidelberg.de" },
+]
 classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Programming Language :: C",
+    "Programming Language :: C++",
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Physics",
     "Topic :: Scientific/Engineering :: Medical Science Apps.",
@@ -24,6 +31,18 @@ Homepage = "https://github.com/e0404/ompMC"
 
 [project.optional-dependencies]
 test = ["pytest >=7"]
+# Listed for reference; the docs build itself uses docs/requirements.txt so
+# that building the site never needs the compiled extension -- see the
+# comment in docs/conf.py.
+docs = [
+    "sphinx >=7",
+    "furo",
+    "myst-parser",
+    "breathe",
+    "sphinxcontrib-matlabdomain",
+    "sphinx-copybutton",
+    "sphinx-design",
+]
 
 [tool.scikit-build]
 # 3.26 is where FindPython grew the Development.SABIModule component that the

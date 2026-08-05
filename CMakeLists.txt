@@ -21,7 +21,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ompMC
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "An OpenMP parallel implementation for Monte Carlo particle transport simulations"
     HOMEPAGE_URL "https://github.com/e0404/ompMC"
     LANGUAGES C)
@@ -731,6 +731,25 @@ if(OMPMC_BUILD_TESTS)
                 "addpath('${CMAKE_BINARY_DIR}/bin'); addpath('${CMAKE_CURRENT_SOURCE_DIR}/ucodes/omc_matrad'); test_omc_matrad_mex"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     endif()
+endif()
+
+################################################################################
+# Documentation
+################################################################################
+
+# Convenience target for people who drive everything through CMake; not part
+# of ALL and not needed for Read the Docs, which runs sphinx-build directly
+# (see .readthedocs.yaml) so that building the docs never needs this
+# configure step or a C++ toolchain. See docs/README.md for the equivalent
+# plain sphinx-build command.
+find_program(SPHINX_BUILD_EXECUTABLE sphinx-build)
+if(SPHINX_BUILD_EXECUTABLE)
+    add_custom_target(docs
+        COMMAND "${SPHINX_BUILD_EXECUTABLE}" -b html
+                "${CMAKE_CURRENT_SOURCE_DIR}/docs"
+                "${CMAKE_CURRENT_BINARY_DIR}/docs/html"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        COMMENT "Building Sphinx documentation")
 endif()
 
 ################################################################################

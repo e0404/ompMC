@@ -18,6 +18,11 @@ __pycache__/
 dist/
 .pytest_cache/
 
+# Sphinx/Doxygen documentation build
+docs/_build/
+docs/doxygen/
+.venv-docs/
+
 # CMake build trees and their products
 build/
 build-*/

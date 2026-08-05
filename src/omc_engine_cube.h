@@ -19,7 +19,8 @@
  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 *****************************************************************************/
 
-/******************************************************************************
+/*!
+ @file
  omc_engine_cube - Dose in every voxel from one collimated beam.
 
  This is what omc_dosxyz calculates: a point source at a given distance from
@@ -38,8 +39,10 @@
    3. built the source spectrum                     (omc_spectrum.h)
    4. called omcSsdSourceInit() on the source below
 
- and afterwards it owns the cleanup of those. Like the rest of ompMC this is a
- singleton: one calculation at a time per process.
+ and afterwards it owns the cleanup of those.
+
+ @warning Like the rest of ompMC this is a singleton: one calculation at a
+ time per process.
 *****************************************************************************/
 
 #ifndef OMC_ENGINE_CUBE_H
@@ -49,69 +52,85 @@
 
 struct OmcSpectrum;
 
-/* A point source at distance ssd in front of the phantom, shining through a
+/*! A point source at distance ssd in front of the phantom, shining through a
  rectangular collimator opening on the phantom surface. The host fills the
  first five members; omcSsdSourceInit() clamps the rectangle to the phantom
  and works out the rest. */
 struct OmcSsdSource {
-    double ssd;                 // distance of point source to phantom surface
+    double ssd;                 ///< distance of point source to phantom surface
 
-    double xinl, xinu;          // lower and upper x-bounds of the field on
-                                // phantom surface
-    double yinl, yinu;          // lower and upper y-bounds of the field on
-                                // phantom surface
+    double xinl;                 ///< lower x-bound of the field on the phantom surface
+    double xinu;                 ///< upper x-bound of the field on the phantom surface
+    double yinl;                 ///< lower y-bound of the field on the phantom surface
+    double yinu;                 ///< upper y-bound of the field on the phantom surface
 
     /* Derived by omcSsdSourceInit() */
-    double xsize, ysize;        // x- and y-width of collimated field
-    int ixinl, ixinu;           // lower and upper x-bounds indices of the
-                                // field on phantom surface
-    int iyinl, iyinu;           // lower and upper y-bounds indices of the
-                                // field on phantom surface
+    double xsize;                ///< x-width of the collimated field
+    double ysize;                ///< y-width of the collimated field
+    int ixinl;                    ///< voxel index of the field's lower x-bound
+    int ixinu;                    ///< voxel index of the field's upper x-bound
+    int iyinl;                    ///< voxel index of the field's lower y-bound
+    int iyinu;                    ///< voxel index of the field's upper y-bound
 };
 
-/* Clamp the collimator rectangle to the phantom and find the voxel indices it
- covers. A rectangle of zero width in a direction is a pencil beam there. */
+/*! Clamp the collimator rectangle to the phantom and find the voxel indices it
+ covers. A rectangle of zero width in a direction is a pencil beam there.
+
+ @param source The x/y bounds and ssd must already be filled in; the derived
+ fields are written by this call. */
 void omcSsdSourceInit(struct OmcSsdSource *source);
 
+/*! Run parameters for one cube calculation. */
 struct OmcCubeOptions {
-    int nhist;                  // total histories
-    int nbatch;                 // statistical batches to split them into
-    int charge;                 // 0 : photons, -1 : electrons, +1 : positrons
+    int nhist;                  ///< total histories
+    int nbatch;                 ///< statistical batches to split them into
+    int charge;                 ///< 0 : photons, -1 : electrons, +1 : positrons
 
-    /* 1 : dose in Gy per incident fluence, 0 : mean deposited energy */
-    int outputDose;
+    int outputDose;             ///< 1 : dose in Gy per incident fluence, 0 : mean deposited energy
 };
 
+/*! Callbacks omcCalcCube() reports progress through. */
 struct OmcCubeCallbacks {
-    /* About to start a batch; ibatch counts from 0 and firstHistory is the
-     index of its first history. Optional. Called on the master thread.
+    /*! About to start a batch. Optional. Called on the master thread.
 
-     Return 0 to abandon the calculation: it stops before that batch, tears
+     @param ibatch Batch index, counting from 0.
+     @param nbatch Total number of batches.
+     @param firstHistory Global history index of the batch's first history.
+     @param user The pointer from struct OmcCubeCallbacks::user, untouched.
+     @return 0 to abandon the calculation: it stops before that batch, tears
      its state down and returns 0 without touching dose[] or uncertainty[].
      There is no partial result to keep -- the batches are averaged, so a run
      that stopped halfway would be a dose with no meaning. Return nonzero to
      carry on. */
     int (*batch)(int ibatch, int nbatch, uint64_t firstHistory, void *user);
 
-    void *user;
+    void *user;                 ///< passed back to the callback, untouched
 };
 
-/* What the run did, for hosts that want to report it. Optional. */
+/*! What the run did, for hosts that want to report it. Optional. */
 struct OmcCubeSummary {
-    int nhist;                  // histories actually run, rounded to whole batches
-    int nperbatch;
-    double energyFraction;      // deposited energy over incident kinetic energy
+    int nhist;                  ///< histories actually run, rounded to whole batches
+    int nperbatch;               ///< histories per batch
+    double energyFraction;      ///< deposited energy over incident kinetic energy
 };
 
-/* Transport the histories and write the results into dose[] and, unless it is
- NULL, uncertainty[]. Both are supplied by the caller and hold one entry per
- voxel, indexed like the phantom: ix + iy*isize + iz*isize*jsize.
+/*! Transport the histories and write the results into dose[] and, unless it
+ is NULL, uncertainty[]. Both are supplied by the caller and hold one entry
+ per voxel, indexed like the phantom: `ix + iy*isize + iz*isize*jsize`.
 
- uncertainty is the RELATIVE uncertainty of the dose in that voxel, and is
- 0.9999999 wherever nothing was deposited -- the convention the .3ddose format
+ @param options Run parameters.
+ @param source The collimated point source, already passed through
+ omcSsdSourceInit().
+ @param spectrum Source energy spectrum.
+ @param dose Caller-supplied array of `isize*jsize*ksize` entries.
+ @param uncertainty Caller-supplied array of the same size, or `NULL`. Holds
+ the RELATIVE uncertainty of the dose in that voxel, and is 0.9999999
+ wherever nothing was deposited -- the convention the .3ddose format
  expects.
-
- Returns nonzero when the run finished, 0 when the batch callback stopped it. */
+ @param callbacks Progress reporting; see struct OmcCubeCallbacks.
+ @param summary Optional; filled in with what the run did.
+ @return Nonzero when the run finished, 0 when the batch callback stopped
+ it. */
 int omcCalcCube(const struct OmcCubeOptions *options,
                 const struct OmcSsdSource *source,
                 const struct OmcSpectrum *spectrum,

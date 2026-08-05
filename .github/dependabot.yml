@@ -4,6 +4,14 @@ version: 2
 # pull request when a newer release of an action referenced there appears, which
 # runs the build workflow and therefore gets tested on every runner before it is
 # merged.
+#
+# Two more package-ecosystem entries below cover the Python side: the pyproject.toml
+# dependencies (numpy/scipy, plus the test/docs extras and the nanobind/scikit-build-core
+# build backend) and docs/requirements.txt, which is a separate tree on purpose -- see
+# the comment there -- so Dependabot needs to be pointed at it explicitly.
+#
+# Not covered, because Dependabot has no ecosystem for it: the openlibm FetchContent pin
+# (GIT_TAG v0.8.7) in CMakeLists.txt. That one has to be bumped by hand.
 
 updates:
   - package-ecosystem: github-actions
@@ -23,6 +31,46 @@ updates:
       # One pull request for the routine patch and minor bumps; major bumps stay
       # separate because they can require workflow changes of their own.
       actions-minor:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+    labels:
+      - dependencies
+      - python
+    groups:
+      python-minor:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: pip
+    directory: /docs
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: docs
+    labels:
+      - dependencies
+      - docs
+    groups:
+      docs-minor:
         applies-to: version-updates
         update-types:
           - minor
