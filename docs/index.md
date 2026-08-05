@@ -28,6 +28,12 @@ Build ompMC and its Python extension.
 The engine headers a new host embeds ompMC through.
 :::
 
+:::{grid-item-card} {octicon}`terminal` MATLAB / Octave
+:link: matlab-api/index
+:link-type: doc
+The `omc_matrad` MEX interface for matRad.
+:::
+
 :::{grid-item-card} {octicon}`mark-github` Source
 :link: https://github.com/e0404/ompMC
 The repository, issue tracker and full README.
@@ -53,4 +59,11 @@ python-api/index
 :caption: C
 
 c-api/index
+```
+
+```{toctree}
+:hidden:
+:caption: MATLAB / Octave
+
+matlab-api/index
 ```

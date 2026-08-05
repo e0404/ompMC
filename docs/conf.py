@@ -50,6 +50,7 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.autosectionlabel",
     "breathe",
+    "sphinxcontrib.matlab",
     "sphinx_copybutton",
     "sphinx_design",
 ]
@@ -171,6 +172,15 @@ nitpick_ignore_regex = [
     ("py:class", r"array_like"),
     ("py:class", r"sequence"),
 ]
+
+# -- MATLAB domain -------------------------------------------------------
+
+# omc_matrad is a compiled MEX file with no .m source; ucodes/omc_matrad/
+# carries omc_matrad.m as a help-text-only stub next to it (MathWorks' own
+# convention for documenting a MEX file -- MATLAB always runs the MEX file
+# itself and only reads help/doc from the .m file), which this indexes
+# alongside the real recordProgressCallback.m helper.
+matlab_src_dir = str(ROOT_DIR / "ucodes" / "omc_matrad")
 
 # -- HTML output ------------------------------------------------------------
 
