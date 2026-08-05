@@ -19,7 +19,8 @@
  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 *****************************************************************************/
 
-/******************************************************************************
+/*!
+ @file
  omc_spectrum - The energy distribution of the source particles.
 
  A spectrum is a histogram: nbins bins, bin i running from the upper energy of
@@ -40,46 +41,69 @@
 
 #include <math.h>
 
-/* What counts[] means. Counts per MeV are converted to counts per bin on the
- way in, by scaling with the bin widths. */
+/*! What counts[] means when building a spectrum from a histogram. Counts
+ per MeV are converted to counts per bin on the way in, by scaling with the
+ bin widths. */
 enum OmcSpectrumMode {
     OMC_SPECTRUM_COUNTS_PER_BIN = 0,
     OMC_SPECTRUM_COUNTS_PER_MEV = 1
 };
 
+/*! A source energy spectrum, ready to sample from. */
 struct OmcSpectrum {
-    int monoenergetic;          /* 1 : every particle starts at energy */
-    double energy;              /* the energy, when monoenergetic */
+    int monoenergetic;          ///< 1 : every particle starts at #energy
+    double energy;               ///< the energy, in MeV, when #monoenergetic
 
-    double deltak;              /* number of elements in the inverse CDF */
-    double *cdfinv1;            /* lower energy of the bin an element falls in */
-    double *cdfinv2;            /* width of that bin */
+    double deltak;               ///< number of elements in the inverse CDF
+    double *cdfinv1;             ///< lower energy of the bin an element falls in
+    double *cdfinv2;              ///< width of that bin
 };
 
 /* All of these leave the spectrum ready to sample from, and take ownership of
  nothing: the arrays passed in may be freed by the caller afterwards. */
 
+/*! @param spectrum Filled in as a monoenergetic spectrum.
+ @param energy The energy, in MeV, every particle starts at. */
 void omcSpectrumMonoenergetic(struct OmcSpectrum *spectrum, double energy);
 
-/* nbins bins with the given upper energies, ascending and all above emin, and
- non-negative counts that sum to something positive. A caller that cannot
- guarantee that should check first -- the failures here are reported through
- omcFail(), which does not return. */
+/*! Build the inverse-CDF sampling tables from a histogram.
+
+ @param spectrum Filled in from the histogram.
+ @param upperEnergy Upper energy of each bin, ascending and all above @p
+ emin.
+ @param counts Count (or count density, see @p mode) of each bin,
+ non-negative and summing to something positive.
+ @param nbins Number of bins, i.e. the length of @p upperEnergy and @p
+ counts.
+ @param emin Lower edge of the first bin, in MeV.
+ @param mode One of enum OmcSpectrumMode.
+
+ @warning A caller that cannot guarantee the constraints above should check
+ first -- the failures here are reported through omcFail(), which does not
+ return. */
 void omcSpectrumFromHistogram(struct OmcSpectrum *spectrum,
                               const double *upperEnergy, const double *counts,
                               int nbins, double emin, int mode);
 
-/* Read an EGSnrc style .spectrum file: a title line, then "nbins emin mode",
- then one "upperEnergy count" pair per line. */
+/*! Read an EGSnrc style .spectrum file: a title line, then "nbins emin mode",
+ then one "upperEnergy count" pair per line.
+
+ @param spectrum Filled in from the file.
+ @param path Path to the .spectrum file. */
 void omcSpectrumFromFile(struct OmcSpectrum *spectrum, const char *path);
 
+/*! Release the sampling tables omcSpectrumFromHistogram() or
+ omcSpectrumFromFile() allocated. */
 void omcSpectrumFree(struct OmcSpectrum *spectrum);
 
-/* Sample a kinetic energy in MeV. Called once per history, so it is inline
+/*! Sample a kinetic energy in MeV. Called once per history, so it is inline
  rather than a call into another object file; the arithmetic is unchanged from
  when it sat in the user codes.
 
- It draws its own random numbers, and deliberately draws NONE for a
+ @param spectrum The spectrum to sample from.
+ @return A kinetic energy in MeV.
+
+ @warning It draws its own random numbers, and deliberately draws NONE for a
  monoenergetic source. That is not just an optimization: the random stream is
  indexed per history, so drawing two numbers that are then thrown away would
  shift every later draw in the history and change the result of an otherwise

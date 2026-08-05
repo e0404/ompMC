@@ -21,39 +21,43 @@
  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 *****************************************************************************/
 
-/*******************************************************************************
-* Counter-based random number generator built on Philox4x32-10 (Salmon,
-* Moraes, Dror and Shaw, "Parallel random numbers: as easy as 1, 2, 3",
-* SC'11). It replaces the RANMAR port used previously.
-*
-* The generator is a pure function of a 64 bit key and a 128 bit counter.
-* The key comes from the 'rng seeds' input. The high 64 bits of the counter
-* hold the global history index, set through setRandomHistory() at the start
-* of every particle history; the low 64 bits count the draws within the
-* history. Every history therefore owns its own stream of 2^64 numbers,
-* determined only by the seeds and the history index -- never by the thread
-* that happens to simulate it or by how histories are scheduled.
-*
-* Before using the RNG, it is needed to initialize the RNG by a call to
-* initRandom().
-*******************************************************************************/
+/*!
+ @file
+ Counter-based random number generator built on Philox4x32-10 (Salmon,
+ Moraes, Dror and Shaw, "Parallel random numbers: as easy as 1, 2, 3",
+ SC'11). It replaces the RANMAR port used previously.
+
+ The generator is a pure function of a 64 bit key and a 128 bit counter.
+ The key comes from the 'rng seeds' input. The high 64 bits of the counter
+ hold the global history index, set through setRandomHistory() at the start
+ of every particle history; the low 64 bits count the draws within the
+ history. Every history therefore owns its own stream of 2^64 numbers,
+ determined only by the seeds and the history index -- never by the thread
+ that happens to simulate it or by how histories are scheduled.
+
+ @warning Before using the RNG, it is needed to initialize the RNG by a call
+ to initRandom().
+*****************************************************************************/
 
 #include <stdint.h>
 
-#define BUFF_SIZE 256
+#define BUFF_SIZE 256    ///< size of the scratch buffer initRandom() reads seeds into
 
-/* Scale factor turning 32 bit words into reals. Exact in binary floating
+/*! Scale factor turning 32 bit words into reals. Exact in binary floating
  point. */
 #define TWOM32 (1.0/4294967296.0)
 
+/*! Per-thread generator state: the Philox4x32-10 key and counter, and a
+ small buffer of already-converted reals. */
 struct Random {
-    uint32_t key[2];    /* base key, taken from the 'rng seeds' input */
-    uint32_t ctr[4];    /* ctr[2],ctr[3] hold the history index; ctr[0],
+    uint32_t key[2];    /**< base key, taken from the 'rng seeds' input */
+    uint32_t ctr[4];    /**< ctr[2],ctr[3] hold the history index; ctr[0],
                          ctr[1] count the blocks drawn within the history */
-    int buf_pos;        /* next unread entry of buf; 4 means empty */
-    double buf[4];      /* one Philox block converted to reals in (0,1) */
+    int buf_pos;        /**< next unread entry of buf; 4 means empty */
+    double buf[4];      /**< one Philox block converted to reals in (0,1) */
 };
 
+/*! Per-thread generator state. */
 #if defined(_MSC_VER)
 	/* use __declspec(thread) instead of threadprivate to avoid
 	error C3053. More information in:
@@ -64,31 +68,45 @@ struct Random {
 	#pragma omp threadprivate(rng)
 #endif
 #ifndef M_PI
-    #define M_PI 3.14159265358979323846
+    #define M_PI 3.14159265358979323846  ///< pi, for compilers whose math.h omits it
 #endif
 
-/* Read the 'rng seeds' input into the thread-local key and leave the
+/*! Read the 'rng seeds' input into the thread-local key and leave the
  generator on a sentinel stream no real history uses. Call once per thread
  before any setRandom(). */
 void initRandom(void);
 
-/* Point the generator at the stream owned by global history index ihist.
+/*! Point the generator at the stream owned by global history index ihist.
  Call at the start of every particle history; the index must be unique over
- the whole run (across batches, and beamlets where applicable). */
+ the whole run (across batches, and beamlets where applicable).
+
+ @param ihist Global history index. */
 void setRandomHistory(uint64_t ihist);
 
-/* Get a single floating random number in (0,1) from the current stream */
+/*! @return A single floating random number in (0,1) from the current
+ stream. */
 double setRandom(void);
 
-/* One Philox4x32-10 block: 128 bit counter and 64 bit key in, four 32 bit
- words out. Exposed for verification against the published test vectors. */
+/*! One Philox4x32-10 block: 128 bit counter and 64 bit key in, four 32 bit
+ words out. Exposed for verification against the published test vectors.
+
+ @param ctr 128 bit counter, as four 32 bit words.
+ @param key 64 bit key, as two 32 bit words.
+ @param out Four 32 bit output words. */
 void philox4x32(const uint32_t ctr[4], const uint32_t key[2],
                 uint32_t out[4]);
 
+/*! Release any resources initRandom() allocated. */
 void cleanRandom(void);
 
+/*! @return A normally distributed random number with mean mu and standard
+ deviation sigma. */
 double setStandardNormalRandom(const double mu, const double sigma);
 
+/*! Box-Muller transform: two independent standard normal deviates from two
+ uniform ones.
+
+ @param rndnormal Filled with the two deviates. */
 void boxMuller(double rndnormal[2]);
 
 /******************************************************************************/

@@ -55,6 +55,7 @@ __all__ = [
 __version__ = _ompmc.__version__
 
 MAX_MEDIA = _ompmc.MAX_MEDIA
+"""Maximum number of distinct media a :class:`Geometry` may reference."""
 
 
 def data_path() -> Path:
@@ -63,6 +64,17 @@ def data_path() -> Path:
     Set ``OMPMC_DATA_PATH`` to override it; otherwise the copy shipped inside
     the package is used, falling back to the source tree when running from a
     checkout that was not installed.
+
+    Returns
+    -------
+    pathlib.Path
+        Directory containing the ``data``, ``pegs4`` and ``spectra``
+        subdirectories.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no such directory can be found and ``OMPMC_DATA_PATH`` is not set.
     """
     override = os.environ.get("OMPMC_DATA_PATH")
     if override:
@@ -103,7 +115,40 @@ def _as_triples(values, name: str) -> np.ndarray:
 
 @dataclass
 class Geometry:
-    """The voxel phantom: where the boundaries are and what is in each voxel."""
+    """The voxel phantom: where the boundaries are and what is in each voxel.
+
+    Parameters
+    ----------
+    x_bounds, y_bounds, z_bounds : array_like
+        Strictly ascending voxel boundaries along each axis, in cm. ``n + 1``
+        values describe ``n`` voxels along that axis.
+    materials : sequence of str
+        Medium names, matching entries in the PEGS file. `material` below
+        indexes into this list, starting from 1; at most :data:`MAX_MEDIA`
+        are supported.
+    density : numpy.ndarray
+        Fortran-ordered ``float64`` cube of mass densities in g/cm^3, shaped
+        ``(len(x_bounds) - 1, len(y_bounds) - 1, len(z_bounds) - 1)``.
+    material : numpy.ndarray
+        Fortran-ordered ``int32`` cube of the same shape, indexing
+        `materials` from 1; 0 means vacuum.
+
+    Raises
+    ------
+    ValueError
+        If a bounds vector is not strictly ascending, `materials` is empty
+        or longer than :data:`MAX_MEDIA`, the cubes are not shaped like the
+        bounds describe, `density` is negative anywhere, or `material` holds
+        an index outside ``0 .. len(materials)``.
+    TypeError
+        If `density` or `material` do not have the required dtype.
+
+    Notes
+    -----
+    The transport indexes voxels with the first axis varying fastest, so a
+    C-ordered cube would describe a transposed phantom -- it is rejected
+    rather than silently copied. Use ``np.asfortranarray(...)``.
+    """
 
     x_bounds: np.ndarray
     y_bounds: np.ndarray
@@ -164,10 +209,12 @@ class Geometry:
 
     @property
     def shape(self) -> tuple[int, int, int]:
+        """Voxel count along each axis, ``(nx, ny, nz)``."""
         return self.density.shape
 
     @property
     def n_voxels(self) -> int:
+        """Total number of voxels, ``nx * ny * nz``."""
         return int(self.density.size)
 
 
@@ -175,15 +222,30 @@ class Geometry:
 class Spectrum:
     """The energy distribution of the source particles.
 
-    Build one with :meth:`from_file`, :meth:`from_histogram` or
-    :meth:`monoenergetic`.
+    Build one with :meth:`from_file`, :meth:`from_histogram`,
+    :meth:`monoenergetic` or :meth:`default`; there is no public constructor.
     """
 
     _payload: dict
 
     @classmethod
     def from_file(cls, path) -> "Spectrum":
-        """Read an EGSnrc style ``.spectrum`` file."""
+        """Read an EGSnrc style ``.spectrum`` file.
+
+        Parameters
+        ----------
+        path : str or os.PathLike
+            Path to the spectrum file.
+
+        Returns
+        -------
+        Spectrum
+
+        Raises
+        ------
+        FileNotFoundError
+            If `path` does not exist.
+        """
         path = Path(path)
         if not path.is_file():
             raise FileNotFoundError(f"No spectrum file at {path}")
@@ -192,7 +254,33 @@ class Spectrum:
     @classmethod
     def from_histogram(cls, energy, fluence, e_min: float = 0.0,
                        per_mev: bool = False) -> "Spectrum":
-        """A histogram: ``energy`` holds the upper edge of each bin in MeV."""
+        """A histogram spectrum.
+
+        Parameters
+        ----------
+        energy : array_like
+            Upper edge of each bin, in MeV; finite and strictly ascending.
+        fluence : array_like
+            Relative number of particles per bin, same length as `energy`;
+            non-negative, summing to a positive, finite value.
+        e_min : float, optional
+            Lower edge of the first bin, in MeV. Must be less than
+            ``energy[0]``.
+        per_mev : bool, optional
+            If true, `fluence` holds counts per MeV rather than counts per
+            bin.
+
+        Returns
+        -------
+        Spectrum
+
+        Raises
+        ------
+        ValueError
+            If the shapes of `energy` and `fluence` disagree, `energy` is
+            not finite and strictly ascending above `e_min`, or `fluence`
+            is not non-negative and finite-summing to a positive value.
+        """
         energy = np.ascontiguousarray(energy, dtype=np.float64)
         fluence = np.ascontiguousarray(fluence, dtype=np.float64)
 
@@ -224,7 +312,22 @@ class Spectrum:
 
     @classmethod
     def monoenergetic(cls, energy: float) -> "Spectrum":
-        """Every particle starts with the same kinetic energy, in MeV."""
+        """Every particle starts with the same kinetic energy.
+
+        Parameters
+        ----------
+        energy : float
+            Kinetic energy in MeV; positive and finite.
+
+        Returns
+        -------
+        Spectrum
+
+        Raises
+        ------
+        ValueError
+            If `energy` is not positive and finite.
+        """
         energy = float(energy)
         if not energy > 0.0 or not np.isfinite(energy):
             raise ValueError(f"energy is {energy} MeV, it must be positive "
@@ -233,7 +336,12 @@ class Spectrum:
 
     @classmethod
     def default(cls) -> "Spectrum":
-        """The 6 MV bremsstrahlung spectrum shipped with ompMC."""
+        """The 6 MV bremsstrahlung spectrum shipped with ompMC.
+
+        Returns
+        -------
+        Spectrum
+        """
         return cls.from_file(data_path() / "spectra" / "mohan6.spectrum")
 
 
@@ -241,9 +349,24 @@ class Spectrum:
 class BeamletSource:
     """Beamlet apertures at isocentre, one sparse Dij column each.
 
-    ``source`` holds one xyz row per beam, the other three one row per beamlet:
-    the corner of the aperture rectangle and the two edge vectors spanning it.
-    ``i_beam`` says which beam each beamlet belongs to, counting from 0.
+    Parameters
+    ----------
+    i_beam : array_like of int
+        Index of the beam each beamlet belongs to, counting from 0.
+    source : array_like
+        Shape ``(n_beams, 3)``, the xyz source position of each beam.
+    corner : array_like
+        Shape ``(n_beamlets, 3)``, the corner of each beamlet's aperture
+        rectangle.
+    side1, side2 : array_like
+        Shape ``(n_beamlets, 3)``, the two edge vectors spanning the
+        aperture rectangle from `corner`.
+
+    Raises
+    ------
+    ValueError
+        If `i_beam` is empty, `corner`/`side1`/`side2` do not each have one
+        row per beamlet, or `i_beam` references a beam outside `source`.
     """
 
     i_beam: np.ndarray
@@ -278,12 +401,27 @@ class BeamletSource:
 
     @property
     def n_beamlets(self) -> int:
+        """Number of beamlets, ``len(i_beam)``."""
         return int(self.i_beam.size)
 
 
 @dataclass
 class CollimatedSource:
-    """A point source at ``ssd`` behind a rectangular opening on the surface."""
+    """A point source at `ssd` behind a rectangular opening on the surface.
+
+    Parameters
+    ----------
+    ssd : float
+        Distance from the source to the phantom surface, in cm; positive.
+    x_min, x_max, y_min, y_max : float
+        Bounds of the rectangular opening on the phantom surface, in cm.
+
+    Raises
+    ------
+    ValueError
+        If `ssd` is not positive, or the opening has negative width in
+        either direction.
+    """
 
     ssd: float
     x_min: float
@@ -300,7 +438,25 @@ class CollimatedSource:
 
 @dataclass
 class Physics:
-    """Transport parameters and where the interaction data lives."""
+    """Transport parameters and where the interaction data lives.
+
+    Parameters
+    ----------
+    pegs_file, pgs4form_file, data_folder, output_folder : str, os.PathLike or None, optional
+        Override the corresponding file or directory; each defaults to the
+        matching path under :func:`data_path`.
+    global_ecut, global_pcut : float, optional
+        Global electron and photon transport cut-offs, in MeV.
+    n_split : int, optional
+        Photon splitting factor at the source; ``1`` disables splitting.
+    seeds : tuple of int, optional
+        The two seeds of the Philox4x32-10 random number generator.
+    esave : float or None, optional
+        Electron range-rejection threshold, in MeV; ``None`` disables it.
+    e_rr, f_rr : float or None, optional
+        Russian roulette threshold, in MeV, and survival factor. Both must
+        be set (`f_rr` > 1) to take effect.
+    """
 
     pegs_file: str | os.PathLike | None = None
     pgs4form_file: str | os.PathLike | None = None
@@ -318,7 +474,12 @@ class Physics:
     f_rr: float | None = None
 
     def input_items(self) -> dict[str, str]:
-        """The key/value pairs the core library reads its configuration from."""
+        """The key/value pairs the core library reads its configuration from.
+
+        Returns
+        -------
+        dict of str to str
+        """
         root = data_path()
 
         pegs = self.pegs_file or root / "pegs4" / "700icru.pegs4dat"
@@ -379,14 +540,56 @@ def calc_dij(
 ):
     """Calculate the dose influence matrix, one sparse column per beamlet.
 
-    Returns a ``scipy.sparse.csc_array`` of shape ``(n_voxels, n_beamlets)`` in
-    Gy per incident particle, or a ``(dose, variance)`` pair when ``variance``
-    is true. Voxels below ``rel_dose_threshold`` of the beamlet maximum are
-    dropped from the column.
+    Parameters
+    ----------
+    geometry : Geometry
+        The voxel phantom.
+    source : BeamletSource
+        The beamlets to calculate a column for.
+    spectrum : Spectrum, optional
+        Source energy spectrum. Defaults to :meth:`Spectrum.default`.
+    physics : Physics, optional
+        Transport parameters and data file locations. Defaults to
+        ``Physics()``.
+    n_histories : int, optional
+        Histories simulated per beamlet.
+    n_batches : int, optional
+        Statistical batches per beamlet, at least 2, needed for the
+        uncertainty estimate.
+    charge : int, optional
+        Source particle: ``-1`` electrons, ``0`` photons, ``1`` positrons.
+    rel_dose_threshold : float, optional
+        Voxels below this fraction of a beamlet's maximum dose are dropped
+        from its column. In ``[0, 1)``.
+    gaussian_source : bool, optional
+        Spread the starting point over the collimator plane instead of a
+        point source, softening the penumbra.
+    source_width : float, optional
+        Standard deviation of the Gaussian source, in cm. Ignored unless
+        `gaussian_source` is true.
+    variance : bool, optional
+        Also return the variance of the mean, per voxel.
+    progress : callable, optional
+        Called with the fraction finished, in ``[0, 1]``, once per batch and
+        once per beamlet. Returning ``False`` stops the calculation.
+    verbosity : int, optional
+        Log level passed to the engine.
 
-    ``progress`` is called with the fraction finished, in [0, 1], once per
-    batch and once per beamlet. Returning ``False`` stops the calculation and
-    raises ``KeyboardInterrupt``; Ctrl-C does the same.
+    Returns
+    -------
+    scipy.sparse.csc_array
+        Shape ``(geometry.n_voxels, source.n_beamlets)``, dose in Gy per
+        incident particle. When `variance` is true, a ``(dose, variance)``
+        pair of such arrays instead.
+
+    Raises
+    ------
+    ValueError
+        If `n_batches`, `n_histories`, `charge` or `rel_dose_threshold` are
+        out of range.
+    KeyboardInterrupt
+        If `progress` returned false, or Ctrl-C was pressed, stopping the
+        calculation before every beamlet was reported.
     """
     from scipy.sparse import csc_array
 
@@ -451,30 +654,79 @@ def calc_forward(
     """Calculate the dose of a whole weighted set of beamlets, in one cube.
 
     This is what ``calc_dij(...) @ weights`` would give, computed directly.
-    ``weights`` holds one finite, non-negative value per beamlet and is where
-    the collimation comes in: a blocked beamlet gets 0, an open one its fluence,
-    a partly transmitting one a fraction of it. Histories go to the beamlets in
-    proportion to their weight, so a blocked beamlet costs nothing and the run
-    time no longer grows with the number of beamlets.
+    `weights` is where the collimation comes in: a blocked beamlet gets 0, an
+    open one its fluence, a partly transmitting one a fraction of it.
+    Histories go to the beamlets in proportion to their weight, so a blocked
+    beamlet costs nothing and the run time no longer grows with the number of
+    beamlets.
 
-    Returns ``(dose, uncertainty)``, both cubes shaped like the phantom. The
-    dose is in Gy for exactly these weights -- doubling them doubles it --
-    unless ``output_dose`` is false, in which case it is the mean deposited
-    energy. The uncertainty is relative, and 0.9999999 where nothing was
-    deposited.
+    Parameters
+    ----------
+    geometry : Geometry
+        The voxel phantom.
+    source : BeamletSource
+        The weighted beamlets.
+    weights : array_like
+        One finite, non-negative value per beamlet, summing to a finite,
+        positive total. Modulates fluence, not spectrum: a beamlet at 0.02
+        starts 2% of the particles, with the spectrum unhardened.
+        Attenuation in a collimator, its scatter and the beam hardening that
+        goes with it are not modelled.
+    spectrum : Spectrum, optional
+        Source energy spectrum. Defaults to :meth:`Spectrum.default`.
+    physics : Physics, optional
+        Transport parameters and data file locations. Defaults to
+        ``Physics()``.
+    n_histories : int, optional
+        Histories simulated over the whole calculation -- unlike
+        :func:`calc_dij`, this does not count per beamlet, so multiply it by
+        `source.n_beamlets` to keep the same statistics as a `calc_dij` run.
+    n_batches : int, optional
+        Statistical batches, at least 2, needed for the uncertainty
+        estimate.
+    charge : int, optional
+        Source particle: ``-1`` electrons, ``0`` photons, ``1`` positrons.
+    gaussian_source : bool, optional
+        Spread the starting point over the collimator plane instead of a
+        point source, softening the penumbra.
+    source_width : float, optional
+        Standard deviation of the Gaussian source, in cm. Ignored unless
+        `gaussian_source` is true.
+    output_dose : bool, optional
+        If true, the dose is in Gy for exactly these weights -- doubling
+        them doubles it. If false, the mean deposited energy is returned
+        instead.
+    progress : callable, optional
+        Called with the fraction finished, in ``[0, 1]``, once per batch.
+        Returning ``False`` stops the calculation.
+    verbosity : int, optional
+        Log level passed to the engine.
 
-    Two things differ from :func:`calc_dij`. ``n_histories`` counts the whole
-    calculation rather than one beamlet, so multiply it by ``n_beamlets`` to
-    keep the same statistics. And there is no ``rel_dose_threshold``: it prunes
-    columns of a sparse matrix, and there is no matrix here -- which is worth
-    remembering when comparing the two, since it is the ``calc_dij`` result
-    that is pruned.
+    Returns
+    -------
+    dose : numpy.ndarray
+        Cube shaped like the phantom.
+    uncertainty : numpy.ndarray
+        Cube shaped like the phantom, the relative uncertainty of `dose`,
+        and 0.9999999 where nothing was deposited.
 
-    The weights modulate fluence, not spectrum: a beamlet at 0.02 starts 2% of
-    the particles, with the spectrum unhardened. Attenuation in a collimator,
-    its scatter and the beam hardening that goes with it are not modelled.
+    Raises
+    ------
+    ValueError
+        If `n_batches`, `n_histories` or `charge` are out of range, `weights`
+        does not have one entry per beamlet, holds a negative or non-finite
+        value, or sums to zero or a non-finite value.
+    KeyboardInterrupt
+        If `progress` returned false, or Ctrl-C was pressed, before any
+        result was available -- the batches are averaged, so a run stopped
+        partway through has no result to return.
 
-    ``progress`` works as it does for :func:`calc_dij`, called once per batch.
+    Notes
+    -----
+    There is no ``rel_dose_threshold`` as in :func:`calc_dij`: it prunes
+    columns of a sparse matrix, and there is no matrix here. Worth
+    remembering when comparing the two, since it is the `calc_dij` result
+    that gets pruned.
     """
     _check_run(n_histories, n_batches, charge)
 
@@ -546,12 +798,45 @@ def calc_cube(
 ):
     """Calculate the dose everywhere in the phantom from one collimated beam.
 
-    Returns ``(dose, uncertainty)``, both cubes shaped like the phantom. The
-    dose is in Gy per incident fluence unless ``output_dose`` is false, in
-    which case it is the mean deposited energy. The uncertainty is relative,
-    and 0.9999999 wherever nothing was deposited.
+    Parameters
+    ----------
+    geometry : Geometry
+        The voxel phantom.
+    source : CollimatedSource
+        The point source and its collimator opening.
+    spectrum : Spectrum, optional
+        Source energy spectrum. Defaults to :meth:`Spectrum.default`.
+    physics : Physics, optional
+        Transport parameters and data file locations. Defaults to
+        ``Physics()``.
+    n_histories : int, optional
+        Histories simulated.
+    n_batches : int, optional
+        Statistical batches, at least 2, needed for the uncertainty
+        estimate.
+    charge : int, optional
+        Source particle: ``-1`` electrons, ``0`` photons, ``1`` positrons.
+    output_dose : bool, optional
+        If true, the dose is in Gy per incident fluence. If false, the mean
+        deposited energy is returned instead.
+    progress : callable, optional
+        Called with the fraction finished, in ``[0, 1]``, once per batch.
+        Returning ``False`` stops the calculation.
+    verbosity : int, optional
+        Log level passed to the engine.
 
-    ``progress`` works as it does for :func:`calc_dij`, called once per batch.
+    Returns
+    -------
+    dose : numpy.ndarray
+        Cube shaped like the phantom.
+    uncertainty : numpy.ndarray
+        Cube shaped like the phantom, the relative uncertainty of `dose`,
+        and 0.9999999 where nothing was deposited.
+
+    Raises
+    ------
+    ValueError
+        If `n_batches`, `n_histories` or `charge` are out of range.
     """
     _check_run(n_histories, n_batches, charge)
 

@@ -1,0 +1,60 @@
+# Minimal Doxygen config: XML output only, consumed by Breathe/Sphinx. Runs as
+# a subprocess of docs/conf.py, not part of the CMake build -- see the comment
+# there for why. Any setting not listed here uses Doxygen's built-in default.
+
+PROJECT_NAME           = "ompMC"
+PROJECT_NUMBER         = $(OMPMC_DOXYGEN_VERSION)
+PROJECT_BRIEF          = "OpenMP parallel Monte Carlo photon and electron transport"
+OUTPUT_DIRECTORY       = doxygen
+QUIET                  = YES
+WARN_AS_ERROR          = NO
+
+# Public C API only: the 10 headers a host embeds ompMC through. ompmc.h/.c
+# hold the physics transport internals, meant for maintainers reading the
+# source directly rather than an API reference; see docs/c-api/internals.md.
+INPUT                  = ../src
+FILE_PATTERNS          = *.h
+EXCLUDE                = ../src/ompmc.h
+RECURSIVE              = NO
+
+# The GPL banner opens with /**** rather than /** or /*!, so Doxygen skips it
+# without an EXCLUDE_PATTERNS entry -- see JAVADOC_AUTOBRIEF below.
+JAVADOC_AUTOBRIEF       = YES
+OPTIMIZE_OUTPUT_FOR_C   = YES
+TYPEDEF_HIDES_STRUCT    = NO
+EXTRACT_ALL             = NO
+EXTRACT_STATIC          = NO
+HIDE_UNDOC_MEMBERS      = NO
+HIDE_UNDOC_CLASSES      = NO
+SORT_MEMBER_DOCS        = NO
+MARKDOWN_SUPPORT        = YES
+WARN_IF_UNDOCUMENTED   = YES
+
+# Each header's @file comment mentions the others by plain filename (e.g.
+# "(omc_geom.h)") as prose, not as a link. With autolinking on, Doxygen turns
+# those into cross-file references that only resolve if every referenced
+# file's page happens to already be registered in the same Sphinx build in
+# the right order, which our per-file `doxygenfile` pages spread across three
+# separate c-api/*.md pages do not reliably satisfy -- breaking the build
+# with "undefined label" errors that have nothing to do with a real missing
+# doc. Explicit references (`#name`, `struct Foo`) are unaffected; this only
+# turns off the automatic kind.
+AUTOLINK_SUPPORT        = NO
+
+# omcLog()/omcFail() carry GCC/MSVC attribute macros (noreturn, printf format
+# checking) that Doxygen's C parser copies verbatim into the declaration text
+# it hands Breathe, and Breathe's declaration parser then chokes on them ("not
+# valid C++") since they are not real syntax. Expanding just these two to
+# nothing, rather than turning on full preprocessing, keeps every other macro
+# in the headers (MXMED, MAX_MEDIA-style constants, threadprivate guards)
+# showing up in the docs as written.
+ENABLE_PREPROCESSING    = YES
+MACRO_EXPANSION         = YES
+EXPAND_ONLY_PREDEF      = YES
+PREDEFINED              = OMC_NORETURN= \
+                          OMC_PRINTF_LIKE(fmtArg,firstArg)=
+
+GENERATE_HTML           = NO
+GENERATE_LATEX          = NO
+GENERATE_XML            = YES
+XML_PROGRAMLISTING      = NO

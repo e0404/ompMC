@@ -19,7 +19,8 @@
  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 *****************************************************************************/
 
-/******************************************************************************
+/*!
+ @file
  omc_geom - The rectilinear voxel phantom every ompMC user code transports in.
 
  howfar(), hownear() and regionIndex() are the geometry side of the contract
@@ -30,43 +31,53 @@
  all see one phantom.
 
  What a user code still owns is FILLING the geometry: omc_dosxyz reads an
- .egsphant file, the matRad interface takes cubes from MATLAB, and a Python
- host will take numpy arrays. Whoever fills it must set every field of struct
+ .egsphant file, the matRad interface takes cubes from MATLAB, and the Python
+ host takes numpy arrays. Whoever fills it must set every field of struct
  Geom below, including the reciprocal spacings, before calling initRegions().
 *****************************************************************************/
 
 #ifndef OMC_GEOM_H
 #define OMC_GEOM_H
 
+/*! The rectilinear voxel phantom. A host fills every field, including the
+ reciprocal spacings (see omcGeomDetectSpacing()), before calling
+ initRegions(). */
 struct Geom {
-    int *med_indices;           // index of the media in each voxel
-    double *med_densities;      // density of the medium in each voxel
+    int *med_indices;           ///< index of the medium in each voxel
+    double *med_densities;      ///< density of the medium in each voxel
 
-    int isize;                  // number of voxels on each direction
-    int jsize;
-    int ksize;
+    int isize;                  ///< number of voxels along x
+    int jsize;                  ///< number of voxels along y
+    int ksize;                  ///< number of voxels along z
 
-    double *xbounds;            // boundaries of voxels on each direction
-    double *ybounds;
-    double *zbounds;
+    double *xbounds;            ///< boundaries of voxels along x, isize+1 values
+    double *ybounds;            ///< boundaries of voxels along y, jsize+1 values
+    double *zbounds;            ///< boundaries of voxels along z, ksize+1 values
 
-    double dxi, dyi, dzi;       /* reciprocal grid spacing per axis when that
-                                 axis is uniform, 0.0 when it is not; lets
-                                 regionIndex() locate a point with one
-                                 multiplication instead of a binary search */
+    /*! Reciprocal grid spacing along x when that axis is uniform, 0.0
+     otherwise; lets regionIndex() locate a point with one multiplication
+     instead of a binary search. Filled by omcGeomDetectSpacing(). */
+    double dxi;
+    double dyi;                 ///< reciprocal grid spacing along y, see #dxi
+    double dzi;                 ///< reciprocal grid spacing along z, see #dxi
 };
 
+/*! The phantom every user code fills in and passes to initRegions(). */
 extern struct Geom geometry;
 
-/* Fill dxi/dyi/dzi from the bounds already stored in the struct. Every loader
- has to do this, and doing it in one place keeps a new one from forgetting and
- quietly losing the fast point location. */
+/*! Fill dxi/dyi/dzi from the bounds already stored in the struct. Every
+ loader has to do this, and doing it in one place keeps a new one from
+ forgetting and quietly losing the fast point location. */
 void omcGeomDetectSpacing(void);
 
-/* Set up the per region transport parameters from the filled geometry: medium
- index and density scaling per voxel, per medium cut-offs clamped to what the
- PEGS data supports, and the per medium maximum density ratio the Woodcock
- majorant needs. Reads the "global ecut" and "global pcut" input items. */
+/*! Set up the per region transport parameters from the filled geometry:
+ medium index and density scaling per voxel, per medium cut-offs clamped to
+ what the PEGS data supports, and the per medium maximum density ratio the
+ Woodcock majorant needs. Reads the "global ecut" and "global pcut" input
+ items.
+
+ @pre The global #geometry is completely filled in, including a call to
+ omcGeomDetectSpacing(). */
 void initRegions(void);
 
 #endif

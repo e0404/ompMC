@@ -1,0 +1,12 @@
+# Documentation build dependencies. Deliberately NOT the project itself
+# (which needs a C++ compiler, CMake and OpenMP to build its compiled
+# extension) -- conf.py adds ucodes/omc_python to sys.path and mocks the
+# compiled _ompmc submodule instead. numpy is a real import at module load
+# time in ompmc/__init__.py, so it is listed here rather than mocked.
+sphinx>=7
+furo
+myst-parser
+breathe
+sphinx-copybutton
+sphinx-design
+numpy>=1.22

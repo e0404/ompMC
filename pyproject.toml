@@ -24,6 +24,17 @@ Homepage = "https://github.com/e0404/ompMC"
 
 [project.optional-dependencies]
 test = ["pytest >=7"]
+# Listed for reference; the docs build itself uses docs/requirements.txt so
+# that building the site never needs the compiled extension -- see the
+# comment in docs/conf.py.
+docs = [
+    "sphinx >=7",
+    "furo",
+    "myst-parser",
+    "breathe",
+    "sphinx-copybutton",
+    "sphinx-design",
+]
 
 [tool.scikit-build]
 # 3.26 is where FindPython grew the Development.SABIModule component that the

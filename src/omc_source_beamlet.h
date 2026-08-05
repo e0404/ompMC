@@ -19,7 +19,8 @@
  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 *****************************************************************************/
 
-/******************************************************************************
+/*!
+ @file
  omc_source_beamlet - Particles starting on a beamlet aperture.
 
  The source model the matRad interface uses: a beam has a source point, a
@@ -42,59 +43,64 @@
 
 struct OmcSpectrum;
 
-/* Where on the source the particles start. POINT is the classic point source;
- GAUSSIAN spreads the starting point over the collimator plane, which softens
- the penumbra. */
+/*! Where on the source the particles start. */
 enum OmcSourceGeometry {
-    OMC_SOURCE_POINT = 0,
-    OMC_SOURCE_GAUSSIAN
+    OMC_SOURCE_POINT = 0,     /**< the classic point source */
+    OMC_SOURCE_GAUSSIAN       /**< spreads the starting point over the
+                               collimator plane, which softens the penumbra */
 };
 
-/* The beamlets. Per beam: the source position. Per beamlet: which beam it
+/*! The beamlets. Per beam: the source position. Per beamlet: which beam it
  belongs to, and the corner plus two edge vectors of its aperture rectangle at
- isocentre. All arrays belong to the caller and must outlive the call. */
+ isocentre.
+
+ @warning All arrays belong to the caller and must outlive the call. */
 struct OmcBeamletSource {
-    int nbeamlets;
-    const int *ibeam;           // index of the beam of each beamlet, 0 based
+    int nbeamlets;               ///< number of beamlets
+    const int *ibeam;           ///< index of the beam of each beamlet, 0 based
 
-    const double *xsource;      // coordinates of the source of each beam
-    const double *ysource;
-    const double *zsource;
+    const double *xsource;      ///< x coordinate of the source of each beam
+    const double *ysource;      ///< y coordinate of the source of each beam
+    const double *zsource;      ///< z coordinate of the source of each beam
 
-    const double *xcorner;      // coordinates of the beamlet corner
-    const double *ycorner;
-    const double *zcorner;
+    const double *xcorner;      ///< x coordinate of the beamlet corner
+    const double *ycorner;      ///< y coordinate of the beamlet corner
+    const double *zcorner;      ///< z coordinate of the beamlet corner
 
-    const double *xside1;       // first edge vector of the beamlet
-    const double *yside1;
-    const double *zside1;
+    const double *xside1;       ///< x component of the first edge vector of the beamlet
+    const double *yside1;       ///< y component of the first edge vector of the beamlet
+    const double *zside1;       ///< z component of the first edge vector of the beamlet
 
-    const double *xside2;       // second edge vector of the beamlet
-    const double *yside2;
-    const double *zside2;
+    const double *xside2;       ///< x component of the second edge vector of the beamlet
+    const double *yside2;       ///< y component of the second edge vector of the beamlet
+    const double *zside2;       ///< z component of the second edge vector of the beamlet
 };
 
-/* Everything the sampling needs that does not change from history to history.
- An engine fills this once, before its first parallel region, and hands it to
- omcBeamletSample() unchanged from then on. */
+/*! Everything the sampling needs that does not change from history to
+ history. An engine fills this once, before its first parallel region, and
+ hands it to omcBeamletSample() unchanged from then on. */
 struct OmcBeamletSampler {
-    const struct OmcBeamletSource *source;
-    const struct OmcSpectrum *spectrum;
+    const struct OmcBeamletSource *source;   ///< the beamlets
+    const struct OmcSpectrum *spectrum;      ///< source energy spectrum
 
-    int charge;                 // 0 : photons, -1 : electrons, +1 : positrons
-    enum OmcSourceGeometry geometry;
-    double gaussianWidth;       // standard deviation in cm, GAUSSIAN only
+    int charge;                 ///< 0 : photons, -1 : electrons, +1 : positrons
+    enum OmcSourceGeometry geometry;   ///< POINT or GAUSSIAN
+    double gaussianWidth;       ///< standard deviation in cm, GAUSSIAN only
 };
 
-/* Put one primary particle of beamlet ibeamlet on the (thread local) stack,
+/*! Put one primary particle of beamlet ibeamlet on the (thread local) stack,
  already transported to the phantom surface and with its region index found.
 
- weight becomes the particle's statistical weight, and also scales what the
- history contributes to the incident energy tally. Pass 1.0 for an unweighted
- history; omc_engine_forward passes the beamlet's share of the fluence.
+ @param sampler Sampling parameters, unchanged since the caller filled them.
+ @param ibeamlet Index of the beamlet to sample from.
+ @param weight Becomes the particle's statistical weight, and also scales
+ what the history contributes to the incident energy tally. Pass 1.0 for an
+ unweighted history; omc_engine_forward passes the beamlet's share of the
+ fluence.
 
- Runs inside the parallel history loop, so it touches nothing but the thread's
- own stack, its own random number generator, and the read-only sampler. */
+ @warning Runs inside the parallel history loop, so it touches nothing but
+ the thread's own stack, its own random number generator, and the read-only
+ sampler. */
 void omcBeamletSample(const struct OmcBeamletSampler *sampler, int ibeamlet,
                       double weight);
 
