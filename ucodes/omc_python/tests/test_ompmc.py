@@ -293,6 +293,8 @@ class TestCalcForward:
         ("negative", "negative"),
         ("zero", "every weight is zero"),
         ("nan", "finite"),
+        ("infinite", "finite"),
+        ("overflow", "finite"),
     ])
     def test_rejects_unusable_weights(self, matrad_fixture, bad, match):
         f = matrad_fixture
@@ -303,6 +305,8 @@ class TestCalcForward:
             "negative": -np.ones(n),
             "zero": np.zeros(n),
             "nan": np.full(n, np.nan),
+            "infinite": np.full(n, np.inf),
+            "overflow": np.full(n, np.finfo(np.float64).max),
         }[bad]
 
         with pytest.raises(ValueError, match=match):

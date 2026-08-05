@@ -101,11 +101,12 @@ struct OmcForwardSummary {
  NULL, uncertainty[]. Both are supplied by the caller and hold one entry per
  voxel, indexed like the phantom: ix + iy*isize + iz*isize*jsize.
 
- weights holds one non-negative value per beamlet. Its scale carries through
- to the result: doubling every weight doubles the dose, and the dose returned
- is the dose for exactly these weights, so that it can be held against
- dij*weights. Beamlets are given histories in proportion to their weight, and
- one whose share rounds to zero histories contributes nothing -- the summary
+ weights holds one finite, non-negative value per beamlet, and their sum must
+ also be finite. Its scale carries through to the result: doubling every weight
+ doubles the dose, and the dose returned is the dose for exactly these weights,
+ so that it can be held against dij*weights. Beamlets are given histories in
+ proportion to their weight, and one whose share rounds to zero histories
+ contributes nothing -- the summary
  reports how much weight that was, and a warning goes to the host when it is
  more than a thousandth of the total.
 

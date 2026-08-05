@@ -904,8 +904,8 @@ static void initSource(void) {
 
     /* The collimation of the forward mode: one weight per beamlet, which the
      engine turns into that beamlet's share of the histories. Only the shape
-     is checked here; the engine rejects negative and NaN weights, and a set
-     that is zero everywhere. */
+     is checked here; the engine rejects negative or non-finite weights, a
+     non-finite sum, and a set that is zero everywhere. */
     bixelWeights = NULL;
 
     if (omcMode == OMC_MODE_FORWARD_BEAMLET) {

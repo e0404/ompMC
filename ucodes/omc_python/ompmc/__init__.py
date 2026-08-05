@@ -451,9 +451,9 @@ def calc_forward(
     """Calculate the dose of a whole weighted set of beamlets, in one cube.
 
     This is what ``calc_dij(...) @ weights`` would give, computed directly.
-    ``weights`` holds one non-negative value per beamlet and is where the
-    collimation comes in: a blocked beamlet gets 0, an open one its fluence, a
-    partly transmitting one a fraction of it. Histories go to the beamlets in
+    ``weights`` holds one finite, non-negative value per beamlet and is where
+    the collimation comes in: a blocked beamlet gets 0, an open one its fluence,
+    a partly transmitting one a fraction of it. Histories go to the beamlets in
     proportion to their weight, so a blocked beamlet costs nothing and the run
     time no longer grows with the number of beamlets.
 
@@ -491,7 +491,11 @@ def calc_forward(
         raise ValueError(
             f"{int(np.sum(weights < 0.0))} of the weights are negative"
         )
-    if not weights.sum() > 0.0:
+    with np.errstate(over="ignore", invalid="ignore"):
+        total_weight = weights.sum()
+    if not np.isfinite(total_weight):
+        raise ValueError("weights must sum to a finite value")
+    if not total_weight > 0.0:
         raise ValueError("every weight is zero, so there is nothing to "
                          "calculate")
 

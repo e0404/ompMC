@@ -100,17 +100,26 @@ static void buildAllocation(struct Allocation *a, int nbeamlets,
     int heaviest = 0;
 
     for (int i = 0; i < nbeamlets; i++) {
-        /* Written so that a NaN fails it: NaN < 0.0 is false. */
-        if (!(weights[i] >= 0.0)) {
+        if (!isfinite(weights[i]) || weights[i] < 0.0) {
             freeAllocation(a);
             omcFail("ompMC:forward:invalidWeight",
-                "Beamlet weight %d is %g; weights must be zero or positive.",
+                "Beamlet weight %d is %g; weights must be finite and zero "
+                "or positive.",
                 i + 1, weights[i]);
         }
         if (weights[i] > weights[heaviest]) {
             heaviest = i;
         }
         total += weights[i];
+    }
+
+    /* Individually finite values can still overflow when summed. That would
+     make every cumulative/total allocation ratio invalid. */
+    if (!isfinite(total)) {
+        freeAllocation(a);
+        omcFail("ompMC:forward:invalidWeight",
+            "The beamlet weights sum to a non-finite value; reduce their "
+            "scale.");
     }
 
     if (!(total > 0.0)) {
