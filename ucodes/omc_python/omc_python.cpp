@@ -64,6 +64,7 @@
 extern "C" {
 #include "omc_engine_cube.h"
 #include "omc_engine_dij.h"
+#include "omc_engine_forward.h"
 #include "omc_geom.h"
 #include "omc_host.h"
 #include "omc_spectrum.h"
@@ -376,6 +377,53 @@ static nb::ndarray<nb::numpy, T> adopt(std::vector<T> &&values) {
 }
 
 /******************************************************************************/
+/* The beamlet source, shared by calc_dij and calc_forward.
+
+ The Fortran order of the triples means each column is contiguous, which is
+ exactly the one-array-per-component layout the engine wants, so the arrays are
+ used in place. They belong to the caller and have to outlive the call, which
+ they do: nanobind keeps the Python objects alive for its duration. */
+
+static void parseBeamletSource(struct OmcBeamletSource &src,
+                               const IntVector &i_beam, const Triples &source,
+                               const Triples &corner, const Triples &side1,
+                               const Triples &side2) {
+
+    src.nbeamlets = (int) i_beam.shape(0);
+    src.ibeam = (const int *) i_beam.data();
+
+    if (corner.shape(0) != (size_t)src.nbeamlets ||
+        side1.shape(0) != (size_t)src.nbeamlets ||
+        side2.shape(0) != (size_t)src.nbeamlets) {
+        throw std::invalid_argument("corner, side1 and side2 must have one "
+            "row per beamlet");
+    }
+
+    const size_t nbeams = source.shape(0);
+    const size_t nbeamlets = (size_t) src.nbeamlets;
+
+    src.xsource = source.data();
+    src.ysource = source.data() + nbeams;
+    src.zsource = source.data() + 2*nbeams;
+    src.xcorner = corner.data();
+    src.ycorner = corner.data() + nbeamlets;
+    src.zcorner = corner.data() + 2*nbeamlets;
+    src.xside1 = side1.data();
+    src.yside1 = side1.data() + nbeamlets;
+    src.zside1 = side1.data() + 2*nbeamlets;
+    src.xside2 = side2.data();
+    src.yside2 = side2.data() + nbeamlets;
+    src.zside2 = side2.data() + 2*nbeamlets;
+
+    for (size_t i = 0; i < nbeamlets; i++) {
+        if (src.ibeam[i] < 0 || (size_t)src.ibeam[i] >= nbeams) {
+            throw std::invalid_argument("i_beam entry " + std::to_string(i) +
+                " is outside the " + std::to_string(nbeams) + " beams given");
+        }
+    }
+}
+
+/******************************************************************************/
 /* Dij */
 
 struct DijContext {
@@ -491,6 +539,49 @@ static void runCube(void *arg) {
 }
 
 /******************************************************************************/
+/* Forward */
+
+struct ForwardContext {
+    ProgressState progress;
+};
+
+static int forwardProgress(double fraction, void *user) {
+    return callProgress(&((ForwardContext *) user)->progress, fraction);
+}
+
+struct ForwardRun {
+    const struct OmcForwardOptions *options;
+    const struct OmcBeamletSource *source;
+    const double *weights;
+    const SpectrumInput *spectrumInput;
+    const GeometryInput *geometry;
+    struct OmcForwardCallbacks *callbacks;
+    double *dose;
+    double *uncertainty;
+    struct OmcForwardSummary *summary;
+    int completed;
+};
+
+static void runForward(void *arg) {
+
+    ForwardRun *run = (ForwardRun *) arg;
+    struct OmcSpectrum spectrum;
+
+    installGeometry(run->geometry);
+    initMediaData();
+    buildSpectrum(&spectrum, run->spectrumInput);
+    initRegions();
+    initVrt();
+
+    run->completed = omcCalcForward(run->options, run->source, run->weights,
+                                    &spectrum, run->dose, run->uncertainty,
+                                    run->callbacks, run->summary);
+
+    omcSpectrumFree(&spectrum);
+    cleanupPhysics();
+}
+
+/******************************************************************************/
 
 NB_MODULE(_ompmc, m) {
 
@@ -515,40 +606,7 @@ NB_MODULE(_ompmc, m) {
         SpectrumInput spectrumInput = parseSpectrum(spectrum, spectrumPath);
 
         struct OmcBeamletSource src;
-        src.nbeamlets = (int) i_beam.shape(0);
-        src.ibeam = (const int *) i_beam.data();
-
-        if (corner.shape(0) != (size_t)src.nbeamlets ||
-            side1.shape(0) != (size_t)src.nbeamlets ||
-            side2.shape(0) != (size_t)src.nbeamlets) {
-            throw std::invalid_argument("corner, side1 and side2 must have one "
-                "row per beamlet");
-        }
-
-        /* Fortran order means each column is contiguous, which is exactly the
-         one-array-per-component layout the engine wants. */
-        const size_t nbeams = source.shape(0);
-        const size_t nbeamlets = (size_t) src.nbeamlets;
-
-        src.xsource = source.data();
-        src.ysource = source.data() + nbeams;
-        src.zsource = source.data() + 2*nbeams;
-        src.xcorner = corner.data();
-        src.ycorner = corner.data() + nbeamlets;
-        src.zcorner = corner.data() + 2*nbeamlets;
-        src.xside1 = side1.data();
-        src.yside1 = side1.data() + nbeamlets;
-        src.zside1 = side1.data() + 2*nbeamlets;
-        src.xside2 = side2.data();
-        src.yside2 = side2.data() + nbeamlets;
-        src.zside2 = side2.data() + 2*nbeamlets;
-
-        for (size_t i = 0; i < nbeamlets; i++) {
-            if (src.ibeam[i] < 0 || (size_t)src.ibeam[i] >= nbeams) {
-                throw std::invalid_argument("i_beam entry " + std::to_string(i) +
-                    " is outside the " + std::to_string(nbeams) + " beams given");
-            }
-        }
+        parseBeamletSource(src, i_beam, source, corner, side1, side2);
 
         struct OmcDijOptions opt;
         opt.nhist = nb::cast<int>(options["n_histories"]);
@@ -675,4 +733,90 @@ NB_MODULE(_ompmc, m) {
     "y_bounds"_a, "z_bounds"_a, "materials"_a, "options"_a, "input_items"_a,
     "spectrum"_a, "progress"_a.none(), "verbosity"_a,
     "Dose in every voxel from one collimated beam.");
+
+    m.def("calc_forward",
+        [](Cube density, IntCube material, Vector x_bounds, Vector y_bounds,
+           Vector z_bounds, std::vector<std::string> materials,
+           IntVector i_beam, Triples source, Triples corner, Triples side1,
+           Triples side2, Vector weights, nb::dict options,
+           nb::dict input_items, nb::dict spectrum, nb::object progress,
+           int verbosity) {
+
+        GeometryInput geo = parseGeometry(density, material, x_bounds,
+                                          y_bounds, z_bounds, materials);
+
+        std::string spectrumPath;
+        SpectrumInput spectrumInput = parseSpectrum(spectrum, spectrumPath);
+
+        struct OmcBeamletSource src;
+        parseBeamletSource(src, i_beam, source, corner, side1, side2);
+
+        if (weights.shape(0) != (size_t)src.nbeamlets) {
+            throw std::invalid_argument("weights has " +
+                std::to_string(weights.shape(0)) + " entries but there are " +
+                std::to_string(src.nbeamlets) + " beamlets");
+        }
+
+        struct OmcForwardOptions opt;
+        opt.nhist = nb::cast<int>(options["n_histories"]);
+        opt.nbatch = nb::cast<int>(options["n_batches"]);
+        opt.charge = nb::cast<int>(options["charge"]);
+        opt.sourceGeometry = nb::cast<bool>(options["gaussian_source"])
+            ? OMC_SOURCE_GAUSSIAN : OMC_SOURCE_POINT;
+        opt.sourceGaussianWidth = nb::cast<double>(options["source_width"]);
+        opt.outputDose = nb::cast<bool>(options["output_dose"]) ? 1 : 0;
+
+        installHost();
+        verbose_flag = verbosity;
+        applyInputItems(input_items);
+
+        const size_t gridsize = (size_t)geo.isize*(size_t)geo.jsize
+                                *(size_t)geo.ksize;
+        std::vector<double> dose(gridsize, 0.0);
+        std::vector<double> uncertainty(gridsize, 0.0);
+
+        ForwardContext ctx;
+        ctx.progress.callable = progress.is_none() ? nullptr : progress.ptr();
+        ctx.progress.cancelled = false;
+
+        struct OmcForwardCallbacks callbacks;
+        callbacks.progress = forwardProgress;
+        callbacks.user = &ctx;
+
+        struct OmcForwardSummary summary{};
+        ForwardRun run{&opt, &src, weights.data(), &spectrumInput, &geo,
+                       &callbacks, dose.data(), uncertainty.data(), &summary,
+                       0};
+
+        bool ok;
+        {
+            nb::gil_scoped_release nogil;
+            ok = runGuarded(&runForward, &run);
+        }
+
+        if (!ok) {
+            throw std::runtime_error(failId + ": " + failMessage);
+        }
+        if (ctx.progress.cancelled) {
+            throw nb::python_error();
+        }
+
+        /* A progress callback that returned False leaves no exception behind,
+         so what a voluntary stop means is the caller's decision, the same way
+         calc_dij reports a short beamlet count. There is no partial result to
+         hand back either way: the batches are averaged, so a run that stopped
+         halfway is a dose with no meaning. */
+        return nb::make_tuple(adopt(std::move(dose)),
+                              adopt(std::move(uncertainty)),
+                              run.completed != 0,
+                              summary.nhist, summary.nsampled,
+                              summary.nweighted,
+                              summary.sampledWeight/summary.totalWeight,
+                              summary.energyFraction);
+    },
+    "density"_a, "material"_a, "x_bounds"_a,
+    "y_bounds"_a, "z_bounds"_a, "materials"_a, "i_beam"_a,
+    "source"_a, "corner"_a, "side1"_a, "side2"_a, "weights"_a, "options"_a,
+    "input_items"_a, "spectrum"_a, "progress"_a.none(), "verbosity"_a,
+    "Dose in every voxel from a whole weighted set of beamlets.");
 }

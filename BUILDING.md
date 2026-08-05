@@ -22,17 +22,26 @@ host. Shared code reports through `omcLog()`/`omcFail()`
 `mexErrMsgIdAndTxt()`, and each host installs the sinks that give those meaning;
 both are called on the master thread only, never from inside a parallel region.
 
-The dose calculation itself is a library function too. There are two engines,
+The dose calculation itself is a library function too. There are three engines,
 differing only in where the particles start and how the result comes back:
 
 | Engine | Source | Result |
 | --- | --- | --- |
 | [src/omc_engine_dij.h](src/omc_engine_dij.h) | beamlet apertures at isocentre | one sparse column per beamlet, through a callback |
+| [src/omc_engine_forward.h](src/omc_engine_forward.h) | the same beamlets, weighted | dense dose and uncertainty cubes |
 | [src/omc_engine_cube.h](src/omc_engine_cube.h) | point source behind a collimator | dense dose and uncertainty cubes |
 
-Both take their energies from [src/omc_spectrum.h](src/omc_spectrum.h), which
-turns a `.spectrum` file, a histogram handed over by the host, or a single energy
-into the same sampling tables.
+The two halves each engine is built from are shared rather than repeated, which
+is what keeps them from drifting apart:
+[src/omc_source_beamlet.h](src/omc_source_beamlet.h) starts a history on a
+beamlet aperture, for the Dij and forward engines both, and `omcScoreToCube()`
+in [src/omc_score.h](src/omc_score.h) turns accumulated energy into a dense cube
+for the forward and cube engines both — the air threshold, the empty-voxel
+convention and the batch variance therefore have one definition each.
+
+All three take their energies from [src/omc_spectrum.h](src/omc_spectrum.h),
+which turns a `.spectrum` file, a histogram handed over by the host, or a single
+energy into the same sampling tables.
 
 A user code is then only a translator: `omc_matrad.c` converts `mxArray`s into
 those structs and appends the columns it gets back to a MATLAB sparse matrix,

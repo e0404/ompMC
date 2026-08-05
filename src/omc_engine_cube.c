@@ -222,100 +222,6 @@ static void initHistory(void) {
 }
 
 /******************************************************************************/
-/* Turn what the batches accumulated into dose and its relative uncertainty,
- and copy both out into the caller's arrays. Unlike the beamlet engine this
- walks the whole grid: a voxel that received nothing still has to come out
- with the 0.9999999 uncertainty the .3ddose format expects. */
-
-static void accumulateResults(int nhist, int nbatch,
-                              double *dose, double *uncertainty) {
-
-    int irl;
-    int imax = geometry.isize;
-    int ijmax = geometry.isize*geometry.jsize;
-    double endep, endep2, unc_endep;
-
-    /* Calculate incident fluence */
-    double inc_fluence = (double)nhist;
-    double mass;
-    int iz;
-
-    #pragma omp parallel for private(irl,endep,endep2,unc_endep,mass)
-    for (iz=0; iz<geometry.ksize; iz++) {
-        for (int iy=0; iy<geometry.jsize; iy++) {
-            for (int ix=0; ix<geometry.isize; ix++) {
-                irl = 1 + ix + iy*imax + iz*ijmax;
-
-                /* Nothing is reported in air, so decide that before the
-                 conversion below rather than by overwriting its result
-                 afterwards. A voxel of density 0 -- vacuum, which a host
-                 handing over its own density cube may well contain -- gives a
-                 mass of 0, and the Gy conversion then divided by it. The
-                 answer stored was still right, because this test overwrote
-                 it, but the division raised the divide by zero flag (and, for
-                 a voxel that collected nothing, the invalid flag on the 0*inf
-                 that followed) for a result that was thrown away. */
-                if (geometry.med_densities[irl-1] < 0.044) {
-                    dose[irl - 1] = 0.0;
-                    if (uncertainty) {
-                        uncertainty[irl - 1] = 0.9999999;
-                    }
-                    continue;
-                }
-
-                endep = score.accum_endep[irl];
-                endep2 = score.accum_endep2[irl];
-
-                /* First calculate mean deposited energy across batches and its
-                 uncertainty */
-                endep /= (double)nbatch;
-                endep2 /= (double)nbatch;
-
-                /* Batch approach uncertainty calculation */
-                if (endep != 0.0) {
-                    unc_endep = endep2 - endep*endep;
-                    unc_endep /= (double)(nbatch - 1);
-
-                    /* Relative uncertainty */
-                    unc_endep = sqrt(unc_endep)/endep;
-                }
-                else {
-                    endep = 0.0;
-                    unc_endep = 0.9999999;
-                }
-
-                /* We separate de calculation of dose, to give the user the
-                 option to output mean energy (outputDose=0) or deposited dose
-                 (outputDose=1) per incident fluence */
-
-                if (options->outputDose) {
-
-                    /* Convert deposited energy to dose */
-                    mass = (geometry.xbounds[ix+1] - geometry.xbounds[ix])*
-                        (geometry.ybounds[iy+1] - geometry.ybounds[iy])*
-                        (geometry.zbounds[iz+1] - geometry.zbounds[iz]);
-
-                    /* Transform deposited energy to Gy */
-                    mass *= geometry.med_densities[irl-1];
-                    endep *= 1.602E-10/(mass*inc_fluence);
-
-                } else {    /* Output mean deposited energy */
-                    endep /= inc_fluence;
-                }
-
-                /* Store output quantities */
-                dose[irl - 1] = endep;
-                if (uncertainty) {
-                    uncertainty[irl - 1] = unc_endep;
-                }
-            }
-        }
-    }
-
-    return;
-}
-
-/******************************************************************************/
 
 int omcCalcCube(const struct OmcCubeOptions *opt,
                 const struct OmcSsdSource *src,
@@ -409,7 +315,8 @@ int omcCalcCube(const struct OmcCubeOptions *opt,
     /* The normalization is per batch, not per run: each batch contributed
      nperbatch histories and the batches are averaged afterwards. */
     if (!aborted) {
-        accumulateResults(nperbatch, nbatch, dose, uncertainty);
+        omcScoreToCube(nbatch, (double)nperbatch, options->outputDose,
+                       dose, uncertainty);
     }
 
     cleanScore();

@@ -97,4 +97,15 @@ int scoreBeamVoxels(const int **list);
  beamlet. Costs O(voxels touched). */
 void resetBeamScore(void);
 
+/* Turn what the batches accumulated into a dense dose cube and its relative
+ uncertainty, one entry per voxel, indexed like the phantom:
+ ix + iy*isize + iz*isize*jsize. uncertainty may be NULL.
+
+ outputDose selects Gy (1) or mean deposited energy (0), and incFluence is
+ what the accumulated energy is divided by -- see the comment on the
+ definition. Walks the whole grid, so that empty voxels come out with the
+ 0.9999999 the .3ddose format expects. Call outside any parallel region. */
+void omcScoreToCube(int nbatch, double incFluence, int outputDose,
+                    double *dose, double *uncertainty);
+
 #endif  // OMC_SCORE_H

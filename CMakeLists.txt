@@ -158,8 +158,10 @@ add_library(ompmc_core STATIC
     src/omc_host.c
     src/omc_geom.c
     src/omc_spectrum.c
+    src/omc_source_beamlet.c
     src/omc_engine_dij.c
-    src/omc_engine_cube.c)
+    src/omc_engine_cube.c
+    src/omc_engine_forward.c)
 
 target_include_directories(ompmc_core PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"

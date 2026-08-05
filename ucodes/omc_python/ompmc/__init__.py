@@ -46,6 +46,7 @@ __all__ = [
     "CollimatedSource",
     "Physics",
     "calc_dij",
+    "calc_forward",
     "calc_cube",
     "data_path",
     "__version__",
@@ -429,6 +430,101 @@ def calc_dij(
         return dij
 
     return dij, csc_array((variance_data, indices, indptr), shape=shape)
+
+
+def calc_forward(
+    geometry: Geometry,
+    source: BeamletSource,
+    weights,
+    spectrum: Spectrum | None = None,
+    physics: Physics | None = None,
+    *,
+    n_histories: int = 10_000,
+    n_batches: int = 10,
+    charge: int = 0,
+    gaussian_source: bool = False,
+    source_width: float = 0.2123,
+    output_dose: bool = True,
+    progress: Callable[[float], bool | None] | None = None,
+    verbosity: int = 0,
+):
+    """Calculate the dose of a whole weighted set of beamlets, in one cube.
+
+    This is what ``calc_dij(...) @ weights`` would give, computed directly.
+    ``weights`` holds one non-negative value per beamlet and is where the
+    collimation comes in: a blocked beamlet gets 0, an open one its fluence, a
+    partly transmitting one a fraction of it. Histories go to the beamlets in
+    proportion to their weight, so a blocked beamlet costs nothing and the run
+    time no longer grows with the number of beamlets.
+
+    Returns ``(dose, uncertainty)``, both cubes shaped like the phantom. The
+    dose is in Gy for exactly these weights -- doubling them doubles it --
+    unless ``output_dose`` is false, in which case it is the mean deposited
+    energy. The uncertainty is relative, and 0.9999999 where nothing was
+    deposited.
+
+    Two things differ from :func:`calc_dij`. ``n_histories`` counts the whole
+    calculation rather than one beamlet, so multiply it by ``n_beamlets`` to
+    keep the same statistics. And there is no ``rel_dose_threshold``: it prunes
+    columns of a sparse matrix, and there is no matrix here -- which is worth
+    remembering when comparing the two, since it is the ``calc_dij`` result
+    that is pruned.
+
+    The weights modulate fluence, not spectrum: a beamlet at 0.02 starts 2% of
+    the particles, with the spectrum unhardened. Attenuation in a collimator,
+    its scatter and the beam hardening that goes with it are not modelled.
+
+    ``progress`` works as it does for :func:`calc_dij`, called once per batch.
+    """
+    _check_run(n_histories, n_batches, charge)
+
+    weights = np.ascontiguousarray(weights, dtype=np.float64).ravel()
+
+    if weights.size != source.n_beamlets:
+        raise ValueError(
+            f"weights has {weights.size} entries but there are "
+            f"{source.n_beamlets} beamlets"
+        )
+    if not np.all(np.isfinite(weights)):
+        raise ValueError("weights holds values that are not finite")
+    if np.any(weights < 0.0):
+        raise ValueError(
+            f"{int(np.sum(weights < 0.0))} of the weights are negative"
+        )
+    if not weights.sum() > 0.0:
+        raise ValueError("every weight is zero, so there is nothing to "
+                         "calculate")
+
+    spectrum = spectrum or Spectrum.default()
+    physics = physics or Physics()
+
+    options = {
+        "n_histories": int(n_histories),
+        "n_batches": int(n_batches),
+        "charge": int(charge),
+        "gaussian_source": bool(gaussian_source),
+        "source_width": float(source_width),
+        "output_dose": bool(output_dose),
+    }
+
+    (dose, uncertainty, completed,
+     _nhist, _nsampled, _nweighted, _kept, _fraction) = _ompmc.calc_forward(
+        geometry.density, geometry.material, geometry.x_bounds,
+        geometry.y_bounds, geometry.z_bounds, list(geometry.materials),
+        source.i_beam, source.source, source.corner, source.side1,
+        source.side2, weights, options, physics.input_items(),
+        spectrum._payload, progress, int(verbosity),
+    )
+
+    if not completed:
+        # The batches are averaged, so a run that stopped partway through is a
+        # dose with no meaning; there is nothing to hand back.
+        raise KeyboardInterrupt(
+            "the calculation was stopped before any result was available")
+
+    shape = geometry.shape
+    return (dose.reshape(shape, order="F"),
+            uncertainty.reshape(shape, order="F"))
 
 
 def calc_cube(

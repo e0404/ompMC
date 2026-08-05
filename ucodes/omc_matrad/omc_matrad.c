@@ -47,6 +47,7 @@
  turned every exit() in scope into something that unwinds instead. */
 
 #include "omc_engine_dij.h"
+#include "omc_engine_forward.h"
 #include "omc_geom.h"
 #include "omc_host.h"
 #include "omc_spectrum.h"
@@ -103,8 +104,31 @@ struct OmcConfig {
 
 struct OmcConfig omcConfig;
 
-/* What the engine is asked to calculate. Filled by parseInput(). */
+/* Which calculation the call is asking for. 'dij' is what this interface has
+ always done and stays the default, so an mcOpt struct written before the
+ forward mode existed keeps working untouched.
+
+ The names carry the source model rather than the output, because the output
+ is the same dense cube for all of them: forward_beamlet collimates by giving
+ each of matRad's beamlets a weight, and a mode that takes real collimator
+ geometry would join it here rather than replace it. */
+enum OmcMode {
+    OMC_MODE_DIJ = 0,
+    OMC_MODE_FORWARD_BEAMLET
+};
+
+static const char *const modeNames[] = { "dij", "forward_beamlet" };
+
+enum OmcMode omcMode;
+
+/* What the engine is asked to calculate. Filled by parseInput(); only the one
+ belonging to omcMode is used. */
 struct OmcDijOptions dijOptions;
+struct OmcForwardOptions forwardOptions;
+
+/* One weight per beamlet, mcSrc.bixelWeights, used in place. NULL outside the
+ forward mode. */
+static const double *bixelWeights;
 
 /******************************************************************************/
 /* Host sinks. Shared ompMC code calls omcLog()/omcFail() and these turn them
@@ -374,6 +398,43 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     else
         mexPrintf("ompMC logging disabled.\n");
 
+    /* Which calculation to run. Absent means 'dij', which is what every
+     caller written before the forward mode existed is asking for. */
+    omcMode = OMC_MODE_DIJ;
+    tmp_fieldpointer = mxGetField(mcOpt,0,"mode");
+    if (tmp_fieldpointer) {
+        if (!mxIsChar(tmp_fieldpointer)) {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidMode",
+                "Field 'mcOpt.mode' must be a string.");
+        }
+
+        char *modeName = mxArrayToString(tmp_fieldpointer);
+        int nmodes = (int)(sizeof(modeNames)/sizeof(modeNames[0]));
+        int known = 0;
+
+        for (int imode = 0; imode < nmodes; imode++) {
+            if (modeName != NULL && strcmp(modeName, modeNames[imode]) == 0) {
+                omcMode = (enum OmcMode) imode;
+                known = 1;
+                break;
+            }
+        }
+
+        if (!known) {
+            /* mexErrMsgIdAndTxt() does not return, so the message is built
+             while modeName is still around and freed before it is raised. */
+            char message[BUFFER_SIZE];
+            snprintf(message, sizeof(message),
+                "Unknown mcOpt.mode '%s'. The modes are '%s' and '%s'.",
+                modeName ? modeName : "", modeNames[0], modeNames[1]);
+            mxFree(modeName);
+
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidMode", "%s", message);
+        }
+
+        mxFree(modeName);
+    }
+
     /* Optional caller-supplied progress callback, e.g.
      options.progressCallback = @(p) waitbar(p, h, msg); replaces the
      built-in waitbar when given. */
@@ -634,8 +695,29 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     tmp_fieldpointer = mxGetField(mcOpt,0,"relDoseThreshold");
     if (tmp_fieldpointer)
         dijOptions.relDoseThreshold = mxGetScalar(tmp_fieldpointer);
-    
-    
+    /* The forward mode is the same source and the same physics, so it reads
+     its options out of the same fields rather than out of a second set of
+     names. Only two things differ, and both are the point of the mode:
+     nHistories counts the whole calculation instead of one beamlet, and the
+     dose threshold has nothing to prune. */
+    forwardOptions.nhist = dijOptions.nhist;
+    forwardOptions.nbatch = dijOptions.nbatch;
+    forwardOptions.charge = dijOptions.charge;
+    forwardOptions.sourceGeometry = dijOptions.sourceGeometry;
+    forwardOptions.sourceGaussianWidth = dijOptions.sourceGaussianWidth;
+
+    /* Dose in Gy for the weights given. Setting this to 0 asks for the mean
+     deposited energy instead, the way omc_dosxyz's 'iout' does. */
+    forwardOptions.outputDose = 1;
+    tmp_fieldpointer = mxGetField(mcOpt,0,"outputDose");
+    if (tmp_fieldpointer)
+        forwardOptions.outputDose = (int) mxGetScalar(tmp_fieldpointer) != 0;
+
+    if (verbose_flag > 0 && omcMode == OMC_MODE_FORWARD_BEAMLET)
+        mexPrintf("ompMC mode '%s': %d histories over all beamlets together, "
+                  "not per beamlet.\n",
+                  modeNames[omcMode], forwardOptions.nhist);
+
     /* nInput is the index the last block wrote, so the count is one more */
     input_idx = nInput + 1;
 
@@ -819,6 +901,35 @@ static void initSource(void) {
     beamletSource.xside2 = getSourceArray("xSide2");
     beamletSource.yside2 = getSourceArray("ySide2");
     beamletSource.zside2 = getSourceArray("zSide2");
+
+    /* The collimation of the forward mode: one weight per beamlet, which the
+     engine turns into that beamlet's share of the histories. Only the shape
+     is checked here; the engine rejects negative and NaN weights, and a set
+     that is zero everywhere. */
+    bixelWeights = NULL;
+
+    if (omcMode == OMC_MODE_FORWARD_BEAMLET) {
+        mxArray *weights = mxGetField(mcSrc, 0, "bixelWeights");
+
+        if (weights == NULL) {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:missingField",
+                "Mode '%s' needs one weight per beamlet in "
+                "'mcSrc.bixelWeights'.", modeNames[OMC_MODE_FORWARD_BEAMLET]);
+        }
+        if (!mxIsDouble(weights) || mxIsComplex(weights) ||
+            mxIsSparse(weights)) {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidField",
+                "Field 'mcSrc.bixelWeights' must be a real double array.");
+        }
+        if ((int) mxGetNumberOfElements(weights) != beamletSource.nbeamlets) {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidField",
+                "'mcSrc.bixelWeights' has %d entries, but there are %d "
+                "beamlets.", (int) mxGetNumberOfElements(weights),
+                beamletSource.nbeamlets);
+        }
+
+        bixelWeights = mxGetPr(weights);
+    }
 
     return;
 }
@@ -1008,6 +1119,177 @@ static void closeProgress(void) {
 }
 
 /******************************************************************************/
+/* mode 'forward_beamlet': every beamlet at once, weighted by mcSrc.bixelWeights,
+ into one dense dose cube.
+
+ The cube comes back with the same [isize jsize ksize] shape matRad hands the
+ density cube over in. That needs no transposition: the engine indexes a voxel
+ as ix + iy*isize + iz*isize*jsize, which is exactly how MATLAB lays out an
+ array of that size. */
+
+static void runForward(int nlhs, mxArray *plhs[], double tbegin,
+                       struct OmcSpectrum *spectrum) {
+
+    mwSize dims[3];
+    dims[0] = (mwSize) geometry.isize;
+    dims[1] = (mwSize) geometry.jsize;
+    dims[2] = (mwSize) geometry.ksize;
+
+    plhs[0] = mxCreateNumericArray(3, dims, mxDOUBLE_CLASS, mxREAL);
+    double *dose = mxGetPr(plhs[0]);
+
+    /* The relative uncertainty is only computed when it is asked for, the
+     same way the Dij mode decides about the variance. */
+    double *uncertainty = NULL;
+
+    if (nlhs >= 2) {
+        plhs[1] = mxCreateNumericArray(3, dims, mxDOUBLE_CLASS, mxREAL);
+        uncertainty = mxGetPr(plhs[1]);
+    }
+
+    if (verbose_flag > 0)
+        mexPrintf("done!\n");
+
+    if (verbose_flag > 2)
+        mexPrintf("Execution time up to this point : %8.2f seconds\n",
+                  (omc_get_time() - tbegin));
+
+    if (verbose_flag > 0)
+        mexPrintf("Running ompMC simulation...\n");
+
+    struct OmcForwardCallbacks callbacks;
+    callbacks.progress = reportProgress;
+    callbacks.user = NULL;
+
+    struct OmcForwardSummary summary;
+
+    int finished = omcCalcForward(&forwardOptions, &beamletSource,
+                                  bixelWeights, spectrum, dose, uncertainty,
+                                  &callbacks, &summary);
+
+    if (verbose_flag > 0)
+        mexPrintf("Simulation finished!\nFinalizing output...\n");
+
+    closeProgress();
+
+    /* reportProgress() never asks to stop, so this cannot happen -- but the
+     engine is allowed to return a cube it has not filled, and handing that
+     back as a dose would be worse than saying so. */
+    if (!finished) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:aborted",
+            "The forward calculation was stopped before any result was "
+            "available.");
+    }
+
+    if (verbose_flag >= 3) {
+        mexPrintf("Ran %d histories over %d of %d weighted beamlets.\n",
+                  summary.nhist, summary.nsampled, summary.nweighted);
+        mexPrintf("Deposited %.2f%% of the incident energy.\n",
+                  100.0*summary.energyFraction);
+    }
+
+    return;
+}
+
+/******************************************************************************/
+/* mode 'dij': one sparse column per beamlet, weights applied by the caller. */
+
+static void runDij(int nlhs, mxArray *plhs[], int gridsize, double tbegin,
+                   struct OmcSpectrum *spectrum) {
+
+        /* Create output matrix */
+        struct SparseDij dij;
+        dij.nCubeElements = (mwSize) gridsize;
+        dij.nbeamlets = (mwSize) beamletSource.nbeamlets;
+        dij.percentage_steps = 0.01;            // steps in which it is allocated
+        dij.percent_sparse = dij.percentage_steps;
+        dij.nzmax = (mwSize) ceil((double)dij.nCubeElements*(double)dij.nbeamlets
+                                  *dij.percent_sparse);
+        dij.linIx = 0;
+        dij.reallocations = 0;
+
+        plhs[0] = mxCreateSparse(dij.nCubeElements, dij.nbeamlets, dij.nzmax, mxREAL);
+        dij.dose = plhs[0];
+        dij.sr  = mxGetPr(plhs[0]);
+        dij.irs = mxGetIr(plhs[0]);
+        dij.jcs = mxGetJc(plhs[0]);
+        dij.jcs[0] = 0;
+
+        dij.variance = NULL;
+        dij.sr_var = NULL;
+        dij.irs_var = NULL;
+        dij.jcs_var = NULL;
+
+        if (dijOptions.wantVariance)
+        {
+            plhs[1] = mxCreateSparse(dij.nCubeElements, dij.nbeamlets, dij.nzmax, mxREAL);
+            dij.variance = plhs[1];
+            dij.sr_var  = mxGetPr(plhs[1]);
+            dij.irs_var = mxGetIr(plhs[1]);
+            dij.jcs_var = mxGetJc(plhs[1]);
+            dij.jcs_var[0] = 0;
+        }
+
+        if (verbose_flag > 0)
+            mexPrintf("done!\n");
+
+        /* Execution time up to this point */
+        if (verbose_flag > 2)
+            mexPrintf("Execution time up to this point : %8.2f seconds\n",(omc_get_time() - tbegin));
+
+        if (verbose_flag > 0)
+            mexPrintf("Running ompMC simulation...\n");
+
+        struct OmcDijCallbacks callbacks;
+        callbacks.beamlet = appendBeamlet;
+        callbacks.progress = reportProgress;
+        callbacks.user = &dij;
+
+        omcCalcDij(&dijOptions, &beamletSource, spectrum, &callbacks);
+
+        /* Print some output and execution time up to this point */
+        if (verbose_flag > 0)
+            mexPrintf("Simulation finished!\nFinalizing output...\n");
+
+        closeProgress();
+
+        if (verbose_flag >= 3)
+            mexPrintf("Sparse MC Dij has %d (%f percent) elements!\n", (int)dij.linIx,
+                (double)dij.linIx/((double)dij.nCubeElements*(double)dij.nbeamlets));
+
+        if (verbose_flag >= 3)
+            mexPrintf("Needed %d sparse matrix reallocations.\n", dij.reallocations);
+
+        /* Truncate the matrix to the exact size by reallocation */
+        mxSetNzmax(plhs[0], dij.linIx);
+        mxSetPr(plhs[0], mxRealloc(dij.sr, dij.linIx*sizeof(double)));
+        mxSetIr(plhs[0], mxRealloc(dij.irs, dij.linIx*sizeof(mwIndex)));
+
+        mwIndex *irs = mxGetIr(plhs[0]);
+
+        //Check output
+        if (verbose_flag >= 3)
+            mexPrintf("Verifying sparse Matrix... ");
+        for (mwIndex ix = 0; ix < dij.linIx; ix++)
+        {
+            mwIndex currIx = irs[ix];
+
+            if (currIx > (mwIndex)gridsize)
+                mexPrintf("Invalid dose-cube index %d at linear index %d in sparse matrix check!",(int)currIx,(int)dij.linIx);
+        }
+        if (verbose_flag >= 3)
+            mexPrintf("done!\n");
+
+        if (dijOptions.wantVariance) {
+            /* Truncate the matrix to the exact size by reallocation */
+            mxSetNzmax(plhs[1], dij.linIx);
+            mxSetPr(plhs[1], mxRealloc(dij.sr_var, dij.linIx*sizeof(double)));
+            mxSetIr(plhs[1], mxRealloc(dij.irs_var, dij.linIx*sizeof(mwIndex)));
+        }
+    return;
+}
+
+/******************************************************************************/
 /* omc_matrad main function */
 void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     int nrhs, const mxArray *prhs[])            // input of the function
@@ -1119,94 +1401,11 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
 
     int gridsize = geometry.isize*geometry.jsize*geometry.ksize;
 
-    /* Create output matrix */
-    struct SparseDij dij;
-    dij.nCubeElements = (mwSize) gridsize;
-    dij.nbeamlets = (mwSize) beamletSource.nbeamlets;
-    dij.percentage_steps = 0.01;            // steps in which it is allocated
-    dij.percent_sparse = dij.percentage_steps;
-    dij.nzmax = (mwSize) ceil((double)dij.nCubeElements*(double)dij.nbeamlets
-                              *dij.percent_sparse);
-    dij.linIx = 0;
-    dij.reallocations = 0;
-
-    plhs[0] = mxCreateSparse(dij.nCubeElements, dij.nbeamlets, dij.nzmax, mxREAL);
-    dij.dose = plhs[0];
-    dij.sr  = mxGetPr(plhs[0]);
-    dij.irs = mxGetIr(plhs[0]);
-    dij.jcs = mxGetJc(plhs[0]);
-    dij.jcs[0] = 0;
-
-    dij.variance = NULL;
-    dij.sr_var = NULL;
-    dij.irs_var = NULL;
-    dij.jcs_var = NULL;
-
-    if (dijOptions.wantVariance)
-    {
-        plhs[1] = mxCreateSparse(dij.nCubeElements, dij.nbeamlets, dij.nzmax, mxREAL);
-        dij.variance = plhs[1];
-        dij.sr_var  = mxGetPr(plhs[1]);
-        dij.irs_var = mxGetIr(plhs[1]);
-        dij.jcs_var = mxGetJc(plhs[1]);
-        dij.jcs_var[0] = 0;
+    if (omcMode == OMC_MODE_FORWARD_BEAMLET) {
+        runForward(nlhs, plhs, tbegin, &spectrum);
     }
-
-    if (verbose_flag > 0)
-        mexPrintf("done!\n");
-
-    /* Execution time up to this point */
-    if (verbose_flag > 2)
-        mexPrintf("Execution time up to this point : %8.2f seconds\n",(omc_get_time() - tbegin));
-
-    if (verbose_flag > 0)
-        mexPrintf("Running ompMC simulation...\n");
-
-    struct OmcDijCallbacks callbacks;
-    callbacks.beamlet = appendBeamlet;
-    callbacks.progress = reportProgress;
-    callbacks.user = &dij;
-
-    omcCalcDij(&dijOptions, &beamletSource, &spectrum, &callbacks);
-
-    /* Print some output and execution time up to this point */
-    if (verbose_flag > 0)
-        mexPrintf("Simulation finished!\nFinalizing output...\n");
-
-    closeProgress();
-
-    if (verbose_flag >= 3)
-        mexPrintf("Sparse MC Dij has %d (%f percent) elements!\n", (int)dij.linIx,
-            (double)dij.linIx/((double)dij.nCubeElements*(double)dij.nbeamlets));
-
-    if (verbose_flag >= 3)
-        mexPrintf("Needed %d sparse matrix reallocations.\n", dij.reallocations);
-
-    /* Truncate the matrix to the exact size by reallocation */
-    mxSetNzmax(plhs[0], dij.linIx);
-    mxSetPr(plhs[0], mxRealloc(dij.sr, dij.linIx*sizeof(double)));
-    mxSetIr(plhs[0], mxRealloc(dij.irs, dij.linIx*sizeof(mwIndex)));
-
-    mwIndex *irs = mxGetIr(plhs[0]);
-
-    //Check output
-    if (verbose_flag >= 3)
-        mexPrintf("Verifying sparse Matrix... ");
-    for (mwIndex ix = 0; ix < dij.linIx; ix++)
-    {
-        mwIndex currIx = irs[ix];
-
-        if (currIx > (mwIndex)gridsize)
-            mexPrintf("Invalid dose-cube index %d at linear index %d in sparse matrix check!",(int)currIx,(int)dij.linIx);
-    }
-    if (verbose_flag >= 3)
-        mexPrintf("done!\n");
-
-    if (dijOptions.wantVariance) {
-        /* Truncate the matrix to the exact size by reallocation */
-        mxSetNzmax(plhs[1], dij.linIx);
-        mxSetPr(plhs[1], mxRealloc(dij.sr_var, dij.linIx*sizeof(double)));
-        mxSetIr(plhs[1], mxRealloc(dij.irs_var, dij.linIx*sizeof(mwIndex)));
+    else {
+        runDij(nlhs, plhs, gridsize, tbegin, &spectrum);
     }
 
     /* Cleaning */

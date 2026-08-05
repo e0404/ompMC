@@ -43,7 +43,7 @@ If you use this code, please cite the work it is based on:
 | Target       | Kind                | What it does |
 |--------------|---------------------|--------------|
 | `omc_dosxyz` | command line binary | DOSXYZnrc-style standalone dose calculation on an `.egsphant` phantom, driven by a plain-text input file. Writes a `.3ddose` file. |
-| `omc_matrad` | MATLAB / Octave MEX file | Beamlet dose-influence matrix for matRad. Takes density and material cubes, geometry, source and option structs; returns sparse `dij` (and optionally its variance). The same source builds against MATLAB (`.mexw64`/`.mexa64`/…) and GNU Octave (`.mex`); see [BUILDING.md](BUILDING.md#gnu-octave). |
+| `omc_matrad` | MATLAB / Octave MEX file | Dose for matRad. Takes density and material cubes, geometry, source and option structs, and returns either a sparse beamlet dose-influence matrix `dij` or, with `mcOpt.mode = 'forward_beamlet'`, the dense dose cube of one weighted field. The same source builds against MATLAB (`.mexw64`/`.mexa64`/…) and GNU Octave (`.mex`); see [BUILDING.md](BUILDING.md#gnu-octave). |
 
 Both link against `ompmc_core`, the transport library built from [src/](src/):
 
@@ -142,6 +142,46 @@ addpath('build/bin');
 
 `charge` picks the source particle: `-1` for electrons, `0` for photons, `+1` for positrons.
 
+### `mcOpt.mode` — dose-influence matrix or forward dose
+
+| `mcOpt.mode` | Returns |
+| --- | --- |
+| `'dij'` (default) | `[dij, dijVar]` — one sparse column per beamlet |
+| `'forward_beamlet'` | `[dose, relUnc]` — one dense cube, the size of `cubeRho` |
+
+`'forward_beamlet'` computes the dose of a whole weighted field in one go. The collimation is
+given as one weight per beamlet in `mcSrc.bixelWeights`, a non-negative vector of length
+`nBixels`: a blocked beamlet gets `0`, an open one its fluence, a partly transmitting one a
+fraction of it. This is the fluence map matRad already optimises, so no new geometry is needed.
+
+```matlab
+mcOpt.mode = 'forward_beamlet';
+mcSrc.bixelWeights = w;                 % from matRad_fluenceOptimization
+[dose, relUnc] = omc_matrad(cubeRho, cubeMatIx, mcGeo, mcSrc, mcOpt);
+```
+
+The result is what `dij*w` would have been, in Gy for exactly those weights — doubling every
+weight doubles the dose — but it is reached directly instead of through the matrix. Histories go
+to the beamlets in proportion to their weight, so a blocked beamlet costs nothing and the run
+time no longer grows with `nBixels`.
+
+Two things change meaning in this mode:
+
+- **`nHistories` counts the whole calculation**, not one beamlet. Switching a `dij` run over
+  unchanged therefore divides the statistics by `nBixels`; multiply it by `nBixels` to keep them.
+- **`relDoseThreshold` does nothing.** It prunes columns of a sparse matrix, and there is no
+  matrix here. Note the flip side when comparing the two modes: it is the `dij` result that is
+  pruned, so set it to `0` for a like-for-like comparison.
+
+`relUnc` is the relative uncertainty per voxel, `0.9999999` where nothing was deposited — the
+convention `omc_dosxyz` writes into a `.3ddose` file. `mcOpt.outputDose = 0` asks for mean
+deposited energy instead of Gy.
+
+The weights modulate **fluence, not spectrum**: a leaf transmitting 2% starts 2% of the
+particles, with the spectrum unhardened. Attenuation in the collimator, its scatter and the beam
+hardening that goes with it are not modelled. The mode is named for its source model rather than
+its output, so that a variant taking real collimator geometry can sit next to it later.
+
 The source spectrum can either be read from a `.spectrum` file (`spectrumFile`, default
 `./spectra/mohan6.spectrum`) or passed in directly as `mcOpt.spectrum`, a struct holding the
 same information:
@@ -213,12 +253,22 @@ dose, uncertainty = ompmc.calc_cube(
 # ... or one sparse column per beamlet, as scipy.sparse.csc_array
 dij = ompmc.calc_dij(geometry, beamlet_source, ompmc.Spectrum.default(),
                      n_histories=100_000, progress=lambda p: print(f"{p:.0%}"))
+
+# ... or the dense cube of a whole weighted field, which is dij @ weights
+# computed directly. A blocked beamlet weighs 0 and costs nothing.
+dose, uncertainty = ompmc.calc_forward(
+    geometry, beamlet_source, weights, ompmc.Spectrum.default(),
+    n_histories=100_000,
+)
 ```
 
 - **Cubes must be Fortran ordered.** The transport indexes voxels with the first axis varying
   fastest, so a C ordered cube would be a silently transposed phantom; it is rejected instead.
 - Material indices count from 1, matching matRad's `cubeMatIx`; 0 means vacuum.
 - `progress` is called with the fraction finished; returning `False` stops the run, as does Ctrl-C.
+- `calc_forward` is the Python side of `mcOpt.mode = 'forward_beamlet'` above, with the same two
+  caveats: `n_histories` counts the whole calculation rather than one beamlet, and the weights
+  modulate fluence rather than spectrum.
 - The GIL is released for the whole calculation, so the OpenMP threads run at full speed. The
   engines keep their state in globals, so one calculation runs at a time per process: use
   `multiprocessing`, not threads.

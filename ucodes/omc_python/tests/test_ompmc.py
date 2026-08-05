@@ -197,6 +197,118 @@ class TestCalcDij:
             ompmc.calc_dij(f["geometry"], f["source"], charge=2)
 
 
+class TestCalcForward:
+    """The forward mode has to be dij @ w, computed directly."""
+
+    def weights(self, n):
+        """Every other beamlet open, with one that only partly transmits."""
+        w = np.zeros(n)
+        w[::2] = 1.0
+        w[1] = 0.25
+        return w
+
+    def test_matches_dij_times_weights(self, matrad_fixture):
+        f = matrad_fixture
+        n = f["source"].n_beamlets
+        w = self.weights(n)
+
+        # The reference must not be pruned -- relDoseThreshold drops low dose
+        # voxels the forward cube keeps -- and the forward run needs n times
+        # the histories, because it counts the whole calculation rather than
+        # one beamlet.
+        dij = ompmc.calc_dij(
+            f["geometry"], f["source"], f["spectrum"], f["physics"],
+            n_histories=2000, n_batches=5, rel_dose_threshold=0.0)
+        reference = (dij @ w).reshape(f["geometry"].shape, order="F")
+
+        dose, uncertainty = ompmc.calc_forward(
+            f["geometry"], f["source"], w, f["spectrum"], f["physics"],
+            n_histories=2000*n, n_batches=5)
+
+        assert dose.shape == f["geometry"].shape
+        assert np.all(np.isfinite(dose)) and np.all(dose >= 0.0)
+        assert dose.max() > 0.0
+
+        # The total is the compiler and scheduling independent part, and the
+        # tightest thing to compare. The two runs draw different random
+        # streams, so what is left is the statistical spread of the run.
+        total = abs(dose.sum() - reference.sum())/reference.sum()
+        assert total < 0.02, f"total dose differs from dij @ w by {total:.3g}"
+
+        # Totals agreeing would survive a cube with permuted axes, so check
+        # where the dose actually went as well. Loose on purpose: a single
+        # profile bin is far noisier than the total.
+        for axis in range(3):
+            others = tuple(a for a in range(3) if a != axis)
+            got = dose.sum(axis=others)
+            want = reference.sum(axis=others)
+
+            hot = want > 0.05*want.max()
+            profile = np.abs(got[hot] - want[hot])/want[hot]
+            assert profile.max() < 0.15, (
+                f"the profile along axis {axis} differs from dij @ w by "
+                f"{profile.max():.3g}")
+
+        # Same convention omc_dosxyz writes into a .3ddose
+        assert uncertainty.shape == dose.shape
+        assert np.all((uncertainty >= 0.0) & (uncertainty <= 1.0))
+        assert uncertainty[dose == 0.0].min() == pytest.approx(0.9999999)
+
+    def test_weights_scale_the_dose(self, matrad_fixture):
+        """The dose is in Gy for the weights given, not per history."""
+        f = matrad_fixture
+        w = self.weights(f["source"].n_beamlets)
+
+        common = dict(n_histories=4000, n_batches=4)
+
+        single, _ = ompmc.calc_forward(f["geometry"], f["source"], w,
+                                       f["spectrum"], f["physics"], **common)
+        double, _ = ompmc.calc_forward(f["geometry"], f["source"], 2.0*w,
+                                       f["spectrum"], f["physics"], **common)
+
+        # Doubling every weight doubles the fluence, and the histories are
+        # handed out in the same proportions, so this holds far tighter than
+        # the statistics: the two runs sample identically.
+        assert double.sum()/single.sum() == pytest.approx(2.0, rel=1e-12)
+
+    def test_progress_and_cancellation(self, matrad_fixture):
+        f = matrad_fixture
+        w = np.ones(f["source"].n_beamlets)
+        seen = []
+
+        ompmc.calc_forward(f["geometry"], f["source"], w, f["spectrum"],
+                           f["physics"], n_histories=2000, n_batches=4,
+                           progress=lambda p: seen.append(p))
+
+        assert seen == sorted(seen)
+        assert seen[-1] == pytest.approx(1.0)
+
+        with pytest.raises(KeyboardInterrupt):
+            ompmc.calc_forward(f["geometry"], f["source"], w, f["spectrum"],
+                               f["physics"], n_histories=2000, n_batches=4,
+                               progress=lambda p: False)
+
+    @pytest.mark.parametrize("bad, match", [
+        ("length", "beamlets"),
+        ("negative", "negative"),
+        ("zero", "every weight is zero"),
+        ("nan", "finite"),
+    ])
+    def test_rejects_unusable_weights(self, matrad_fixture, bad, match):
+        f = matrad_fixture
+        n = f["source"].n_beamlets
+
+        w = {
+            "length": np.ones(n + 1),
+            "negative": -np.ones(n),
+            "zero": np.zeros(n),
+            "nan": np.full(n, np.nan),
+        }[bad]
+
+        with pytest.raises(ValueError, match=match):
+            ompmc.calc_forward(f["geometry"], f["source"], w)
+
+
 class TestProgress:
 
     def test_reports_monotonic_progress(self, matrad_fixture):

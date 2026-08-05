@@ -43,241 +43,11 @@
     #pragma omp threadprivate(stack)
 #endif
 
-/* What the current call is working on. initHistory() runs once per history on
- every thread, so this is read-only for the duration of the call and set up
- before any parallel region starts. */
+/* What the current call is working on. omcBeamletSample() runs once per
+ history on every thread, so this is read-only for the duration of the call
+ and set up before any parallel region starts. */
 static const struct OmcDijOptions *options;
-static const struct OmcBeamletSource *source;
-static const struct OmcSpectrum *spectrum;
-
-/******************************************************************************/
-
-static void initHistory(int ibeamlet) {
-
-    double rnno1;
-    double rnno2;
-
-    int ijmax = geometry.isize*geometry.jsize;
-    int imax = geometry.isize;
-
-    /* Initialize first particle of the stack from source data */
-    stack.np = 0;
-    stack.p[stack.np].iq = options->charge;
-
-    /* Get primary particle energy */
-    double ein = omcSpectrumSample(spectrum);
-
-    /* Check if the particle is an electron, in such a case add electron
-     rest mass energy */
-    if (stack.p[stack.np].iq != 0) {
-        /* Electron or positron */
-        stack.p[stack.np].e = ein + RM;
-    }
-    else {
-        /* Photon */
-        stack.p[stack.np].e = ein;
-    }
-
-    /* Accumulate sampled kinetic energy for fraction of deposited energy
-     calculations */
-    scoreSource(ein);
-
-    /* Set particle position. First obtain a random position in the rectangle
-     defined by the bixel at isocenter*/
-    double xiso = 0.0;
-    double yiso = 0.0;
-    double ziso = 0.0;
-
-    rnno1 = setRandom();
-    rnno2 = setRandom();
-
-    xiso = rnno1*source->xside1[ibeamlet] + rnno2*source->xside2[ibeamlet] +
-            source->xcorner[ibeamlet];
-    yiso = rnno1*source->yside1[ibeamlet] + rnno2*source->yside2[ibeamlet] +
-            source->ycorner[ibeamlet];
-    ziso = rnno1*source->zside1[ibeamlet] + rnno2*source->zside2[ibeamlet] +
-            source->zcorner[ibeamlet];
-
-
-    /* Norm of the resulting vector from the source of current beam to the
-     position of the particle on bixel */
-    int ibeam = source->ibeam[ibeamlet];
-
-    double sourcePos[3];
-
-    //Gaussian Source
-
-    switch (options->sourceGeometry)
-    {
-        case OMC_SOURCE_POINT: ;
-            sourcePos[0] = source->xsource[ibeam];
-            sourcePos[1] = source->ysource[ibeam];
-            sourcePos[2] = source->zsource[ibeam];
-            break;
-        case OMC_SOURCE_GAUSSIAN: ;
-            //Get the normalized collimator plane vectors
-            double planeVec1_norm;
-            double planeVec2_norm;
-            planeVec1_norm = sqrt(
-                                            source->xside1[ibeamlet]*source->xside1[ibeamlet] +
-                                            source->yside1[ibeamlet]*source->yside1[ibeamlet] +
-                                            source->zside1[ibeamlet]*source->zside1[ibeamlet]
-                                        );
-            planeVec2_norm = sqrt(
-                                            source->xside2[ibeamlet]*source->xside2[ibeamlet] +
-                                            source->yside2[ibeamlet]*source->yside2[ibeamlet] +
-                                            source->zside2[ibeamlet]*source->zside2[ibeamlet]
-                                        );
-            double planeVec1[3];
-            planeVec1[0] = source->xside1[ibeamlet] / planeVec1_norm;
-            planeVec1[1] = source->yside1[ibeamlet] / planeVec1_norm;
-            planeVec1[2] = source->zside1[ibeamlet] / planeVec1_norm;
-
-            double planeVec2[3];
-            planeVec2[0] = source->xside2[ibeamlet] / planeVec2_norm;
-            planeVec2[1] = source->yside2[ibeamlet] / planeVec2_norm;
-            planeVec2[2] = source->zside2[ibeamlet] / planeVec2_norm;
-
-            //Create two normally distributed random veriables with box-muller transform
-            double rnSource[2];
-            boxMuller(rnSource);
-
-            //Scale with source width
-            rnSource[0] *= options->sourceGaussianWidth;
-            rnSource[1] *= options->sourceGaussianWidth;
-
-            //Now use the plane vectors to add the random 2D offset to the source
-            sourcePos[0] = source->xsource[ibeam] + rnSource[0]*planeVec1[0] + rnSource[1]*planeVec2[0];
-            sourcePos[1] = source->ysource[ibeam] + rnSource[0]*planeVec1[1] + rnSource[1]*planeVec2[1];
-            sourcePos[2] = source->zsource[ibeam] + rnSource[0]*planeVec1[2] + rnSource[1]*planeVec2[2];
-
-
-            break;
-        default: ;
-            /* Checked before the parallel region starts, so this is only a
-             backstop; omcFail() from a worker thread would call the host from
-             a place the host cannot expect. */
-            sourcePos[0] = source->xsource[ibeam];
-            sourcePos[1] = source->ysource[ibeam];
-            sourcePos[2] = source->zsource[ibeam];
-    }
-
-
-    //Point source
-    double xd = xiso - sourcePos[0];
-    double yd = yiso - sourcePos[1];
-    double zd = ziso - sourcePos[2];
-
-
-    double vnorm = sqrt(xd*xd + yd*yd + zd*zd);
-
-    /* Direction of the particle from position on bixel to beam source*/
-    double u = -(xd)/vnorm;
-    double v = -(yd)/vnorm;
-    double w = -(zd)/vnorm;
-
-    /* Calculate the minimum distance from particle position on bixel to
-     phantom boundaries */
-    double ustep = DBL_MAX; //1.0E5;
-    double dist;
-
-    if(u > 0.0) {
-        dist = (geometry.xbounds[geometry.isize]-xiso)/u;
-        if(dist < ustep) {
-            ustep = dist;
-        }
-    }
-    if(u < 0.0) {
-        dist = -(xiso-geometry.xbounds[0])/u;
-        if(dist < ustep) {
-            ustep = dist;
-        }
-    }
-
-    if(v > 0.0) {
-        dist = (geometry.ybounds[geometry.jsize]-yiso)/v;
-        if(dist < ustep) {
-            ustep = dist;
-        }
-    }
-    if(v < 0.0) {
-        dist = -(yiso-geometry.ybounds[0])/v;
-        if(dist < ustep) {
-            ustep = dist;
-        }
-    }
-
-    if(w > 0.0) {
-        dist = (geometry.zbounds[geometry.ksize]-ziso)/w;
-        if(dist < ustep) {
-            ustep = dist;
-        }
-    }
-    if(w < 0.0) {
-        dist = -(ziso-geometry.zbounds[0])/w;
-        if(dist < ustep) {
-            ustep = dist;
-        }
-    }
-
-    /* Transport particle from bixel to surface. Adjust particle direction
-     to be incident to phantom surface */
-    stack.p[stack.np].x = xiso + ustep*u;
-    stack.p[stack.np].y = yiso + ustep*v;
-    stack.p[stack.np].z = ziso + ustep*w;
-
-    stack.p[stack.np].u = -u;
-    stack.p[stack.np].v = -v;
-    stack.p[stack.np].w = -w;
-
-    /* For numerical stability, make sure that points are really inside the
-     phantom. nextafter() moves one representable step towards the opposite
-     face; the 2.0*DBL_MIN offset used before is denormal-small and was
-     absorbed entirely when added to any normal boundary coordinate, leaving
-     the particle exactly on the boundary. */
-    if(stack.p[stack.np].x < geometry.xbounds[0]) {
-        stack.p[stack.np].x = nextafter(geometry.xbounds[0],
-                                        geometry.xbounds[geometry.isize]);
-    }
-    if(stack.p[stack.np].x > geometry.xbounds[geometry.isize]) {
-        stack.p[stack.np].x = nextafter(geometry.xbounds[geometry.isize],
-                                        geometry.xbounds[0]);
-    }
-
-    if(stack.p[stack.np].y < geometry.ybounds[0]) {
-        stack.p[stack.np].y = nextafter(geometry.ybounds[0],
-                                        geometry.ybounds[geometry.jsize]);
-    }
-    if(stack.p[stack.np].y > geometry.ybounds[geometry.jsize]) {
-        stack.p[stack.np].y = nextafter(geometry.ybounds[geometry.jsize],
-                                        geometry.ybounds[0]);
-    }
-
-    if(stack.p[stack.np].z < geometry.zbounds[0]) {
-        stack.p[stack.np].z = nextafter(geometry.zbounds[0],
-                                        geometry.zbounds[geometry.ksize]);
-    }
-    if(stack.p[stack.np].z > geometry.zbounds[geometry.ksize]) {
-        stack.p[stack.np].z = nextafter(geometry.zbounds[geometry.ksize],
-                                        geometry.zbounds[0]);
-    }
-
-    /* Determine region index of source particle */
-    int ix = omcFindVoxelIndex(geometry.xbounds, geometry.isize,
-                               stack.p[stack.np].x);
-    int iy = omcFindVoxelIndex(geometry.ybounds, geometry.jsize,
-                               stack.p[stack.np].y);
-    int iz = omcFindVoxelIndex(geometry.zbounds, geometry.ksize,
-                               stack.p[stack.np].z);
-
-    stack.p[stack.np].ir = 1 + ix + iy*imax + iz*ijmax;
-
-    /* Set statistical weight and distance to closest boundary*/
-    stack.p[stack.np].wt = 1.0;
-    stack.p[stack.np].dnear = 0.0;
-
-    return;
-}
+static struct OmcBeamletSampler sampler;
 
 /******************************************************************************/
 /* Turn what the batches accumulated into dose and its uncertainty, in place. */
@@ -389,8 +159,12 @@ int omcCalcDij(const struct OmcDijOptions *opt,
     }
 
     options = opt;
-    source = src;
-    spectrum = spec;
+
+    sampler.source = src;
+    sampler.spectrum = spec;
+    sampler.charge = opt->charge;
+    sampler.geometry = opt->sourceGeometry;
+    sampler.gaussianWidth = opt->sourceGaussianWidth;
 
     int nhist = opt->nhist;
     int nbatch = opt->nbatch;
@@ -447,7 +221,7 @@ int omcCalcDij(const struct OmcDijOptions *opt,
                                  + (uint64_t)ihist);
 
                 /* Initialize particle history */
-                initHistory(ibeamlet);
+                omcBeamletSample(&sampler, ibeamlet, 1.0);
 
                 /* Start electromagnetic shower simulation */
                 shower();
@@ -545,8 +319,8 @@ int omcCalcDij(const struct OmcDijOptions *opt,
     }
 
     options = NULL;
-    source = NULL;
-    spectrum = NULL;
+    sampler.source = NULL;
+    sampler.spectrum = NULL;
 
     /* ibeamlet is the loop's own counter: incremented past every beamlet that
      was reported, and left at the one that was abandoned mid-batch. */
