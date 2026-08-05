@@ -1,0 +1,42 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: ompMC
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Edgardo
+    family-names: Doerner
+    email: endoerner@gmail.com
+    affiliation: Pontificia Universidad Católica de Chile
+  - given-names: Niklas
+    family-names: Wahl
+    email: n.wahl@dkfz-heidelberg.de
+    affiliation: Deutsches Krebsforschungszentrum
+    orcid: 'https://orcid.org/0000-0002-1451-223X'
+repository-code: 'https://github.com/e0404/ompMC'
+repository: 'https://github.com/edoerner/ompMC'
+keywords:
+  - radiotherapy
+  - Monte Carlo
+license: GPL-3.0
+preferred-citation:
+  type: article
+  title: 'Technical Note: An hybrid parallel implementation for EGSnrc Monte Carlo user codes'
+  authors:
+    - given-names: Edgardo
+      family-names: Doerner
+      email: endoerner@gmail.com
+      affiliation: Pontificia Universidad Católica de Chile
+    - given-names: P.
+      family-names: Caprile
+  journal: Medical Physics
+  volume: 45
+  issue: 8
+  start: '3969'
+  end: '3973'
+  year: 2018
+  doi: 10.1002/mp.13033

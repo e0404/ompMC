@@ -25,8 +25,8 @@ sys.path.insert(0, str(ROOT_DIR / "ucodes" / "omc_python"))
 # -- Project information -----------------------------------------------------
 
 project = "ompMC"
-copyright = "2018, Edgardo Doerner"
-author = "Edgardo Doerner"
+copyright = "2018-2026, Edgardo Doerner and Niklas Wahl"
+author = "Edgardo Doerner and Niklas Wahl"
 
 
 def _version_from_cmake() -> str:

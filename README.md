@@ -318,4 +318,4 @@ Windows x64 (MSVC and MinGW), Linux x64, Linux ARM64, macOS x64 and macOS ARM64.
 ## License
 
 GNU General Public License v3.0 — see [LICENSE](LICENSE).
-Copyright (C) 2018 Edgardo Doerner (edoerner@fis.puc.cl).
+Copyright (C) 2018-2026 Edgardo Doerner and Niklas Wahl.
