@@ -328,6 +328,10 @@ test_omc_matrad_mex
 [.github/workflows/build.yml](.github/workflows/build.yml) builds and smoke tests every push on
 Windows x64 (MSVC and MinGW), Linux x64, Linux ARM64, macOS x64 and macOS ARM64.
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a history of changes.
+
 ## License
 
 GNU General Public License v3.0 — see [LICENSE](LICENSE).
