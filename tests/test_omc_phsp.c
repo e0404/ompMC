@@ -815,20 +815,29 @@ static void test_event_generator_header_rejected_before_anything_else(void) {
     removeDataset(stem);
 }
 
-static void test_header_checksum_mismatch_fails(void) {
+/* The checksum is the size the binary file should have, and the header
+ reader never opens that file, so it has nothing to hold the checksum
+ against and keeps it as it stands. In particular it is NOT the record
+ length times the particle count: the phase space IAEA publishes as index
+ 700 has a checksum matching its file exactly and a particle count one
+ particle above it, and a reader taking those two to agree turns a real
+ dataset away. */
+static void test_header_keeps_a_checksum_it_cannot_check(void) {
 
-    const char *stem = "phsp_badsum";
+    const char *stem = "phsp_sum";
     struct HeaderSpec spec = validSpec(3);
     struct OmcPhspHeader header;
 
-    spec.checksum = 88;         /* 3 records of 29 bytes are 87 */
+    spec.checksum = 58;         /* 3 records of 29 bytes would be 87 */
 
     if (!writeHeaderFile(stem, &spec)) {
         return;
     }
 
-    EXPECT_FAIL("ompMC:phsp:checksumMismatch",
-                omcPhspHeaderFromFile(&header, stem));
+    EXPECT_OK(omcPhspHeaderFromFile(&header, stem));
+
+    CHECK(header.checksum == 58);
+    CHECK(header.particles == 3);
 
     removeDataset(stem);
 }
@@ -1041,6 +1050,52 @@ static void test_negative_energy_marks_new_history(void) {
     removeDataset(stem);
 }
 
+/* The histories are counted while loading, and a file marking none of them
+ is a real thing rather than an empty one: the Varian TrueBeam 6MV phase
+ space IAEA publishes marks not one of its 52 million particles, which leaves
+ anything drawing from it unable to tell the particles of one history from
+ another's. Worth knowing before sampling, so it is counted and said. */
+static void test_new_histories_are_counted(void) {
+
+    const char *stem = "phsp_histories";
+    struct HeaderSpec spec = validSpec(4);
+    struct RecordSpec records[4];
+    struct OmcPhsp phsp;
+
+    for (int i = 0; i < 4; i++) {
+        records[i] = validRecord();
+    }
+    records[0].energy = -1.0f;
+    records[1].energy = 2.0f;
+    records[2].energy = -3.0f;
+    records[3].energy = 4.0f;
+
+    if (!writeDataset(stem, &spec, records, 4)) {
+        return;
+    }
+
+    EXPECT_OK(omcPhspFromFile(&phsp, stem));
+    CHECK(phsp.newHistories == 2);
+    omcPhspFree(&phsp);
+
+    /* A file that marks none of them says zero, and says it about a file
+     that is not empty. */
+    for (int i = 0; i < 4; i++) {
+        records[i].energy = 1.0f + (float)i;
+    }
+
+    if (!writeDataset(stem, &spec, records, 4)) {
+        return;
+    }
+
+    EXPECT_OK(omcPhspFromFile(&phsp, stem));
+    CHECK(phsp.newHistories == 0);
+    CHECK(omcPhspCount(&phsp) == 4);
+    omcPhspFree(&phsp);
+
+    removeDataset(stem);
+}
+
 /* And a particle heading back the way it came by writing the particle type
  negative, the only place the sign of w is kept. */
 static void test_negative_type_gives_negative_w(void) {
@@ -1227,10 +1282,57 @@ static void test_get_out_of_range_fails(void) {
     removeDataset(stem);
 }
 
-/* A binary file with fewer particles in it than the header promised is the
- shape a transfer cut short leaves behind, and reading it would run off the
- end of the last record. */
-static void test_short_phsp_file_fails(void) {
+/* How many particles there are is a question only the binary file can
+ answer. The phase space IAEA publishes as index 700 announces one particle
+ more than it holds, so a header and a file disagreeing has to be something
+ the reader reports and works around rather than refuses -- and what it works
+ around to is the file, since the particle the header adds is not there to be
+ read. */
+static void test_header_overcounting_particles_is_survivable(void) {
+
+    const char *stem = "phsp_overcount";
+    struct HeaderSpec spec = validSpec(3);
+    struct RecordSpec records[2];
+    unsigned char bytes[256];
+    struct OmcPhsp phsp;
+    struct OmcPhspRecord got;
+    size_t packed;
+
+    records[0] = validRecord();
+    records[1] = validRecord();
+    records[0].energy = 1.0f;
+    records[1].energy = 2.0f;
+
+    /* The header counts three particles and the checksum matches the two the
+     file actually holds, which is the shape the published file has. */
+    spec.checksum = 2*29;
+
+    if (!writeHeaderFile(stem, &spec)) {
+        return;
+    }
+
+    packed = packRecords(bytes, &spec, records, 2);
+    if (!writePhspFile(stem, bytes, packed)) {
+        return;
+    }
+
+    EXPECT_OK(omcPhspFromFile(&phsp, stem));
+
+    CHECK(phsp.header.particles == 3);
+    CHECK(omcPhspCount(&phsp) == 2);
+
+    EXPECT_OK(omcPhspGet(&phsp, 1, &got));
+    CHECK_CLOSE(got.energy, 2.0, 1e-6);
+
+    /* And the particle the header made up is not there to be read. */
+    EXPECT_FAIL("ompMC:phsp:indexOutOfRange", omcPhspGet(&phsp, 2, &got));
+
+    omcPhspFree(&phsp);
+    removeDataset(stem);
+}
+
+/* A file cut off in the middle of a record keeps the records that made it. */
+static void test_partial_last_record_is_dropped(void) {
 
     const char *stem = "phsp_short";
     struct HeaderSpec spec = validSpec(2);
@@ -1248,6 +1350,32 @@ static void test_short_phsp_file_fails(void) {
 
     packed = packRecords(bytes, &spec, records, 2);
     if (!writePhspFile(stem, bytes, packed - 4)) {
+        return;
+    }
+
+    EXPECT_OK(omcPhspFromFile(&phsp, stem));
+
+    CHECK(omcPhspCount(&phsp) == 1);
+
+    omcPhspFree(&phsp);
+    removeDataset(stem);
+}
+
+/* But a file without a whole record in it has nothing to offer. */
+static void test_phsp_file_without_a_whole_record_fails(void) {
+
+    const char *stem = "phsp_stub";
+    struct HeaderSpec spec = validSpec(2);
+    struct RecordSpec record = validRecord();
+    unsigned char bytes[256];
+    struct OmcPhsp phsp;
+
+    if (!writeHeaderFile(stem, &spec)) {
+        return;
+    }
+
+    packRecords(bytes, &spec, &record, 1);
+    if (!writePhspFile(stem, bytes, 10)) {
         return;
     }
 
@@ -1438,6 +1566,9 @@ static void test_reads_committed_example(void) {
     CHECK(particles == 10);
     CHECK(histories == 6);
 
+    /* The same count the loader arrived at without decoding anything. */
+    CHECK(phsp.newHistories == 6);
+
     omcPhspFree(&phsp);
 }
 
@@ -1459,7 +1590,7 @@ int main(void) {
     RUN(test_header_missing_keyword_fails);
     RUN(test_header_rejects_big_endian_and_event_files);
     RUN(test_event_generator_header_rejected_before_anything_else);
-    RUN(test_header_checksum_mismatch_fails);
+    RUN(test_header_keeps_a_checksum_it_cannot_check);
     RUN(test_header_too_many_extras_fails);
     RUN(test_header_path_with_extension_accepted);
     RUN(test_header_per_type_counts);
@@ -1468,13 +1599,16 @@ int main(void) {
     RUN(test_constants_substituted);
     RUN(test_w_constant_not_reconstructed);
     RUN(test_negative_energy_marks_new_history);
+    RUN(test_new_histories_are_counted);
     RUN(test_negative_type_gives_negative_w);
     RUN(test_uv_overflow_normalized);
     RUN(test_extra_floats_and_longs_decoded);
     RUN(test_indexed_random_access);
     RUN(test_next_pops_then_stops);
     RUN(test_get_out_of_range_fails);
-    RUN(test_short_phsp_file_fails);
+    RUN(test_header_overcounting_particles_is_survivable);
+    RUN(test_partial_last_record_is_dropped);
+    RUN(test_phsp_file_without_a_whole_record_fails);
     RUN(test_trailing_bytes_warn_but_load);
     RUN(test_bad_type_byte_fails_at_load);
     RUN(test_free_is_idempotent);

@@ -533,16 +533,11 @@ void omcPhspHeaderFromFile(struct OmcPhspHeader *header, const char *path) {
             header->recordLength, expected);
     }
 
-    unsigned long long checksum =
-        (unsigned long long)header->recordLength*header->particles;
-    if (header->checksum != checksum) {
-        omcFail("ompMC:phsp:checksumMismatch",
-            "Phase space header %s declares a checksum of %llu, but %llu "
-            "particles of %d bytes are %llu.", headerPath,
-            (unsigned long long)header->checksum,
-            (unsigned long long)header->particles, header->recordLength,
-            checksum);
-    }
+    /* The checksum is the size the binary file should have, so there is
+     nothing to check against it here -- omcPhspFromFile() does that. It is
+     worth saying that it is NOT the record length times the particle count:
+     published datasets exist whose particle count is a little over what the
+     file holds, and taking the two to agree would turn them away. */
 
     omcLog(OMC_LOG_DETAIL, "Phase space file holds %llu particles of %d bytes "
            "from %llu histories.", (unsigned long long)header->particles,
@@ -675,6 +670,7 @@ void omcPhspFromFile(struct OmcPhsp *phsp, const char *path) {
     omcPhspHeaderFromFile(&phsp->header, path);
 
     phsp->nRecords = phsp->header.particles;
+    phsp->newHistories = 0;
     phsp->raw = NULL;
     phsp->cursor = 0;
 
@@ -710,52 +706,107 @@ void omcPhspFromFile(struct OmcPhsp *phsp, const char *path) {
         }
     }
 
-    /* The whole file in one read, which also settles whether it is as long
-     as the header promised without asking for its size: a file too short
-     comes up short here, and one too long leaves something behind. */
-    size_t nread = needed > 0 ?
-        fread(phsp->raw, 1, (size_t)needed, fp) : 0;
-
-    if (nread != (size_t)needed) {
-        fclose(fp);
-        omcPhspFree(phsp);
-        omcFail("ompMC:phsp:fileSizeMismatch",
-            "Phase space file %s ended after %llu of the %llu bytes its "
-            "header promised, %llu particles of %d bytes.", phspPath,
-            (unsigned long long)nread, needed,
-            (unsigned long long)phsp->nRecords, phsp->header.recordLength);
-    }
-
-    if (fgetc(fp) != EOF) {
-        omcLog(OMC_LOG_WARNING, "Phase space file %s holds more than the %llu "
-               "particles its header announces. The rest is ignored.",
-               phspPath, (unsigned long long)phsp->nRecords);
-    }
+    /* The whole file in one read, which also settles how long it actually is
+     without asking for its size: a file shorter than the header promised
+     comes up short here, and a longer one leaves something behind. */
+    unsigned long long nread = needed > 0 ?
+        (unsigned long long)fread(phsp->raw, 1, (size_t)needed, fp) : 0;
+    int hasMore = fgetc(fp) != EOF;
 
     fclose(fp);
 
+    /* How many particles there are is a question only the file can answer.
+     The header's count is worth reporting a disagreement over, but not worth
+     believing: the datasets IAEA publishes include at least one whose
+     $PARTICLES: is a particle more than the file holds, and reading the
+     particle that is not there would be the real fault. */
+    unsigned long long claimed = phsp->nRecords;
+
+    phsp->nRecords = nread/(unsigned long long)phsp->header.recordLength;
+
+    if (phsp->nRecords == 0 && claimed > 0) {
+        omcPhspFree(phsp);
+        omcFail("ompMC:phsp:fileSizeMismatch",
+            "Phase space file %s holds %llu bytes, not even one record of the "
+            "%d bytes its header describes.", phspPath, nread,
+            phsp->header.recordLength);
+    }
+
+    if (nread % (unsigned long long)phsp->header.recordLength != 0) {
+        omcLog(OMC_LOG_WARNING, "Phase space file %s ends in the middle of a "
+               "record, %llu bytes into one of %d. The part of it that is "
+               "there is ignored.", phspPath,
+               nread % (unsigned long long)phsp->header.recordLength,
+               phsp->header.recordLength);
+    }
+
+    if (phsp->nRecords != claimed) {
+        omcLog(OMC_LOG_WARNING, "Phase space file %s holds %llu particles, "
+               "and its header announces %llu. Going with what the file "
+               "holds.", phspPath, (unsigned long long)phsp->nRecords,
+               claimed);
+    }
+
+    if (hasMore) {
+        omcLog(OMC_LOG_WARNING, "Phase space file %s is longer than the %llu "
+               "particles its header announces. The rest is ignored.",
+               phspPath, claimed);
+    }
+    else if (phsp->header.checksum != nread) {
+        /* The format defines the checksum as the size of the binary file. */
+        omcLog(OMC_LOG_WARNING, "Phase space file %s is %llu bytes, and its "
+               "header puts the checksum at %llu. One of the two was written "
+               "by something that had the other wrong.", phspPath, nread,
+               (unsigned long long)phsp->header.checksum);
+    }
+
     /* Look at every record now rather than when it is read, so that a file
      with something wrong in the middle is turned away at the door and
-     omcPhspGet() is left with nothing to check. */
+     omcPhspGet() is left with nothing to check. Counting the histories costs
+     nothing on the way past. */
+    phsp->newHistories = 0;
+
     for (unsigned long long i = 0; i < phsp->nRecords; i++) {
-        int type = (int)(signed char)
-            phsp->raw[i*(unsigned long long)phsp->header.recordLength];
+        const unsigned char *at =
+            phsp->raw + i*(unsigned long long)phsp->header.recordLength;
+        int type = (int)(signed char)at[0];
 
         if (type < 0) {
             type = -type;
         }
         if (type < OMC_PHSP_PHOTON || type > OMC_PHSP_PROTON) {
-            unsigned long long at = i;
+            unsigned long long which = i;
             omcPhspFree(phsp);
             omcFail("ompMC:phsp:badParticleType",
                 "Particle %llu of phase space file %s is of type %d, and the "
-                "format defines %d to %d.", at, phspPath, type,
+                "format defines %d to %d.", which, phspPath, type,
                 OMC_PHSP_PHOTON, OMC_PHSP_PROTON);
+        }
+
+        /* A new history is a negative energy, and the sign bit of that
+         little endian float is the top bit of the byte before the next
+         quantity. */
+        if (at[4] & 0x80) {
+            phsp->newHistories++;
         }
     }
 
     omcLog(OMC_LOG_INFO, "Read %llu particles from phase space file %s.",
            (unsigned long long)phsp->nRecords, phspPath);
+
+    if (phsp->newHistories == 0 && phsp->nRecords > 0) {
+        omcLog(OMC_LOG_WARNING, "No particle in phase space file %s marks the "
+               "start of a history, so the particles one history left behind "
+               "cannot be told from another's. Anything drawing from it has "
+               "to treat every particle as its own history, and will "
+               "understate its uncertainty by however much they are "
+               "correlated.", phspPath);
+    }
+    else {
+        omcLog(OMC_LOG_DETAIL, "Phase space file marks %llu new histories, "
+               "%.2f particles each.", (unsigned long long)phsp->newHistories,
+               (double)phsp->nRecords/(double)phsp->newHistories);
+    }
 
     return;
 }
@@ -806,6 +857,7 @@ void omcPhspFree(struct OmcPhsp *phsp) {
 
     phsp->raw = NULL;
     phsp->nRecords = 0;
+    phsp->newHistories = 0;
     phsp->cursor = 0;
 
     return;

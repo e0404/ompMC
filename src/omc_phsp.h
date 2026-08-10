@@ -119,8 +119,14 @@ struct OmcPhspHeader {
     int byteOrder;              ///< 1234 : little endian, 4321 : big endian
     int recordLength;           ///< bytes per particle record
 
-    unsigned long long checksum;        ///< #recordLength times #particles
-    unsigned long long particles;       ///< particles in the binary file
+    /*! The size the binary file should have, in bytes. NOT #recordLength
+     times #particles: published datasets exist where those two disagree. */
+    unsigned long long checksum;
+
+    /*! Particles the header says the binary file holds. What it actually
+     holds is omcPhspCount(), and the two do differ in the wild. */
+    unsigned long long particles;
+
     unsigned long long origHistories;   ///< histories that produced them
 
     /*! Particles of each type, indexed by enum OmcPhspParticleType minus
@@ -162,7 +168,20 @@ struct OmcPhspRecord {
 /*! A phase space file, read into memory and ready to draw particles from. */
 struct OmcPhsp {
     struct OmcPhspHeader header;        ///< what the `.IAEAheader` said
-    unsigned long long nRecords;        ///< particles held, from the header
+
+    /*! Particles held, counted from the size of the binary file rather than
+     taken from the header. */
+    unsigned long long nRecords;
+
+    /*! Particles that open a new independent history, counted while loading.
+
+     @warning Zero means the file does not mark histories AT ALL rather than
+     that it holds none, and files like that are published: the particles a
+     single history left behind cannot be told apart in one, so anything
+     drawing from it has to treat every particle as its own history and will
+     understate its own uncertainty by however much those particles are
+     correlated. */
+    unsigned long long newHistories;
 
     /*! The binary file, still in its packed on disk form. Decoded a record
      at a time by omcPhspGet(). */
@@ -190,14 +209,22 @@ void omcPhspHeaderFromFile(struct OmcPhspHeader *header, const char *path);
 
  @warning Everything that can go wrong with the file goes wrong here, and is
  reported through omcFail(), which does not return: a header that contradicts
- itself, a binary file shorter than the header promised, a record with a
- particle type the format does not define. That is deliberate -- it leaves
+ itself, a binary file with nothing readable in it, a record with a particle
+ type the format does not define. That is deliberate -- it leaves
  omcPhspGet() with nothing left to check on a code path that may run once per
- history. */
+ history.
+
+ @warning A file holding a different number of particles than its header
+ announces is NOT one of those things. It is reported through omcLog() and
+ read anyway, as many particles as are actually there, because the published
+ datasets include one of those and refusing it would help nobody. Callers
+ that care should compare omcPhspCount() with
+ struct OmcPhspHeader::particles. */
 void omcPhspFromFile(struct OmcPhsp *phsp, const char *path);
 
 /*! @param phsp The file to ask about.
- @return The number of particles it holds. */
+ @return The number of particles it holds, counted from the size of the file
+ rather than taken from the header. */
 unsigned long long omcPhspCount(const struct OmcPhsp *phsp);
 
 /*! Decode one particle, by position in the file.
