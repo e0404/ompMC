@@ -282,25 +282,90 @@ jobs:
         with:
           command: addpath('build/bin'); addpath('ucodes/omc_matrad'); test_omc_matrad_mex
 
+      # Three subfolders rather than one flat directory, because the DLLs a
+      # binary needs are not the same for every binary a job produces: on
+      # MinGW GCC, omc_matrad.mexw64 imports libgcc_s_seh-1.dll and
+      # libgomp-1.dll but not libwinpthread-1.dll, while omc_dosxyz.exe
+      # imports libwinpthread-1.dll and libgomp-1.dll but not
+      # libgcc_s_seh-1.dll -- verified with objdump -p against a local build
+      # of each, not assumed. release.yml packages each subfolder as-is, so
+      # getting this split right here is what keeps a release zip from
+      # carrying a DLL a binary does not actually use.
       - name: Collect the artifacts
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts
-          cp build/bin/omc_dosxyz build/bin/omc_dosxyz.exe artifacts/ 2>/dev/null || true
-          cp build/bin/*.mex* artifacts/ 2>/dev/null || true
-          if [ "${{ matrix.mingw || false }}" = "true" ]; then
-            # The MinGW binaries need the GCC runtime next to them to be usable
-            # outside of this job.
-            for dll in libgomp-1.dll libgcc_s_seh-1.dll libwinpthread-1.dll; do
-              cp "$(cygpath -u "$MINGW_BIN")/$dll" artifacts/ 2>/dev/null || true
+          mkdir -p artifacts/omc_dosxyz artifacts/omc_matrad_matlab artifacts/omc_matrad_octave
+
+          # Vendors exactly the non-system DLLs a Windows PE binary actually
+          # imports, read from its own import table rather than assumed from
+          # the toolchain. A DLL is vendored only if it is also found in the
+          # toolchain's own bin/: system and API-set DLLs (KERNEL32.dll,
+          # api-ms-win-crt-*, ...) never live there, and neither do MATLAB's
+          # libmex.dll/libmx.dll or Octave's liboct*.dll -- those come from
+          # MATLAB's/Octave's own installation, not the compiler's, so this
+          # rule excludes them automatically without needing an explicit
+          # denylist. No-op on MSVC (TOOLCHAIN_BIN unset there): its binaries
+          # need the Visual C++ Redistributable, which is documented as a
+          # prerequisite in the packaged README rather than vendored, since
+          # redistributing it outside Microsoft's own installer is not clean.
+          vendor_deps() {
+            local bin="$1" dest="$2" dll src
+            [ -n "${TOOLCHAIN_BIN:-}" ] || return 0
+            for dll in $(objdump -p "$bin" | awk '/DLL Name:/{print $3}'); do
+              src="$(find "$TOOLCHAIN_BIN" -maxdepth 1 -iname "$dll" -print -quit)"
+              # Not "[ -n "$src" ] && cp ...": under set -e, a bare "test &&
+              # action" aborts the whole script the moment the test is false
+              # (which it is for every system DLL -- KERNEL32.dll is the
+              # first import on every binary and is never found here), so
+              # the loop needs the test inside an if instead.
+              if [ -n "$src" ]; then
+                cp "$src" "$dest/"
+              fi
             done
+          }
+
+          if [ -n "${MINGW_BIN:-}" ]; then
+            TOOLCHAIN_BIN="$(cygpath -u "$MINGW_BIN")"
+          elif [ -n "${LLVM_MINGW_BIN:-}" ]; then
+            TOOLCHAIN_BIN="$(cygpath -u "$LLVM_MINGW_BIN")"
+          else
+            TOOLCHAIN_BIN=""
           fi
-          if [ -n "${LLVM_MINGW_BIN:-}" ]; then
-            # The only non-system dependency of the llvm-mingw binaries.
-            cp "$(cygpath -u "$LLVM_MINGW_BIN")/libomp.dll" artifacts/
+
+          # .exe checked first, and the loop stops at the first match: MSYS's
+          # bash resolves a bare "omc_dosxyz" to "omc_dosxyz.exe" for -f/cp
+          # on Windows (so both names would otherwise "exist"), but objdump
+          # does not do that resolution and fails on the bare name -- for
+          # dll in $(objdump ...) happens to swallow that failure rather than
+          # aborting the script, which is not something to rely on.
+          for exe in build/bin/omc_dosxyz.exe build/bin/omc_dosxyz; do
+            if [ -f "$exe" ]; then
+              cp "$exe" artifacts/omc_dosxyz/
+              vendor_deps "$exe" artifacts/omc_dosxyz
+              break
+            fi
+          done
+
+          for mex in build/bin/*.mexw64 build/bin/*.mexa64 build/bin/*.mexmaci64 build/bin/*.mexmaca64; do
+            if [ -f "$mex" ]; then
+              cp "$mex" artifacts/omc_matrad_matlab/
+              vendor_deps "$mex" artifacts/omc_matrad_matlab
+            fi
+          done
+
+          # No vendor_deps call: the Octave .mex needs no vendored runtime on
+          # any platform. On Windows, Octave's own installation ships
+          # libgomp-1.dll, libgcc_s_seh-1.dll and libwinpthread-1.dll next to
+          # octave-cli.exe itself (checked directly against local Octave
+          # 8.4.0/10.3.0/11.3.0 installs), so a GCC-built .mex resolves its
+          # runtime against Octave's own copy for free. On Linux/macOS a
+          # .mex links no library at all -- see cmake/FindOctave.cmake.
+          if [ -f build/bin/omc_matrad.mex ]; then
+            cp build/bin/omc_matrad.mex artifacts/omc_matrad_octave/
           fi
-          ls -l artifacts
+
+          find artifacts -type f | sort
 
       - name: Upload the artifacts
         uses: actions/upload-artifact@v7

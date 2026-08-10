@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - This changelog.
+- Release packaging workflow (`release.yml`): on a `v*` tag, packages
+  build.yml's binaries into per-platform zips (`omc_dosxyz` + the MATLAB MEX
+  file per platform/toolchain, the Octave MEX file per platform/ABI bucket),
+  each bundled with its data files and published to a GitHub Release.
+
+### Changed
+
+- build.yml's artifact collection now sorts binaries into per-target
+  subfolders and vendors DLLs per binary, based on each binary's actual
+  import table, instead of a blanket per-job DLL list -- the MinGW-built
+  MATLAB MEX file and `omc_dosxyz` do not need the same runtime DLLs.
 
 ## [0.2.0] - 2026-08-06
 
