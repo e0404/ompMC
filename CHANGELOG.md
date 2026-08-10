@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `omc_phsp`, a reader for IAEA format phase space files
+  (`.IAEAheader`/`.IAEAphsp`), such as the ones published at
+  <https://www-nds.iaea.org/phsp/>. It reads the header on its own or the
+  whole file into memory, and hands the particles back either by index or by
+  popping them one at a time. Nothing samples from one yet.
 - This changelog.
 - Release packaging workflow (`release.yml`): on a `v*` tag, packages
   build.yml's binaries into per-platform zips (`omc_dosxyz` + the MATLAB MEX

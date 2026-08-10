@@ -17,3 +17,8 @@ that turn it plus a spectrum into starting particles.
 
 ```{doxygenfile} omc_spectrum.h
 ```
+
+## Phase space files
+
+```{doxygenfile} omc_phsp.h
+```
