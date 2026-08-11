@@ -26,12 +26,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   particle misses the phantom, or is a neutron or proton, produces nothing
   and says so, which is why it returns a value the caller has to check before
   showering.
-- `omcCalcForwardPhsp()`, the forward engine driven from a phase space instead
-  of from weighted beamlets. There are no beamlets and no spectrum: the file
-  says what the particles are and where they are going, and the result comes
-  out per history rather than for a set of weights. Histories whose particle
-  misses the phantom count among those it is divided by, since they are
-  fluence the file stands for. No user code exposes it yet.
+- `omc_source`, one interface every source of primary particles fills in. A
+  source now answers only "which particle starts this history, and where is it
+  going"; carrying it to the phantom, finding its voxel and counting the
+  energy it brought are `omcSourcePlace()`'s job and the engine's, done once
+  for everyone instead of once per source.
+
+### Changed
+
+- `omcCalcForward()` takes a `struct OmcSource` rather than beamlets and
+  weights, so the same engine runs a fluence map or a phase space without
+  knowing which. Weighted beamlets are dressed as one with
+  `omcBeamletHistoriesAsSource()`, a phase space with
+  `omcPhspSamplerAsSource()`, and `omcCalcForwardPhsp()` is gone. What the
+  result means -- the dose for the weights given, or the dose per history --
+  comes from the source too.
+- `struct OmcForwardOptions` no longer carries the charge or the source
+  geometry, and `struct OmcForwardSummary` no longer carries how the histories
+  were shared out among beamlets; both belong to the source, and the latter is
+  asked of it with `omcBeamletHistoriesStats()`.
+- Beamlet particles now start at the source point and are flown to the phantom
+  like everyone else's, instead of being walked backwards from the aperture.
+  The ray is the same one, so the dose is unchanged: over the matRad fixture
+  the total agrees to 5.1e-16 and per voxel to 1.2e-10, which is the size of
+  the last-ulp differences a compiler change already makes.
 - This changelog.
 - Release packaging workflow (`release.yml`): on a `v*` tag, packages
   build.yml's binaries into per-platform zips (`omc_dosxyz` + the MATLAB MEX

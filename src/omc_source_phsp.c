@@ -25,22 +25,8 @@
 #include "omc_host.h"
 #include "omc_phsp.h"
 #include "omc_random.h"
-#include "omc_score.h"
-#include "omc_utilities.h"
-#include "ompmc.h"
 
-#include <float.h>
 #include <math.h>
-
-#if defined(_MSC_VER)
-    //use __declspec(thread) instead of threadprivate to avoid
-    //error C3053. More information in:
-    // https://stackoverflow.com/questions/12560243/using-threadprivate-directive-in-visual-studio
-    __declspec(thread) extern struct Stack stack;
-#else
-    extern struct Stack stack;
-    #pragma omp threadprivate(stack)
-#endif
 
 /******************************************************************************/
 
@@ -131,99 +117,6 @@ static void applyTransform(const struct OmcPhspTransform *transform,
     return;
 }
 
-/* Cut the ray down to where it is inside one slab of the phantom's bounding
- box, narrowing the interval [tenter, texit] it is inside all of them.
-
- @return 0 as soon as the interval is empty, i.e. the ray misses. */
-static int clipSlab(double p, double d, double lo, double hi,
-                    double *tenter, double *texit) {
-
-    if (d == 0.0) {
-        /* Parallel to the slab: either it starts inside and stays, or it is
-         never in it. Written out rather than left to divide by zero, whose
-         infinities are fine but whose 0/0 is not. */
-        return p >= lo && p <= hi;
-    }
-
-    double t1 = (lo - p)/d;
-    double t2 = (hi - p)/d;
-
-    if (t1 > t2) {
-        double swap = t1;
-        t1 = t2;
-        t2 = swap;
-    }
-
-    if (t1 > *tenter) {
-        *tenter = t1;
-    }
-    if (t2 < *texit) {
-        *texit = t2;
-    }
-
-    return *tenter <= *texit;
-}
-
-/* Carry a particle to where it enters the phantom.
-
- Unlike a beamlet particle, which is aimed at the phantom by construction, a
- phase space particle was recorded wherever the simulation that made it
- scored one, and may be pointing anywhere at all.
-
- @return 1 with the position moved to the entry point, 0 if the ray never
- reaches the phantom. */
-static int enterPhantom(double *x, double *y, double *z,
-                        double u, double v, double w) {
-
-    double tenter = 0.0;        /* already inside enters at once */
-    double texit = DBL_MAX;
-
-    if (!clipSlab(*x, u, geometry.xbounds[0],
-                  geometry.xbounds[geometry.isize], &tenter, &texit) ||
-        !clipSlab(*y, v, geometry.ybounds[0],
-                  geometry.ybounds[geometry.jsize], &tenter, &texit) ||
-        !clipSlab(*z, w, geometry.zbounds[0],
-                  geometry.zbounds[geometry.ksize], &tenter, &texit)) {
-        return 0;
-    }
-
-    /* Behind the particle rather than in front of it: it is heading away. */
-    if (texit < 0.0) {
-        return 0;
-    }
-
-    *x += tenter*u;
-    *y += tenter*v;
-    *z += tenter*w;
-
-    /* For numerical stability, make sure the point really is inside the
-     phantom. nextafter() moves one representable step towards the opposite
-     face, which is the same guard omc_source_beamlet.c puts on the particles
-     it starts. */
-    if (*x < geometry.xbounds[0]) {
-        *x = nextafter(geometry.xbounds[0], geometry.xbounds[geometry.isize]);
-    }
-    if (*x > geometry.xbounds[geometry.isize]) {
-        *x = nextafter(geometry.xbounds[geometry.isize], geometry.xbounds[0]);
-    }
-
-    if (*y < geometry.ybounds[0]) {
-        *y = nextafter(geometry.ybounds[0], geometry.ybounds[geometry.jsize]);
-    }
-    if (*y > geometry.ybounds[geometry.jsize]) {
-        *y = nextafter(geometry.ybounds[geometry.jsize], geometry.ybounds[0]);
-    }
-
-    if (*z < geometry.zbounds[0]) {
-        *z = nextafter(geometry.zbounds[0], geometry.zbounds[geometry.ksize]);
-    }
-    if (*z > geometry.zbounds[geometry.ksize]) {
-        *z = nextafter(geometry.zbounds[geometry.ksize], geometry.zbounds[0]);
-    }
-
-    return 1;
-}
-
 /* Which particle of the file this history gets.
 
  @warning Depends on ihist and nothing else, which is what keeps a run from
@@ -245,10 +138,10 @@ static unsigned long long recordFor(const struct OmcPhspSampler *sampler,
     return (sampler->first + (unsigned long long)ihist) % count;
 }
 
-int omcPhspSourceSample(const struct OmcPhspSampler *sampler, uint64_t ihist,
-                        double weight) {
+int omcPhspProduce(const struct OmcPhspSampler *sampler, uint64_t ihist,
+                   double weight, struct OmcSourceParticle *particle) {
 
-    struct OmcPhspRecord particle;
+    struct OmcPhspRecord record;
     int charge;
 
     /* omcPhspSourceCheck() turns an empty phase space away before any of
@@ -259,9 +152,9 @@ int omcPhspSourceSample(const struct OmcPhspSampler *sampler, uint64_t ihist,
         return 0;
     }
 
-    omcPhspGet(sampler->phsp, recordFor(sampler, ihist), &particle);
+    omcPhspGet(sampler->phsp, recordFor(sampler, ihist), &record);
 
-    switch (particle.type) {
+    switch (record.type) {
         case OMC_PHSP_PHOTON:
             charge = 0;
             break;
@@ -278,44 +171,80 @@ int omcPhspSourceSample(const struct OmcPhspSampler *sampler, uint64_t ihist,
             return 0;
     }
 
-    double x = particle.x, y = particle.y, z = particle.z;
-    double u = particle.u, v = particle.v, w = particle.w;
+    double x = record.x, y = record.y, z = record.z;
+    double u = record.u, v = record.v, w = record.w;
 
     applyTransform(&sampler->transform, &x, &y, &z, 0);
     applyTransform(&sampler->transform, &u, &v, &w, 1);
 
-    if (!enterPhantom(&x, &y, &z, u, v, w)) {
-        return 0;
-    }
+    particle->charge = charge;
+    particle->energy = record.energy;
 
-    double ein = particle.energy;
-    double wt = particle.weight*weight;
+    particle->x = x;
+    particle->y = y;
+    particle->z = z;
 
-    stack.np = 0;
-    stack.p[stack.np].iq = charge;
-    stack.p[stack.np].e = charge != 0 ? ein + RM : ein;
+    particle->u = u;
+    particle->v = v;
+    particle->w = w;
 
-    stack.p[stack.np].x = x;
-    stack.p[stack.np].y = y;
-    stack.p[stack.np].z = z;
-
-    stack.p[stack.np].u = u;
-    stack.p[stack.np].v = v;
-    stack.p[stack.np].w = w;
-
-    stack.p[stack.np].wt = wt;
-    stack.p[stack.np].dnear = 0.0;
-
-    int ix = omcFindVoxelIndex(geometry.xbounds, geometry.isize, x);
-    int iy = omcFindVoxelIndex(geometry.ybounds, geometry.jsize, y);
-    int iz = omcFindVoxelIndex(geometry.zbounds, geometry.ksize, z);
-
-    stack.p[stack.np].ir = 1 + ix + iy*geometry.isize
-                             + iz*geometry.isize*geometry.jsize;
-
-    /* Only what actually got into the phantom counts as energy put in, so
-     that the fraction of it that ends up deposited means what it says. */
-    scoreSource(ein*wt);
+    particle->weight = record.weight*weight;
 
     return 1;
+}
+
+/******************************************************************************/
+/* The source interface */
+
+static void phspCheck(const struct OmcSource *self) {
+
+    omcPhspSourceCheck((const struct OmcPhspSampler *)self->impl);
+
+    return;
+}
+
+static void phspPrepare(struct OmcSource *self, int nperbatch) {
+
+    const struct OmcPhspSampler *sampler =
+        (const struct OmcPhspSampler *)self->impl;
+
+    /* The particles carry the weights the file gave them and nothing
+     rescales a batch, so what comes out is the dose per history once the
+     accumulated energy is divided by how many there were. */
+    self->batchScale = 1.0;
+    self->incidentFluence = (double)nperbatch;
+
+    if ((unsigned long long)nperbatch > omcPhspCount(sampler->phsp)) {
+        omcLog(OMC_LOG_WARNING, "A batch of %d histories is more than the "
+               "%llu particles the phase space holds, so some are used more "
+               "than once per batch. That buys less than the history count "
+               "suggests: a particle used twice tells you no more the second "
+               "time about what the beam does, only about what this phantom "
+               "does with it.", nperbatch, omcPhspCount(sampler->phsp));
+    }
+
+    return;
+}
+
+static int phspSample(const struct OmcSource *self, uint64_t ihist,
+                      int ihistInBatch, struct OmcSourceParticle *particle) {
+
+    (void)ihistInBatch;
+
+    return omcPhspProduce((const struct OmcPhspSampler *)self->impl, ihist,
+                          1.0, particle);
+}
+
+void omcPhspSamplerAsSource(struct OmcPhspSampler *sampler,
+                            struct OmcSource *source) {
+
+    source->check = phspCheck;
+    source->prepare = phspPrepare;
+    source->sample = phspSample;
+    source->release = NULL;     /* nothing was taken */
+    source->impl = sampler;
+    source->batchScale = 1.0;
+    source->incidentFluence = 1.0;
+
+    return;
 }

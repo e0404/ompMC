@@ -159,6 +159,7 @@ add_library(ompmc_core STATIC
     src/omc_geom.c
     src/omc_spectrum.c
     src/omc_phsp.c
+    src/omc_source.c
     src/omc_source_beamlet.c
     src/omc_source_phsp.c
     src/omc_engine_dij.c

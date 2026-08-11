@@ -702,9 +702,6 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
      dose threshold has nothing to prune. */
     forwardOptions.nhist = dijOptions.nhist;
     forwardOptions.nbatch = dijOptions.nbatch;
-    forwardOptions.charge = dijOptions.charge;
-    forwardOptions.sourceGeometry = dijOptions.sourceGeometry;
-    forwardOptions.sourceGaussianWidth = dijOptions.sourceGaussianWidth;
 
     /* Dose in Gy for the weights given. Setting this to 0 asks for the mean
      deposited energy instead, the way omc_dosxyz's 'iout' does. */
@@ -1163,8 +1160,20 @@ static void runForward(int nlhs, mxArray *plhs[], double tbegin,
 
     struct OmcForwardSummary summary;
 
-    int finished = omcCalcForward(&forwardOptions, &beamletSource,
-                                  bixelWeights, spectrum, dose, uncertainty,
+    /* The engine takes any source; these are weighted beamlets. What the
+     particles are, which the options used to carry, belongs to the source. */
+    struct OmcBeamletHistories histories;
+    histories.sampler.source = &beamletSource;
+    histories.sampler.spectrum = spectrum;
+    histories.sampler.charge = dijOptions.charge;
+    histories.sampler.geometry = dijOptions.sourceGeometry;
+    histories.sampler.gaussianWidth = dijOptions.sourceGaussianWidth;
+    histories.weights = bixelWeights;
+
+    struct OmcSource source;
+    omcBeamletHistoriesAsSource(&histories, &source);
+
+    int finished = omcCalcForward(&forwardOptions, &source, dose, uncertainty,
                                   &callbacks, &summary);
 
     if (verbose_flag > 0)
@@ -1182,8 +1191,13 @@ static void runForward(int nlhs, mxArray *plhs[], double tbegin,
     }
 
     if (verbose_flag >= 3) {
+        /* How the histories were shared out belongs to the beamlet source,
+         so it is asked of it rather than found in the engine's summary. */
+        struct OmcBeamletStats stats;
+        omcBeamletHistoriesStats(&histories, &stats);
+
         mexPrintf("Ran %d histories over %d of %d weighted beamlets.\n",
-                  summary.nhist, summary.nsampled, summary.nweighted);
+                  summary.nhist, stats.nsampled, stats.nweighted);
         mexPrintf("Deposited %.2f%% of the incident energy.\n",
                   100.0*summary.energyFraction);
     }

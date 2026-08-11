@@ -23,33 +23,26 @@
  @file
  omc_source_phsp - Starting histories from a phase space file.
 
- omc_phsp reads the particles; this puts one of them on the stack per
- history, moved into the phantom's coordinate system, carried to where it
- enters the phantom, and with its region index found. It is the phase space
- counterpart of omc_source_beamlet, and an engine uses it the same way: fill
- the sampler once before the first parallel region, then call
- omcPhspSourceSample() once per history.
-
- A phase space particle differs from a beamlet one in two ways that show in
- the interface. It is recorded wherever the original simulation scored it,
- which need not be aimed at the phantom at all, so a history can produce
- nothing -- hence the return value, which an engine must check before calling
- shower(). And it can be a neutron or a proton, which ompMC does not
- transport; those produce nothing either.
+ omc_phsp reads the particles; this makes one of them the primary of a
+ history, moved into the phantom's coordinate system. Where it meets the
+ phantom is omc_source.h's business, as it is for every source, so what an
+ engine needs is the struct OmcSource that omcPhspSamplerAsSource() fills in:
 
      struct OmcPhspSampler sampler = {0};
      sampler.phsp = &phsp;
      sampler.order = OMC_PHSP_REPLAY;
      omcPhspTransformIdentity(&sampler.transform);
-     omcPhspSourceCheck(&sampler);           // before the parallel region
 
-     #pragma omp parallel for
-     for (ihist = 0; ihist < nperbatch; ihist++) {
-         setRandomHistory(base + ihist);
-         if (omcPhspSourceSample(&sampler, base + ihist, 1.0)) {
-             shower();
-         }
-     }
+     struct OmcSource source;
+     omcPhspSamplerAsSource(&sampler, &source);
+
+     omcCalcForward(&options, &source, dose, uncertainty, NULL, &summary);
+
+ A phase space particle differs from a beamlet one in two ways worth knowing.
+ It is recorded wherever the original simulation scored it, which need not be
+ aimed at the phantom at all, so plenty of histories produce nothing. And it
+ can be a neutron or a proton, which ompMC does not transport; those produce
+ nothing either.
 
  @warning ONE PARTICLE PER HISTORY. A phase space records which particles a
  single original history left behind, and those are correlated -- a
@@ -64,6 +57,8 @@
 
 #ifndef OMC_SOURCE_PHSP_H
 #define OMC_SOURCE_PHSP_H
+
+#include "omc_source.h"
 
 #include <stdint.h>
 
@@ -98,7 +93,7 @@ struct OmcPhspTransform {
 
 /*! Everything the sampling needs that does not change from history to
  history. An engine fills this once, before its first parallel region, and
- hands it to omcPhspSourceSample() unchanged from then on. */
+ hands it to omcPhspProduce() unchanged from then on. */
 struct OmcPhspSampler {
     const struct OmcPhsp *phsp;         ///< the particles, already read
     enum OmcPhspOrder order;            ///< REPLAY or RANDOM
@@ -113,7 +108,7 @@ void omcPhspTransformIdentity(struct OmcPhspTransform *transform);
 
 /*! Check a sampler over before the histories start.
 
- Everything omcPhspSourceSample() would have to complain about is settled
+ Everything omcPhspProduce() would have to complain about is settled
  here instead, because it runs on worker threads, where omcFail() would call
  back into a host that has no business being entered from one.
 
@@ -123,30 +118,37 @@ void omcPhspTransformIdentity(struct OmcPhspTransform *transform);
  @warning Call from the master thread, before the parallel region. */
 void omcPhspSourceCheck(const struct OmcPhspSampler *sampler);
 
-/*! Put the particle history #ihist draws on the (thread local) stack,
- already moved into the phantom, carried to where it enters, and with its
- region index found.
+/*! Make the primary particle history #ihist draws, moved into the phantom's
+ coordinate system.
 
  @param sampler Sampling parameters, unchanged since the caller filled them.
  @param ihist Global history index, the same one setRandomHistory() was
  given. Which particle it draws depends only on this, never on which thread
  ran it or on what ran before it, so a run gives the same answer however the
  histories are scheduled.
- @param weight Scales the weight the particle carries in the file, and with
- it what the history contributes to the incident energy tally. Pass 1.0 to
- use the file's own weights.
+ @param weight Scales the weight the particle carries in the file. Pass 1.0
+ to use the file's own weights.
+ @param particle Filled in with the particle.
 
- @return 1 if a particle is on the stack and shower() should run, 0 if this
- history produced nothing -- the particle missed the phantom, or was a
- neutron or proton. A history that produced nothing still happened, and still
- counts towards the fluence a run represents.
+ @return 1 if there is a particle, 0 if this history produced nothing --
+ which here means the file offered a neutron or a proton, and ompMC
+ transports neither. A history that produced nothing still happened, and
+ still counts towards the fluence a run represents.
 
  @warning Runs inside the parallel history loop, so it touches nothing but
- the thread's own stack, its own random number generator, and the read-only
- sampler. In particular it leaves the read position omcPhspNext() uses alone:
- that is one cursor shared by every thread, and a source that moved it would
- make the answer depend on the scheduling. */
-int omcPhspSourceSample(const struct OmcPhspSampler *sampler, uint64_t ihist,
-                        double weight);
+ its own random number generator and the read-only sampler. In particular it
+ leaves the read position omcPhspNext() uses alone: that is one cursor shared
+ by every thread, and a source that moved it would make the answer depend on
+ the scheduling. */
+int omcPhspProduce(const struct OmcPhspSampler *sampler, uint64_t ihist,
+                   double weight, struct OmcSourceParticle *particle);
+
+/*! Present a phase space to an engine as a source.
+
+ @param sampler The phase space and how to draw from it. Must outlive
+ @p source.
+ @param source Filled in with the source interface. */
+void omcPhspSamplerAsSource(struct OmcPhspSampler *sampler,
+                            struct OmcSource *source);
 
 #endif

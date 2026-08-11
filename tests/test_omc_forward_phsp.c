@@ -221,19 +221,30 @@ static void makeBeam(struct Made *made, int n, double energy, int aimAway) {
     }
 }
 
-static struct OmcForwardPhspOptions optionsFor(int nhist) {
+static struct OmcForwardOptions optionsFor(int nhist) {
 
-    struct OmcForwardPhspOptions opt;
+    struct OmcForwardOptions opt;
     memset(&opt, 0, sizeof(opt));
 
     opt.nhist = nhist;
     opt.nbatch = 4;
-    opt.order = OMC_PHSP_REPLAY;
-    opt.first = 0;
     opt.outputDose = 0;         /* deposited energy, no density scaling */
-    omcPhspTransformIdentity(&opt.transform);
 
     return opt;
+}
+
+/* The phase space, dressed as a source the engine will take. */
+static struct OmcPhspSampler samplerFor(struct OmcPhsp *phsp) {
+
+    struct OmcPhspSampler sampler;
+    memset(&sampler, 0, sizeof(sampler));
+
+    sampler.phsp = phsp;
+    sampler.order = OMC_PHSP_REPLAY;
+    sampler.first = 0;
+    omcPhspTransformIdentity(&sampler.transform);
+
+    return sampler;
 }
 
 /*******************************************************************************
@@ -250,14 +261,17 @@ static void test_a_photon_beam_builds_up_and_falls_off(void) {
     struct Made made;
     makeBeam(&made, 16, 6.0, 0);
 
-    struct OmcForwardPhspOptions opt = optionsFor(20000);
-    struct OmcForwardPhspSummary summary;
+    struct OmcForwardOptions opt = optionsFor(20000);
+    struct OmcForwardSummary summary;
 
     double *dose = malloc(GRIDSIZE*sizeof(double));
     double *unc = malloc(GRIDSIZE*sizeof(double));
 
-    int finished = omcCalcForwardPhsp(&opt, &made.phsp, dose, unc, NULL,
-                                      &summary);
+    struct OmcPhspSampler sampler = samplerFor(&made.phsp);
+    struct OmcSource source;
+    omcPhspSamplerAsSource(&sampler, &source);
+
+    int finished = omcCalcForward(&opt, &source, dose, unc, NULL, &summary);
 
     CHECK(finished == 1);
     CHECK(summary.nhist == 20000);
@@ -308,13 +322,16 @@ static void test_a_beam_aimed_away_deposits_nothing(void) {
     struct Made made;
     makeBeam(&made, 16, 6.0, 1);        /* turned round */
 
-    struct OmcForwardPhspOptions opt = optionsFor(4000);
-    struct OmcForwardPhspSummary summary;
+    struct OmcForwardOptions opt = optionsFor(4000);
+    struct OmcForwardSummary summary;
 
     double *dose = malloc(GRIDSIZE*sizeof(double));
 
-    int finished = omcCalcForwardPhsp(&opt, &made.phsp, dose, NULL, NULL,
-                                      &summary);
+    struct OmcPhspSampler sampler = samplerFor(&made.phsp);
+    struct OmcSource source;
+    omcPhspSamplerAsSource(&sampler, &source);
+
+    int finished = omcCalcForward(&opt, &source, dose, NULL, NULL, &summary);
 
     CHECK(finished == 1);
     CHECK(summary.started == 0);
@@ -350,15 +367,23 @@ static void test_histories_that_miss_still_count(void) {
             (unsigned char)((-OMC_PHSP_PHOTON) & 0xFF);
     }
 
-    struct OmcForwardPhspOptions opt = optionsFor(20000);
-    struct OmcForwardPhspSummary summaryAll;
-    struct OmcForwardPhspSummary summaryHalf;
+    struct OmcForwardOptions opt = optionsFor(20000);
+    struct OmcForwardSummary summaryAll;
+    struct OmcForwardSummary summaryHalf;
 
     double *doseAll = malloc(GRIDSIZE*sizeof(double));
     double *doseHalf = malloc(GRIDSIZE*sizeof(double));
 
-    omcCalcForwardPhsp(&opt, &all.phsp, doseAll, NULL, NULL, &summaryAll);
-    omcCalcForwardPhsp(&opt, &half.phsp, doseHalf, NULL, NULL, &summaryHalf);
+    struct OmcPhspSampler samplerAll = samplerFor(&all.phsp);
+    struct OmcPhspSampler samplerHalf = samplerFor(&half.phsp);
+    struct OmcSource sourceAll;
+    struct OmcSource sourceHalf;
+
+    omcPhspSamplerAsSource(&samplerAll, &sourceAll);
+    omcPhspSamplerAsSource(&samplerHalf, &sourceHalf);
+
+    omcCalcForward(&opt, &sourceAll, doseAll, NULL, NULL, &summaryAll);
+    omcCalcForward(&opt, &sourceHalf, doseHalf, NULL, NULL, &summaryHalf);
 
     CHECK(summaryAll.started == 20000);
     CHECK(summaryHalf.started == 10000);

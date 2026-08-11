@@ -272,6 +272,20 @@ static struct Made1 straightDown(void) {
     return p;
 }
 
+/* Draw a history and put it in the phantom, which is what an engine does with
+ a source: the source makes the particle, omcSourcePlace() carries it to the
+ phantom and decides whether it ever gets there.
+
+ @return 1 if there is a particle on the stack to shower. */
+static int sampleAndPlace(const struct OmcPhspSampler *sampler, uint64_t ihist,
+                          double weight) {
+
+    struct OmcSourceParticle particle;
+
+    return omcPhspProduce(sampler, ihist, weight, &particle) &&
+           omcSourcePlace(&particle);
+}
+
 static struct OmcPhspSampler samplerFor(const struct OmcPhsp *phsp) {
 
     struct OmcPhspSampler sampler;
@@ -311,7 +325,7 @@ static void test_identity_transform_leaves_a_particle_alone(void) {
 
     struct OmcPhspSampler sampler = samplerFor(&made.phsp);
 
-    CHECK(omcPhspSourceSample(&sampler, 0, 1.0) == 1);
+    CHECK(sampleAndPlace(&sampler, 0, 1.0) == 1);
 
     /* Straight down the axis, so it enters at the top face keeping x and y. */
     CHECK_CLOSE(stack.p[0].x, 0.5, 1e-6);
@@ -341,7 +355,7 @@ static void test_translation_moves_the_particle_not_its_direction(void) {
     sampler.transform.translation[0] = 2.5;
     sampler.transform.translation[1] = -1.5;
 
-    CHECK(omcPhspSourceSample(&sampler, 0, 1.0) == 1);
+    CHECK(sampleAndPlace(&sampler, 0, 1.0) == 1);
 
     CHECK_CLOSE(stack.p[0].x, 2.5, 1e-6);
     CHECK_CLOSE(stack.p[0].y, -1.5, 1e-6);
@@ -377,7 +391,7 @@ static void test_rotation_turns_the_particle_and_its_direction(void) {
                              0.0,  0.0, 1.0};
     memcpy(sampler.transform.rotation, quarterTurn, sizeof(quarterTurn));
 
-    CHECK(omcPhspSourceSample(&sampler, 0, 1.0) == 1);
+    CHECK(sampleAndPlace(&sampler, 0, 1.0) == 1);
 
     /* The direction turned with it: u went to v. */
     CHECK_CLOSE(stack.p[0].u, 0.0, 1e-9);
@@ -431,7 +445,7 @@ static void test_particle_is_carried_to_the_phantom_surface(void) {
 
     struct OmcPhspSampler sampler = samplerFor(&made.phsp);
 
-    CHECK(omcPhspSourceSample(&sampler, 0, 1.0) == 1);
+    CHECK(sampleAndPlace(&sampler, 0, 1.0) == 1);
 
     CHECK_CLOSE(stack.p[0].z, 0.0, 1e-9);
     CHECK_CLOSE(stack.p[0].x, -1.5, 1e-6);
@@ -461,7 +475,7 @@ static void test_particle_entering_from_the_side(void) {
 
     struct OmcPhspSampler sampler = samplerFor(&made.phsp);
 
-    CHECK(omcPhspSourceSample(&sampler, 0, 1.0) == 1);
+    CHECK(sampleAndPlace(&sampler, 0, 1.0) == 1);
 
     CHECK_CLOSE(stack.p[0].x, -4.0, 1e-9);
     CHECK_CLOSE(stack.p[0].y, 0.5, 1e-6);
@@ -487,7 +501,7 @@ static void test_particle_already_inside_stays_put(void) {
 
     struct OmcPhspSampler sampler = samplerFor(&made.phsp);
 
-    CHECK(omcPhspSourceSample(&sampler, 0, 1.0) == 1);
+    CHECK(sampleAndPlace(&sampler, 0, 1.0) == 1);
 
     CHECK_CLOSE(stack.p[0].x, 1.5, 1e-6);
     CHECK_CLOSE(stack.p[0].y, -0.5, 1e-6);
@@ -514,7 +528,7 @@ static void test_particle_missing_the_phantom_produces_nothing(void) {
 
     struct OmcPhspSampler sampler = samplerFor(&made.phsp);
 
-    CHECK(omcPhspSourceSample(&sampler, 0, 1.0) == 0);
+    CHECK(sampleAndPlace(&sampler, 0, 1.0) == 0);
 
     tearDownPhantom();
 }
@@ -536,7 +550,7 @@ static void test_particle_heading_away_produces_nothing(void) {
 
     struct OmcPhspSampler sampler = samplerFor(&made.phsp);
 
-    CHECK(omcPhspSourceSample(&sampler, 0, 1.0) == 0);
+    CHECK(sampleAndPlace(&sampler, 0, 1.0) == 0);
 
     tearDownPhantom();
 }
@@ -565,15 +579,15 @@ static void test_particle_types_become_charges(void) {
 
     struct OmcPhspSampler sampler = samplerFor(&made.phsp);
 
-    CHECK(omcPhspSourceSample(&sampler, 0, 1.0) == 1);
+    CHECK(sampleAndPlace(&sampler, 0, 1.0) == 1);
     CHECK(stack.p[0].iq == 0);
     CHECK_CLOSE(stack.p[0].e, 2.0, 1e-6);
 
-    CHECK(omcPhspSourceSample(&sampler, 1, 1.0) == 1);
+    CHECK(sampleAndPlace(&sampler, 1, 1.0) == 1);
     CHECK(stack.p[0].iq == -1);
     CHECK_CLOSE(stack.p[0].e, 2.0 + RM, 1e-6);
 
-    CHECK(omcPhspSourceSample(&sampler, 2, 1.0) == 1);
+    CHECK(sampleAndPlace(&sampler, 2, 1.0) == 1);
     CHECK(stack.p[0].iq == 1);
     CHECK_CLOSE(stack.p[0].e, 2.0 + RM, 1e-6);
 
@@ -597,8 +611,8 @@ static void test_neutrons_and_protons_produce_nothing(void) {
 
     struct OmcPhspSampler sampler = samplerFor(&made.phsp);
 
-    CHECK(omcPhspSourceSample(&sampler, 0, 1.0) == 0);
-    CHECK(omcPhspSourceSample(&sampler, 1, 1.0) == 0);
+    CHECK(sampleAndPlace(&sampler, 0, 1.0) == 0);
+    CHECK(sampleAndPlace(&sampler, 1, 1.0) == 0);
 
     tearDownPhantom();
 }
@@ -616,10 +630,10 @@ static void test_weights_multiply(void) {
 
     struct OmcPhspSampler sampler = samplerFor(&made.phsp);
 
-    CHECK(omcPhspSourceSample(&sampler, 0, 1.0) == 1);
+    CHECK(sampleAndPlace(&sampler, 0, 1.0) == 1);
     CHECK_CLOSE(stack.p[0].wt, 0.25, 1e-9);
 
-    CHECK(omcPhspSourceSample(&sampler, 0, 4.0) == 1);
+    CHECK(sampleAndPlace(&sampler, 0, 4.0) == 1);
     CHECK_CLOSE(stack.p[0].wt, 1.0, 1e-9);
 
     tearDownPhantom();
@@ -647,15 +661,15 @@ static void test_replay_walks_the_file_in_order(void) {
     struct OmcPhspSampler sampler = samplerFor(&made.phsp);
 
     for (uint64_t ihist = 0; ihist < 7; ihist++) {
-        CHECK(omcPhspSourceSample(&sampler, ihist, 1.0) == 1);
+        CHECK(sampleAndPlace(&sampler, ihist, 1.0) == 1);
         CHECK_CLOSE(stack.p[0].e, 1.0 + (double)(ihist % 3), 1e-6);
     }
 
     /* And it can be started anywhere in the file. */
     sampler.first = 2;
-    CHECK(omcPhspSourceSample(&sampler, 0, 1.0) == 1);
+    CHECK(sampleAndPlace(&sampler, 0, 1.0) == 1);
     CHECK_CLOSE(stack.p[0].e, 3.0, 1e-6);
-    CHECK(omcPhspSourceSample(&sampler, 1, 1.0) == 1);
+    CHECK(sampleAndPlace(&sampler, 1, 1.0) == 1);
     CHECK_CLOSE(stack.p[0].e, 1.0, 1e-6);
 
     tearDownPhantom();
@@ -683,7 +697,7 @@ static void test_the_draw_depends_only_on_the_history_index(void) {
     const uint64_t scrambled[6] = {3, 0, 2, 1, 3, 0};
 
     for (int i = 0; i < 6; i++) {
-        CHECK(omcPhspSourceSample(&sampler, scrambled[i], 1.0) == 1);
+        CHECK(sampleAndPlace(&sampler, scrambled[i], 1.0) == 1);
         CHECK_CLOSE(stack.p[0].e, 1.0 + (double)scrambled[i], 1e-6);
     }
 
@@ -717,7 +731,7 @@ static void test_random_draws_are_reproducible_per_history(void) {
 
     for (uint64_t ihist = 0; ihist < 5; ihist++) {
         setRandomHistory(ihist);
-        CHECK(omcPhspSourceSample(&sampler, ihist, 1.0) == 1);
+        CHECK(sampleAndPlace(&sampler, ihist, 1.0) == 1);
         drawn[ihist] = stack.p[0].e;
 
         int which = (int)(drawn[ihist] - 1.0 + 0.5);
@@ -730,7 +744,7 @@ static void test_random_draws_are_reproducible_per_history(void) {
     /* Ask the same histories again, in the other order. */
     for (int ihist = 4; ihist >= 0; ihist--) {
         setRandomHistory((uint64_t)ihist);
-        CHECK(omcPhspSourceSample(&sampler, (uint64_t)ihist, 1.0) == 1);
+        CHECK(sampleAndPlace(&sampler, (uint64_t)ihist, 1.0) == 1);
         CHECK_CLOSE(stack.p[0].e, drawn[ihist], 1e-12);
     }
 
@@ -766,7 +780,7 @@ static void test_check_refuses_an_empty_or_confused_sampler(void) {
     makePhsp(&none, NULL, 0);
 
     struct OmcPhspSampler nothing = samplerFor(&none.phsp);
-    CHECK(omcPhspSourceSample(&nothing, 0, 1.0) == 0);
+    CHECK(sampleAndPlace(&nothing, 0, 1.0) == 0);
 
     /* And without a phantom there is nothing to work out an entry point in. */
     tearDownPhantom();

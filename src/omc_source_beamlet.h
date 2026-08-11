@@ -25,8 +25,13 @@
 
  The source model the matRad interface uses: a beam has a source point, a
  beamlet is a rectangle somewhere in front of it -- at isocentre, in matRad's
- case -- and a primary particle starts at a uniformly sampled point of that
- rectangle, flying away from the source point.
+ case -- and a primary particle starts at the source point, flying through a
+ uniformly sampled point of that rectangle.
+
+ The aperture is sampled rather than tested against, which is what makes this
+ cheap: every particle it makes goes through the beamlet, so none is wasted.
+ That is also why it cannot be built out of a general beam and a collimator --
+ a collimator can only throw particles away.
 
  Two engines start their histories this way and must keep agreeing on what
  they mean, so the sampling lives here rather than in either of them:
@@ -40,6 +45,8 @@
 
 #ifndef OMC_SOURCE_BEAMLET_H
 #define OMC_SOURCE_BEAMLET_H
+
+#include "omc_source.h"
 
 struct OmcSpectrum;
 
@@ -77,8 +84,7 @@ struct OmcBeamletSource {
 };
 
 /*! Everything the sampling needs that does not change from history to
- history. An engine fills this once, before its first parallel region, and
- hands it to omcBeamletSample() unchanged from then on. */
+ history. */
 struct OmcBeamletSampler {
     const struct OmcBeamletSource *source;   ///< the beamlets
     const struct OmcSpectrum *spectrum;      ///< source energy spectrum
@@ -88,20 +94,57 @@ struct OmcBeamletSampler {
     double gaussianWidth;       ///< standard deviation in cm, GAUSSIAN only
 };
 
-/*! Put one primary particle of beamlet ibeamlet on the (thread local) stack,
- already transported to the phantom surface and with its region index found.
+/*! Make the primary particle of one history of beamlet @p ibeamlet.
 
  @param sampler Sampling parameters, unchanged since the caller filled them.
  @param ibeamlet Index of the beamlet to sample from.
- @param weight Becomes the particle's statistical weight, and also scales
- what the history contributes to the incident energy tally. Pass 1.0 for an
+ @param weight Becomes the particle's statistical weight. Pass 1.0 for an
  unweighted history; omc_engine_forward passes the beamlet's share of the
  fluence.
+ @param particle Filled in with the particle.
+ @return 1 always: a beamlet particle is aimed through its aperture by
+ construction, so there is always one.
 
  @warning Runs inside the parallel history loop, so it touches nothing but
- the thread's own stack, its own random number generator, and the read-only
- sampler. */
-void omcBeamletSample(const struct OmcBeamletSampler *sampler, int ibeamlet,
-                      double weight);
+ its own random number generator and the read-only sampler. */
+int omcBeamletProduce(const struct OmcBeamletSampler *sampler, int ibeamlet,
+                      double weight, struct OmcSourceParticle *particle);
+
+/*! Beamlets with a weight each, as a source an engine can run.
+
+ The histories of a batch are shared out among the beamlets in proportion to
+ their weights, which is what makes one run cover a whole fluence map instead
+ of one beamlet. Fill in #sampler and #weights; the rest is private and set up
+ by struct OmcSource::prepare(). */
+struct OmcBeamletHistories {
+    struct OmcBeamletSampler sampler;   ///< which beamlets, which spectrum
+    const double *weights;              ///< one per beamlet, finite and >= 0
+
+    /*! @cond OMC_INTERNAL */
+    void *allocation;
+    /*! @endcond */
+};
+
+/*! What sharing the histories out among the beamlets came to. */
+struct OmcBeamletStats {
+    int nweighted;              ///< beamlets asked for with a weight above zero
+    int nsampled;               ///< of those, the ones that got any histories
+    double totalWeight;         ///< sum of the weights asked for
+    double sampledWeight;       ///< sum over the beamlets that got histories
+};
+
+/*! Present weighted beamlets to an engine as a source.
+
+ @param histories The beamlets and their weights. Must outlive @p source, and
+ struct OmcSource::release() gives back what prepare() took.
+ @param source Filled in with the source interface. */
+void omcBeamletHistoriesAsSource(struct OmcBeamletHistories *histories,
+                                 struct OmcSource *source);
+
+/*! @param histories The beamlets, after a run has prepared them.
+ @param stats Filled in with how the histories were shared out. Zeroed if the
+ source has not been prepared. */
+void omcBeamletHistoriesStats(const struct OmcBeamletHistories *histories,
+                              struct OmcBeamletStats *stats);
 
 #endif

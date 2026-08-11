@@ -8,6 +8,11 @@ that turn it plus a spectrum into starting particles.
 ```{doxygenfile} omc_geom.h
 ```
 
+## What every source has in common
+
+```{doxygenfile} omc_source.h
+```
+
 ## Beamlet apertures
 
 ```{doxygenfile} omc_source_beamlet.h

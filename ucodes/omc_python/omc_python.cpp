@@ -559,6 +559,10 @@ struct ForwardRun {
     double *dose;
     double *uncertainty;
     struct OmcForwardSummary *summary;
+    struct OmcBeamletStats *stats;
+    int charge;
+    enum OmcSourceGeometry sourceGeometry;
+    double sourceGaussianWidth;
     int completed;
 };
 
@@ -573,9 +577,25 @@ static void runForward(void *arg) {
     initRegions();
     initVrt();
 
-    run->completed = omcCalcForward(run->options, run->source, run->weights,
-                                    &spectrum, run->dose, run->uncertainty,
-                                    run->callbacks, run->summary);
+    /* The engine takes any source; these are weighted beamlets. */
+    struct OmcBeamletHistories histories;
+    histories.sampler.source = run->source;
+    histories.sampler.spectrum = &spectrum;
+    histories.sampler.charge = run->charge;
+    histories.sampler.geometry = run->sourceGeometry;
+    histories.sampler.gaussianWidth = run->sourceGaussianWidth;
+    histories.weights = run->weights;
+
+    struct OmcSource source;
+    omcBeamletHistoriesAsSource(&histories, &source);
+
+    run->completed = omcCalcForward(run->options, &source, run->dose,
+                                    run->uncertainty, run->callbacks,
+                                    run->summary);
+
+    /* How the histories were shared out belongs to the beamlet source, so it
+     is asked of it rather than found in the engine's summary. */
+    omcBeamletHistoriesStats(&histories, run->stats);
 
     omcSpectrumFree(&spectrum);
     cleanupPhysics();
@@ -760,10 +780,6 @@ NB_MODULE(_ompmc, m) {
         struct OmcForwardOptions opt;
         opt.nhist = nb::cast<int>(options["n_histories"]);
         opt.nbatch = nb::cast<int>(options["n_batches"]);
-        opt.charge = nb::cast<int>(options["charge"]);
-        opt.sourceGeometry = nb::cast<bool>(options["gaussian_source"])
-            ? OMC_SOURCE_GAUSSIAN : OMC_SOURCE_POINT;
-        opt.sourceGaussianWidth = nb::cast<double>(options["source_width"]);
         opt.outputDose = nb::cast<bool>(options["output_dose"]) ? 1 : 0;
 
         installHost();
@@ -784,8 +800,14 @@ NB_MODULE(_ompmc, m) {
         callbacks.user = &ctx;
 
         struct OmcForwardSummary summary{};
+        struct OmcBeamletStats stats{};
         ForwardRun run{&opt, &src, weights.data(), &spectrumInput, &geo,
                        &callbacks, dose.data(), uncertainty.data(), &summary,
+                       &stats,
+                       nb::cast<int>(options["charge"]),
+                       nb::cast<bool>(options["gaussian_source"])
+                           ? OMC_SOURCE_GAUSSIAN : OMC_SOURCE_POINT,
+                       nb::cast<double>(options["source_width"]),
                        0};
 
         bool ok;
@@ -809,9 +831,9 @@ NB_MODULE(_ompmc, m) {
         return nb::make_tuple(adopt(std::move(dose)),
                               adopt(std::move(uncertainty)),
                               run.completed != 0,
-                              summary.nhist, summary.nsampled,
-                              summary.nweighted,
-                              summary.sampledWeight/summary.totalWeight,
+                              summary.nhist, stats.nsampled,
+                              stats.nweighted,
+                              stats.sampledWeight/stats.totalWeight,
                               summary.energyFraction);
     },
     "density"_a, "material"_a, "x_bounds"_a,
