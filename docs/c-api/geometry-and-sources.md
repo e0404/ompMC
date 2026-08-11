@@ -22,3 +22,8 @@ that turn it plus a spectrum into starting particles.
 
 ```{doxygenfile} omc_phsp.h
 ```
+
+## Phase space source
+
+```{doxygenfile} omc_source_phsp.h
+```

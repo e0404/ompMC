@@ -16,8 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   popping them one at a time. How many particles there are is counted from
   the file rather than believed from the header, which is what it takes to
   read the published datasets; a file that marks no histories is reported,
-  since nothing drawing from one can group the particles it holds. Nothing
-  samples from a phase space yet.
+  since nothing drawing from one can group the particles it holds.
+- `omc_source_phsp`, a source that starts histories from a phase space read
+  by `omc_phsp`. It turns and moves the particles into the phantom's
+  coordinate system, carries them to the face they enter it by, and puts one
+  on the stack per history -- either replaying the file in order or drawing
+  from it at random, in both cases decided by the history index alone so a
+  run does not depend on how its histories were scheduled. A history whose
+  particle misses the phantom, or is a neutron or proton, produces nothing
+  and says so, which is why it returns a value the caller has to check before
+  showering. No engine or user code drives it yet.
 - This changelog.
 - Release packaging workflow (`release.yml`): on a `v*` tag, packages
   build.yml's binaries into per-platform zips (`omc_dosxyz` + the MATLAB MEX

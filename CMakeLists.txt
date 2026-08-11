@@ -160,6 +160,7 @@ add_library(ompmc_core STATIC
     src/omc_spectrum.c
     src/omc_phsp.c
     src/omc_source_beamlet.c
+    src/omc_source_phsp.c
     src/omc_engine_dij.c
     src/omc_engine_cube.c
     src/omc_engine_forward.c)
@@ -712,6 +713,19 @@ if(OMPMC_BUILD_TESTS)
     endif()
 
     add_test(NAME phsp COMMAND test_omc_phsp)
+
+    add_executable(test_omc_source_phsp tests/test_omc_source_phsp.c)
+    target_link_libraries(test_omc_source_phsp
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_source_phsp)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_source_phsp PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME phsp_source COMMAND test_omc_source_phsp)
 
     # Needs the PEGS and cross section data, so it runs from the repository
     # root like the smoke test below.
