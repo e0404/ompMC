@@ -159,6 +159,7 @@ add_library(ompmc_core STATIC
     src/omc_geom.c
     src/omc_spectrum.c
     src/omc_phsp.c
+    src/omc_collimator.c
     src/omc_source.c
     src/omc_source_beamlet.c
     src/omc_source_phsp.c
@@ -727,6 +728,19 @@ if(OMPMC_BUILD_TESTS)
     endif()
 
     add_test(NAME phsp_source COMMAND test_omc_source_phsp)
+
+    add_executable(test_omc_collimator tests/test_omc_collimator.c)
+    target_link_libraries(test_omc_collimator
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_collimator)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_collimator PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME collimator COMMAND test_omc_collimator)
 
     # Transports for real, so it needs the PEGS and cross section data and
     # runs from the repository root like the media and smoke tests.

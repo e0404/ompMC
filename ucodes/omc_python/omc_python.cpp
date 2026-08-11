@@ -589,7 +589,9 @@ static void runForward(void *arg) {
     struct OmcSource source;
     omcBeamletHistoriesAsSource(&histories, &source);
 
-    run->completed = omcCalcForward(run->options, &source, run->dose,
+    /* No collimator: with beamlets the collimation is already in the weights
+     the caller handed over. */
+    run->completed = omcCalcForward(run->options, &source, NULL, run->dose,
                                     run->uncertainty, run->callbacks,
                                     run->summary);
 

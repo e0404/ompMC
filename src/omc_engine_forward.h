@@ -64,6 +64,7 @@
 #ifndef OMC_ENGINE_FORWARD_H
 #define OMC_ENGINE_FORWARD_H
 
+#include "omc_collimator.h"
 #include "omc_source.h"
 
 struct OmcSpectrum;
@@ -104,9 +105,14 @@ struct OmcForwardSummary {
     int nhist;                  ///< histories actually run, rounded to whole batches
     int nperbatch;              ///< histories per batch
 
-    /*! Histories that put a particle in the phantom. The rest drew one
-     pointing somewhere else, or one ompMC does not transport. */
+    /*! Histories that put a particle in the phantom. The rest drew one the
+     modifier stopped, one pointing somewhere else, or one ompMC does not
+     transport. */
     unsigned long long started;
+
+    /*! Histories whose particle the beam modifier stopped outright. Zero
+     when there was no modifier. */
+    unsigned long long blocked;
 
     double energyFraction;      ///< deposited energy over incident kinetic energy
 };
@@ -119,6 +125,9 @@ struct OmcForwardSummary {
  @param source Where the particles come from. Checked over before the
  histories start, prepared with the batch size, and released afterwards, so
  the same source struct can be run again but must outlive the call.
+ @param modifier What is in the beam's way -- a collimator, typically -- or
+ `NULL` for an open beam. A particle it stops costs nothing but the history it
+ used up, since it is stopped before being carried to the phantom.
  @param dose Caller-supplied array of `isize*jsize*ksize` entries.
  @param uncertainty Caller-supplied array of the same size, or `NULL`. Holds
  the RELATIVE uncertainty of the dose in that voxel, and is 0.9999999
@@ -135,6 +144,7 @@ struct OmcForwardSummary {
  many of them there were. */
 int omcCalcForward(const struct OmcForwardOptions *options,
                    struct OmcSource *source,
+                   const struct OmcBeamModifier *modifier,
                    double *dose, double *uncertainty,
                    const struct OmcForwardCallbacks *callbacks,
                    struct OmcForwardSummary *summary);

@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   particle misses the phantom, or is a neutron or proton, produces nothing
   and says so, which is why it returns a value the caller has to check before
   showering.
+- `omc_collimator`, something in the beam's way: a `struct OmcBeamModifier`
+  the forward engine applies between the source and the shower, and
+  `struct OmcApertureMask`, a transmission mask on a plane. It works by back
+  projection, so it composes with any source -- which is what makes it
+  possible to cut a field out of a phase space recorded above the jaws, as
+  the IAEA ones are. A single open cell is a rectangular field. It attenuates
+  by weight rather than by roulette and draws no random numbers, so putting a
+  collimator in the beam leaves every history's random stream where it was.
 - `omc_source`, one interface every source of primary particles fills in. A
   source now answers only "which particle starts this history, and where is it
   going"; carrying it to the phantom, finding its voxel and counting the
@@ -34,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `omcCalcForward()` takes a beam modifier as well, `NULL` for an open beam.
+  A particle it stops is stopped before being carried to the phantom, so a
+  blocked history costs one plane intersection rather than a shower, and
+  `struct OmcForwardSummary::blocked` reports how many there were.
 - `omcCalcForward()` takes a `struct OmcSource` rather than beamlets and
   weights, so the same engine runs a fluence map or a phase space without
   knowing which. Weighted beamlets are dressed as one with

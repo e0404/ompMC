@@ -17,6 +17,7 @@
  has to build up to a maximum below the surface and fall away after it.
 *****************************************************************************/
 
+#include "omc_collimator.h"
 #include "omc_engine_forward.h"
 #include "omc_geom.h"
 #include "omc_host.h"
@@ -271,7 +272,7 @@ static void test_a_photon_beam_builds_up_and_falls_off(void) {
     struct OmcSource source;
     omcPhspSamplerAsSource(&sampler, &source);
 
-    int finished = omcCalcForward(&opt, &source, dose, unc, NULL, &summary);
+    int finished = omcCalcForward(&opt, &source, NULL, dose, unc, NULL, &summary);
 
     CHECK(finished == 1);
     CHECK(summary.nhist == 20000);
@@ -331,7 +332,7 @@ static void test_a_beam_aimed_away_deposits_nothing(void) {
     struct OmcSource source;
     omcPhspSamplerAsSource(&sampler, &source);
 
-    int finished = omcCalcForward(&opt, &source, dose, NULL, NULL, &summary);
+    int finished = omcCalcForward(&opt, &source, NULL, dose, NULL, NULL, &summary);
 
     CHECK(finished == 1);
     CHECK(summary.started == 0);
@@ -382,8 +383,8 @@ static void test_histories_that_miss_still_count(void) {
     omcPhspSamplerAsSource(&samplerAll, &sourceAll);
     omcPhspSamplerAsSource(&samplerHalf, &sourceHalf);
 
-    omcCalcForward(&opt, &sourceAll, doseAll, NULL, NULL, &summaryAll);
-    omcCalcForward(&opt, &sourceHalf, doseHalf, NULL, NULL, &summaryHalf);
+    omcCalcForward(&opt, &sourceAll, NULL, doseAll, NULL, NULL, &summaryAll);
+    omcCalcForward(&opt, &sourceHalf, NULL, doseHalf, NULL, NULL, &summaryHalf);
 
     CHECK(summaryAll.started == 20000);
     CHECK(summaryHalf.started == 10000);
@@ -412,6 +413,195 @@ static void test_histories_that_miss_still_count(void) {
     tearDownWaterTank();
 }
 
+/*******************************************************************************
+* The collimator
+*
+* The mask sits at z = -0.5, between where the phase space puts its particles
+* and the front face of the tank, which is where a jaw would be.
+*******************************************************************************/
+
+/* A mask that lets everything through has to leave the run alone. It is
+ worth its own test because the mask is asked about every history, and a
+ lookup that quietly stopped particles at a cell edge, or that drew a random
+ number, would show up here and nowhere else. */
+static void test_an_open_mask_changes_nothing(void) {
+
+    setUpWaterTank();
+
+    struct Made made;
+    makeBeam(&made, 16, 6.0, 0);
+
+    struct OmcForwardOptions opt = optionsFor(20000);
+    struct OmcPhspSampler sampler = samplerFor(&made.phsp);
+    struct OmcSource source;
+    omcPhspSamplerAsSource(&sampler, &source);
+
+    double *bare = malloc(GRIDSIZE*sizeof(double));
+    double *masked = malloc(GRIDSIZE*sizeof(double));
+    struct OmcForwardSummary bareSummary;
+    struct OmcForwardSummary maskedSummary;
+
+    omcCalcForward(&opt, &source, NULL, bare, NULL, NULL, &bareSummary);
+
+    double open[1] = {1.0};
+    struct OmcApertureMask mask;
+    memset(&mask, 0, sizeof(mask));
+    mask.z = -0.5;
+    mask.x0 = -50.0;
+    mask.y0 = -50.0;
+    mask.dx = 100.0;
+    mask.dy = 100.0;
+    mask.nx = 1;
+    mask.ny = 1;
+    mask.transmission = open;
+    mask.outside = 1.0;
+
+    struct OmcBeamModifier modifier;
+    omcApertureMaskAsModifier(&mask, &modifier);
+
+    omcCalcForward(&opt, &source, &modifier, masked, NULL, NULL,
+                   &maskedSummary);
+
+    CHECK(maskedSummary.blocked == 0);
+    CHECK(maskedSummary.started == bareSummary.started);
+
+    double bareTotal = 0.0, maskedTotal = 0.0;
+    for (int i = 0; i < GRIDSIZE; i++) {
+        bareTotal += bare[i];
+        maskedTotal += masked[i];
+    }
+
+    CHECK(bareTotal > 0.0);
+
+    /* The same particles down the same random streams, so what is left
+     between the two totals is the order the threads added them up in. */
+    double diff = fabs(maskedTotal - bareTotal)/bareTotal;
+    if (!(diff < 1.0e-9)) {
+        printf("  FAIL %s: an open mask moved the dose by %.3g\n",
+               current_test, diff);
+        tests_failed++;
+    }
+
+    free(bare);
+    free(masked);
+    tearDownWaterTank();
+}
+
+/* A shut one stops the lot, and says so rather than quietly returning an
+ empty cube. */
+static void test_a_shut_mask_stops_everything(void) {
+
+    setUpWaterTank();
+
+    struct Made made;
+    makeBeam(&made, 16, 6.0, 0);
+
+    struct OmcForwardOptions opt = optionsFor(4000);
+    struct OmcPhspSampler sampler = samplerFor(&made.phsp);
+    struct OmcSource source;
+    omcPhspSamplerAsSource(&sampler, &source);
+
+    double shut[1] = {0.0};
+    struct OmcApertureMask mask;
+    memset(&mask, 0, sizeof(mask));
+    mask.z = -0.5;
+    mask.x0 = -50.0;
+    mask.y0 = -50.0;
+    mask.dx = 100.0;
+    mask.dy = 100.0;
+    mask.nx = 1;
+    mask.ny = 1;
+    mask.transmission = shut;
+    mask.outside = 0.0;
+
+    struct OmcBeamModifier modifier;
+    omcApertureMaskAsModifier(&mask, &modifier);
+
+    double *dose = malloc(GRIDSIZE*sizeof(double));
+    struct OmcForwardSummary summary;
+
+    int finished = omcCalcForward(&opt, &source, &modifier, dose, NULL, NULL,
+                                  &summary);
+
+    CHECK(finished == 1);
+    CHECK(summary.started == 0);
+    CHECK(summary.blocked == 4000);
+
+    double total = 0.0;
+    for (int i = 0; i < GRIDSIZE; i++) {
+        total += dose[i];
+    }
+    CHECK(total == 0.0);
+
+    free(dose);
+    tearDownWaterTank();
+}
+
+/* And one that half transmits gives half the dose from the same number of
+ histories: the weight is what the transmission scales, not the count. That
+ is the whole difference between attenuating a beam and thinning it, and the
+ reason a nearly shut leaf costs as much to transport as an open one. */
+static void test_a_half_transmitting_mask_halves_the_dose(void) {
+
+    setUpWaterTank();
+
+    struct Made made;
+    makeBeam(&made, 16, 6.0, 0);
+
+    struct OmcForwardOptions opt = optionsFor(20000);
+    struct OmcPhspSampler sampler = samplerFor(&made.phsp);
+    struct OmcSource source;
+    omcPhspSamplerAsSource(&sampler, &source);
+
+    double *bare = malloc(GRIDSIZE*sizeof(double));
+    double *half = malloc(GRIDSIZE*sizeof(double));
+    struct OmcForwardSummary bareSummary;
+    struct OmcForwardSummary halfSummary;
+
+    omcCalcForward(&opt, &source, NULL, bare, NULL, NULL, &bareSummary);
+
+    double leaky[1] = {0.5};
+    struct OmcApertureMask mask;
+    memset(&mask, 0, sizeof(mask));
+    mask.z = -0.5;
+    mask.x0 = -50.0;
+    mask.y0 = -50.0;
+    mask.dx = 100.0;
+    mask.dy = 100.0;
+    mask.nx = 1;
+    mask.ny = 1;
+    mask.transmission = leaky;
+    mask.outside = 0.5;
+
+    struct OmcBeamModifier modifier;
+    omcApertureMaskAsModifier(&mask, &modifier);
+
+    omcCalcForward(&opt, &source, &modifier, half, NULL, NULL, &halfSummary);
+
+    /* Every history still happened and still transported. */
+    CHECK(halfSummary.blocked == 0);
+    CHECK(halfSummary.started == bareSummary.started);
+
+    double bareTotal = 0.0, halfTotal = 0.0;
+    for (int i = 0; i < GRIDSIZE; i++) {
+        bareTotal += bare[i];
+        halfTotal += half[i];
+    }
+
+    CHECK(bareTotal > 0.0);
+
+    double ratio = halfTotal/bareTotal;
+    if (!(fabs(ratio - 0.5) < 1.0e-9)) {
+        printf("  FAIL %s: half transmission gave a ratio of %.9g, expected "
+               "0.5\n", current_test, ratio);
+        tests_failed++;
+    }
+
+    free(bare);
+    free(half);
+    tearDownWaterTank();
+}
+
 int main(void) {
 
     printf("ompMC phase space forward calculation tests\n\n");
@@ -419,6 +609,9 @@ int main(void) {
     RUN(test_a_photon_beam_builds_up_and_falls_off);
     RUN(test_a_beam_aimed_away_deposits_nothing);
     RUN(test_histories_that_miss_still_count);
+    RUN(test_an_open_mask_changes_nothing);
+    RUN(test_a_shut_mask_stops_everything);
+    RUN(test_a_half_transmitting_mask_halves_the_dose);
 
     omcSetHost(NULL);
 

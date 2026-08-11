@@ -1173,8 +1173,10 @@ static void runForward(int nlhs, mxArray *plhs[], double tbegin,
     struct OmcSource source;
     omcBeamletHistoriesAsSource(&histories, &source);
 
-    int finished = omcCalcForward(&forwardOptions, &source, dose, uncertainty,
-                                  &callbacks, &summary);
+    /* No collimator: with beamlets the collimation is already in the weights
+     the caller handed over. */
+    int finished = omcCalcForward(&forwardOptions, &source, NULL, dose,
+                                  uncertainty, &callbacks, &summary);
 
     if (verbose_flag > 0)
         mexPrintf("Simulation finished!\nFinalizing output...\n");

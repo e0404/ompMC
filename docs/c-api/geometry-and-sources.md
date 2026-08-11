@@ -32,3 +32,8 @@ that turn it plus a spectrum into starting particles.
 
 ```{doxygenfile} omc_source_phsp.h
 ```
+
+## Collimators
+
+```{doxygenfile} omc_collimator.h
+```

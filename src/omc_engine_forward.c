@@ -21,6 +21,7 @@
 
 #include "omc_engine_forward.h"
 
+#include "omc_collimator.h"
 #include "omc_geom.h"
 #include "omc_host.h"
 #include "omc_random.h"
@@ -42,11 +43,15 @@
  one place rather than once per kind of source. */
 
 /*! @return 1 if the progress callback stopped the run. */
-static int runBatches(struct OmcSource *source, int nbatch, int nperbatch,
+static int runBatches(struct OmcSource *source,
+                      const struct OmcBeamModifier *modifier,
+                      int nbatch, int nperbatch,
                       const struct OmcForwardCallbacks *callbacks,
-                      unsigned long long *started) {
+                      unsigned long long *started,
+                      unsigned long long *blocked) {
 
     unsigned long long nstarted = 0;
+    unsigned long long nblocked = 0;
     int aborted = 0;
 
     for (int ibatch = 0; ibatch < nbatch; ibatch++) {
@@ -55,8 +60,10 @@ static int runBatches(struct OmcSource *source, int nbatch, int nperbatch,
          whose reductions are fussier, and a batch cannot start more
          histories than the nperbatch it runs. */
         int batchStarted = 0;
+        int batchBlocked = 0;
 
-        #pragma omp parallel for schedule(dynamic) reduction(+:batchStarted)
+        #pragma omp parallel for schedule(dynamic) \
+            reduction(+:batchStarted) reduction(+:batchBlocked)
         for (ihist = 0; ihist < nperbatch; ihist++) {
             /* Point the RNG at this history's stream; the index is unique
              across batches, so results do not depend on the scheduling */
@@ -71,22 +78,37 @@ static int runBatches(struct OmcSource *source, int nbatch, int nperbatch,
              shower. */
             struct OmcSourceParticle particle;
 
-            if (source->sample(source, global, ihist, &particle) &&
-                omcSourcePlace(&particle)) {
+            if (source->sample(source, global, ihist, &particle)) {
 
-                /* Only what got into the phantom counts as energy put in, so
-                 that the fraction of it that ends up deposited means what it
-                 says. */
-                scoreSource(particle.energy*particle.weight);
+                /* What the collimator lets through, asked before the particle
+                 is carried anywhere: one that is stopped is stopped, and need
+                 not be carried first. */
+                double through =
+                    omcBeamModifierTransmission(modifier, &particle);
 
-                batchStarted++;
+                if (through <= 0.0) {
+                    batchBlocked++;
+                }
+                else {
+                    particle.weight *= through;
 
-                /* Start electromagnetic shower simulation */
-                shower();
+                    if (omcSourcePlace(&particle)) {
+                        /* Only what got into the phantom counts as energy put
+                         in, so that the fraction of it that ends up deposited
+                         means what it says. */
+                        scoreSource(particle.energy*particle.weight);
+
+                        batchStarted++;
+
+                        /* Start electromagnetic shower simulation */
+                        shower();
+                    }
+                }
             }
         }
 
         nstarted += (unsigned long long)batchStarted;
+        nblocked += (unsigned long long)batchBlocked;
 
         /* Accumulate results of current batch for statistical analysis. */
         accumEndep(source->batchScale);
@@ -102,6 +124,9 @@ static int runBatches(struct OmcSource *source, int nbatch, int nperbatch,
     if (started != NULL) {
         *started = nstarted;
     }
+    if (blocked != NULL) {
+        *blocked = nblocked;
+    }
 
     return aborted;
 }
@@ -110,6 +135,7 @@ static int runBatches(struct OmcSource *source, int nbatch, int nperbatch,
 
 int omcCalcForward(const struct OmcForwardOptions *opt,
                    struct OmcSource *source,
+                   const struct OmcBeamModifier *modifier,
                    double *dose, double *uncertainty,
                    const struct OmcForwardCallbacks *callbacks,
                    struct OmcForwardSummary *summary) {
@@ -131,6 +157,9 @@ int omcCalcForward(const struct OmcForwardOptions *opt,
      failure would call the host from a place it cannot expect. */
     if (source->check != NULL) {
         source->check(source);
+    }
+    if (modifier != NULL && modifier->check != NULL) {
+        modifier->check(modifier);
     }
 
     /* A run too short for one history per batch is stretched rather than
@@ -172,11 +201,20 @@ int omcCalcForward(const struct OmcForwardOptions *opt,
     }
 
     unsigned long long started = 0;
-    int aborted = runBatches(source, nbatch, nperbatch, callbacks, &started);
+    unsigned long long blocked = 0;
+    int aborted = runBatches(source, modifier, nbatch, nperbatch, callbacks,
+                             &started, &blocked);
+
+    if (!aborted && blocked > 0) {
+        omcLog(OMC_LOG_DETAIL, "%llu of %d histories were stopped by the "
+               "collimator.", blocked, nhist);
+    }
 
     if (!aborted && started == 0) {
         omcLog(OMC_LOG_WARNING, "Not one history put a particle in the "
-               "phantom. Check where the source sits relative to it.");
+               "phantom. Check where the source sits relative to it%s.",
+               blocked > 0 ? ", and whether the collimator is open at all"
+                           : "");
     }
     else if (!aborted && started < (unsigned long long)nhist) {
         omcLog(OMC_LOG_DETAIL, "%llu of %d histories put a particle in the "
@@ -196,6 +234,7 @@ int omcCalcForward(const struct OmcForwardOptions *opt,
         summary->nhist = nhist;
         summary->nperbatch = nperbatch;
         summary->started = started;
+        summary->blocked = blocked;
         summary->energyFraction = score.ensrc > 0.0
             ? etot/(score.ensrc*source->batchScale)
             : 0.0;
