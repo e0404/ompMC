@@ -377,6 +377,186 @@ static void test_the_mask_draws_no_random_numbers(void) {
     CHECK(a2 == b2);
 }
 
+/* Applying it, rather than only asking about it: the weight mode spends the
+ fraction on the weight and transports everything. */
+static void test_weight_mode_scales_the_weight_and_keeps_the_particle(void) {
+
+    struct OmcApertureMask mask = maskFixture();
+    struct OmcBeamModifier modifier;
+    omcApertureMaskAsModifier(&mask, &modifier);
+
+    CHECK(modifier.apply == OMC_MODIFIER_WEIGHT);   /* what it defaults to */
+
+    struct OmcSourceParticle p = straight();
+    p.z = 10.0;
+
+    /* The half open cell: through, at half the weight. */
+    p.x = -0.5; p.y = 0.5; p.weight = 4.0;
+    CHECK(omcBeamModifierApply(&modifier, &p) == 1);
+    CHECK_CLOSE(p.weight, 2.0, 1e-15);
+
+    /* The open one: through, untouched. */
+    p.x = -0.5; p.y = -0.5; p.weight = 4.0;
+    CHECK(omcBeamModifierApply(&modifier, &p) == 1);
+    CHECK_CLOSE(p.weight, 4.0, 1e-15);
+
+    /* The shut one: stopped. */
+    p.x = 0.5; p.y = -0.5; p.weight = 4.0;
+    CHECK(omcBeamModifierApply(&modifier, &p) == 0);
+
+    /* And nothing in the way at all. */
+    p.weight = 4.0;
+    CHECK(omcBeamModifierApply(NULL, &p) == 1);
+    CHECK_CLOSE(p.weight, 4.0, 1e-15);
+}
+
+/* Roulette spends the fraction on whether the particle survives instead, and
+ leaves the weight of the ones that do alone -- that is the whole point, since
+ a survivor at full weight is worth a full shower. */
+static void test_roulette_keeps_the_weight_of_what_survives(void) {
+
+    struct OmcApertureMask mask = maskFixture();
+    struct OmcBeamModifier modifier;
+    omcApertureMaskAsModifier(&mask, &modifier);
+    modifier.apply = OMC_MODIFIER_ROULETTE;
+
+    int survived = 0;
+
+    for (int i = 0; i < 2000; i++) {
+        struct OmcSourceParticle p = straight();
+        p.z = 10.0;
+        p.x = -0.5; p.y = 0.5;      /* the half open cell */
+        p.weight = 4.0;
+
+        setRandomHistory((uint64_t)i);
+
+        if (omcBeamModifierApply(&modifier, &p)) {
+            survived++;
+            CHECK_CLOSE(p.weight, 4.0, 1e-15);
+        }
+    }
+
+    /* Half of 2000, and three standard deviations of a fair coin over that
+     many throws is about 67. */
+    CHECK(survived > 900 && survived < 1100);
+}
+
+/* The two modes agree on the dose: what roulette carries through in survivors
+ at full weight is what the weight mode carries through in everything at a
+ fraction of it. Held to a percent, which two thousand throws support. */
+static void test_roulette_and_weight_carry_the_same_weight_through(void) {
+
+    struct OmcApertureMask mask = maskFixture();
+
+    /* A fraction that is neither a half nor anything else the arithmetic
+     could arrive at by accident. */
+    double cell[4] = {0.3, 0.3, 0.3, 0.3};
+    mask.transmission = cell;
+
+    struct OmcBeamModifier weighted, rouletted;
+    omcApertureMaskAsModifier(&mask, &weighted);
+    omcApertureMaskAsModifier(&mask, &rouletted);
+    rouletted.apply = OMC_MODIFIER_ROULETTE;
+
+    const int n = 20000;
+    double weightSum = 0.0, rouletteSum = 0.0;
+
+    for (int i = 0; i < n; i++) {
+        struct OmcSourceParticle a = straight(), b = straight();
+        a.z = b.z = 10.0;
+        a.x = b.x = -0.5;
+        a.y = b.y = -0.5;
+
+        setRandomHistory((uint64_t)i);
+        if (omcBeamModifierApply(&weighted, &a)) {
+            weightSum += a.weight;
+        }
+
+        setRandomHistory((uint64_t)i);
+        if (omcBeamModifierApply(&rouletted, &b)) {
+            rouletteSum += b.weight;
+        }
+    }
+
+    CHECK_CLOSE(weightSum/n, 0.3, 1e-12);
+    CHECK_CLOSE(rouletteSum/n, 0.3, 0.02);
+}
+
+/* What roulette costs, and what it does not. A cell that is fully open or
+ fully shut is decided without drawing, so an all-or-nothing aperture -- a jaw,
+ which is most of the use of this -- leaves every random stream exactly where
+ the weight mode does, and a run behind one can still be compared with the
+ open run it came from history by history. Only a partly transmitting cell
+ spends a random number. */
+static void test_roulette_draws_only_where_it_has_to(void) {
+
+    struct OmcApertureMask mask = maskFixture();
+    struct OmcBeamModifier modifier;
+    omcApertureMaskAsModifier(&mask, &modifier);
+    modifier.apply = OMC_MODIFIER_ROULETTE;
+
+    struct OmcSourceParticle p = straight();
+    p.z = 10.0;
+
+    /* What the stream gives when nothing has touched it. */
+    setRandomHistory(4242);
+    double a1 = setRandom();
+    double a2 = setRandom();
+
+    /* The open cell: nothing drawn, so the next number is unchanged. */
+    p.x = -0.5; p.y = -0.5;
+    setRandomHistory(4242);
+    double b1 = setRandom();
+    CHECK(omcBeamModifierApply(&modifier, &p) == 1);
+    CHECK(b1 == a1);
+    CHECK(setRandom() == a2);
+
+    /* The shut one: stopped, and again nothing drawn. */
+    p.x = 0.5; p.y = -0.5;
+    setRandomHistory(4242);
+    CHECK(setRandom() == a1);
+    CHECK(omcBeamModifierApply(&modifier, &p) == 0);
+    CHECK(setRandom() == a2);
+
+    /* Nothing in the way at all draws nothing either. */
+    setRandomHistory(4242);
+    CHECK(setRandom() == a1);
+    CHECK(omcBeamModifierApply(NULL, &p) == 1);
+    CHECK(setRandom() == a2);
+
+    /* The half open one: one number spent, so what follows has moved on. */
+    p.x = -0.5; p.y = 0.5;
+    setRandomHistory(4242);
+    CHECK(setRandom() == a1);
+    omcBeamModifierApply(&modifier, &p);
+    CHECK(setRandom() != a2);
+}
+
+/* And the weight mode never draws, whatever the cell -- the property the
+ whole no-random-numbers claim rests on. */
+static void test_the_weight_mode_draws_nothing_at_any_cell(void) {
+
+    struct OmcApertureMask mask = maskFixture();
+    struct OmcBeamModifier modifier;
+    omcApertureMaskAsModifier(&mask, &modifier);
+
+    setRandomHistory(777);
+    double a1 = setRandom();
+    double a2 = setRandom();
+
+    for (int cell = 0; cell < 4; cell++) {
+        struct OmcSourceParticle p = straight();
+        p.z = 10.0;
+        p.x = (cell % 2) ? 0.5 : -0.5;
+        p.y = (cell / 2) ? 0.5 : -0.5;
+
+        setRandomHistory(777);
+        CHECK(setRandom() == a1);
+        omcBeamModifierApply(&modifier, &p);
+        CHECK(setRandom() == a2);
+    }
+}
+
 static void test_check_rejects_an_unusable_mask(void) {
 
     struct OmcApertureMask good = maskFixture();
@@ -430,6 +610,11 @@ int main(void) {
     RUN(test_a_particle_parallel_to_the_plane_is_stopped);
     RUN(test_one_cell_is_a_rectangular_aperture);
     RUN(test_the_mask_draws_no_random_numbers);
+    RUN(test_weight_mode_scales_the_weight_and_keeps_the_particle);
+    RUN(test_roulette_keeps_the_weight_of_what_survives);
+    RUN(test_roulette_and_weight_carry_the_same_weight_through);
+    RUN(test_roulette_draws_only_where_it_has_to);
+    RUN(test_the_weight_mode_draws_nothing_at_any_cell);
     RUN(test_check_rejects_an_unusable_mask);
 
     omcSetHost(NULL);

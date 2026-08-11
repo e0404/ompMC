@@ -602,6 +602,80 @@ static void test_a_half_transmitting_mask_halves_the_dose(void) {
     tearDownWaterTank();
 }
 
+/* The same half transmitting mask played as roulette instead: half the
+ histories are stopped outright and the rest transport at full weight, which
+ has to come to the same dose. It is the cheaper of the two here -- half the
+ showers -- and the noisier, so it is held to a percent rather than to the
+ exact ratio the weight mode gives. */
+static void test_roulette_gives_the_same_dose_more_cheaply(void) {
+
+    setUpWaterTank();
+
+    struct Made made;
+    makeBeam(&made, 16, 6.0, 0);
+
+    struct OmcForwardOptions opt = optionsFor(40000);
+    struct OmcPhspSampler sampler = samplerFor(&made.phsp);
+    struct OmcSource source;
+    omcPhspSamplerAsSource(&sampler, &source);
+
+    double *bare = malloc(GRIDSIZE*sizeof(double));
+    double *played = malloc(GRIDSIZE*sizeof(double));
+    struct OmcForwardSummary bareSummary;
+    struct OmcForwardSummary playedSummary;
+
+    omcCalcForward(&opt, &source, NULL, bare, NULL, NULL, &bareSummary);
+
+    double leaky[1] = {0.5};
+    struct OmcApertureMask mask;
+    memset(&mask, 0, sizeof(mask));
+    mask.z = -0.5;
+    mask.x0 = -50.0;
+    mask.y0 = -50.0;
+    mask.dx = 100.0;
+    mask.dy = 100.0;
+    mask.nx = 1;
+    mask.ny = 1;
+    mask.transmission = leaky;
+    mask.outside = 0.5;
+
+    struct OmcBeamModifier modifier;
+    omcApertureMaskAsModifier(&mask, &modifier);
+    modifier.apply = OMC_MODIFIER_ROULETTE;
+
+    omcCalcForward(&opt, &source, &modifier, played, NULL, NULL,
+                   &playedSummary);
+
+    /* Where the saving comes from: half the histories never reach a shower,
+     unlike the weight mode where every one of them does. */
+    CHECK(playedSummary.blocked > 0);
+    CHECK(playedSummary.started + playedSummary.blocked
+          == (unsigned long long)playedSummary.nhist);
+
+    double stopped = (double)playedSummary.blocked/(double)playedSummary.nhist;
+    CHECK(stopped > 0.45 && stopped < 0.55);
+
+    double bareTotal = 0.0, playedTotal = 0.0;
+    for (int i = 0; i < GRIDSIZE; i++) {
+        bareTotal += bare[i];
+        playedTotal += played[i];
+    }
+
+    CHECK(bareTotal > 0.0);
+
+    /* And the dose is the same one, up to the noise roulette adds. */
+    double ratio = playedTotal/bareTotal;
+    if (!(fabs(ratio - 0.5) < 0.02)) {
+        printf("  FAIL %s: roulette gave a ratio of %.9g, expected 0.5 to "
+               "within the statistics\n", current_test, ratio);
+        tests_failed++;
+    }
+
+    free(bare);
+    free(played);
+    tearDownWaterTank();
+}
+
 int main(void) {
 
     printf("ompMC phase space forward calculation tests\n\n");
@@ -612,6 +686,7 @@ int main(void) {
     RUN(test_an_open_mask_changes_nothing);
     RUN(test_a_shut_mask_stops_everything);
     RUN(test_a_half_transmitting_mask_halves_the_dose);
+    RUN(test_roulette_gives_the_same_dose_more_cheaply);
 
     omcSetHost(NULL);
 

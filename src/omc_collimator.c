@@ -22,6 +22,7 @@
 #include "omc_collimator.h"
 
 #include "omc_host.h"
+#include "omc_random.h"
 #include "omc_source.h"
 
 #include <math.h>
@@ -36,6 +37,38 @@ double omcBeamModifierTransmission(const struct OmcBeamModifier *modifier,
     }
 
     return modifier->transmission(modifier, particle);
+}
+
+int omcBeamModifierApply(const struct OmcBeamModifier *modifier,
+                         struct OmcSourceParticle *particle) {
+
+    double through = omcBeamModifierTransmission(modifier, particle);
+
+    /* Nothing gets through, and nothing more needs deciding. */
+    if (!(through > 0.0)) {
+        return 0;
+    }
+
+    /* Everything gets through, and nothing more needs deciding either -- in
+     particular no random number, which is what keeps an open mask, and the
+     open parts of any mask, on the streams they would have had with no
+     collimator at all. A fraction above one is a modifier's own bug that
+     check() is there to catch; passing the particle on unchanged is the
+     harmless reading of it. */
+    if (through >= 1.0) {
+        return 1;
+    }
+
+    if (modifier->apply == OMC_MODIFIER_ROULETTE) {
+        /* Survive with probability `through`, at the weight already carried:
+         the mean weight through the leaf is the same as multiplying by it,
+         and the particles that do get through are worth simulating. */
+        return setRandom() < through;
+    }
+
+    particle->weight *= through;
+
+    return 1;
 }
 
 /******************************************************************************/
@@ -138,6 +171,7 @@ void omcApertureMaskAsModifier(struct OmcApertureMask *mask,
     modifier->check = maskCheck;
     modifier->transmission = maskTransmission;
     modifier->impl = mask;
+    modifier->apply = OMC_MODIFIER_WEIGHT;
 
     return;
 }

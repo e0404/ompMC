@@ -31,14 +31,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `struct OmcApertureMask`, a transmission mask on a plane. It works by back
   projection, so it composes with any source -- which is what makes it
   possible to cut a field out of a phase space recorded above the jaws, as
-  the IAEA ones are. A single open cell is a rectangular field. It attenuates
-  by weight rather than by roulette and draws no random numbers, so putting a
-  collimator in the beam leaves every history's random stream where it was.
+  the IAEA ones are. A single open cell is a rectangular field. By default it
+  attenuates by weight and draws no random numbers at all, so putting a
+  collimator in the beam leaves every history's random stream where it was;
+  roulette is available instead, see below.
 - `omc_source`, one interface every source of primary particles fills in. A
   source now answers only "which particle starts this history, and where is it
   going"; carrying it to the phantom, finding its voxel and counting the
   energy it brought are `omcSourcePlace()`'s job and the engine's, done once
   for everyone instead of once per source.
+- A choice of how a collimator's transmission is paid for, as
+  `struct OmcBeamModifier::apply` and `omcBeamModifierApply()`. The default,
+  `OMC_MODIFIER_WEIGHT`, multiplies the particle's weight by the fraction and
+  transports it regardless. `OMC_MODIFIER_ROULETTE` lets it through with that
+  probability at full weight instead, which is where the time goes behind
+  thick leaves: a 2% leaf costs a shower one history in fifty rather than
+  every one of them, at the price of one random number and more noise per
+  history. A cell that is fully open or fully shut is decided without
+  drawing, so an all-or-nothing aperture -- a jaw, which is most of the use --
+  leaves every random stream exactly where the weight mode does. Deciding how
+  to spend the fraction is the engine's, in one place; `transmission()` stays
+  a pure function that draws nothing whichever mode is in force.
+- Phase spaces and collimators are reachable from both host interfaces, which
+  is what makes them usable without writing C.
+
+  In Python: `ompmc.PhaseSpaceSource` (the file, and the rotation and
+  translation carrying it into the phantom's coordinate system),
+  `ompmc.ApertureMask` with `ApertureMask.rectangle()` for the common single
+  opening, `ompmc.RunSummary`, and `ompmc.calc_forward_phsp()`.
+  `ompmc.calc_forward()` takes a `collimator` too.
+
+  In MATLAB: `mcOpt.mode = 'forward_phsp'`, fed by `mcSrc.phaseSpace`
+  (`file`, `order`, `first`, `rotation`, `translation`), and `mcSrc.collimator`
+  (`z`, `x0`, `y0`, `dx`, `dy`, `transmission`, `outside`, `roulette`), which
+  both forward modes accept.
+- A third, optional output from both MATLAB forward modes: a struct of
+  `nHistories`, `nStarted`, `nBlocked` and `energyFraction`. It matters most
+  for a phase space, which is recorded wherever the original simulation
+  scored it rather than aimed at your phantom, so most histories starting
+  nothing is the normal case and these numbers are what tell it apart from a
+  transform that is wrong.
+- This changelog.
+- Release packaging workflow (`release.yml`): on a `v*` tag, packages
+  build.yml's binaries into per-platform zips (`omc_dosxyz` + the MATLAB MEX
+  file per platform/toolchain, the Octave MEX file per platform/ABI bucket),
+  each bundled with its data files and published to a GitHub Release.
 
 ### Changed
 
@@ -62,14 +99,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The ray is the same one, so the dose is unchanged: over the matRad fixture
   the total agrees to 5.1e-16 and per voxel to 1.2e-10, which is the size of
   the last-ulp differences a compiler change already makes.
-- This changelog.
-- Release packaging workflow (`release.yml`): on a `v*` tag, packages
-  build.yml's binaries into per-platform zips (`omc_dosxyz` + the MATLAB MEX
-  file per platform/toolchain, the Octave MEX file per platform/ABI bucket),
-  each bundled with its data files and published to a GitHub Release.
-
-### Changed
-
+- `omcCalcForward()` applies a modifier through `omcBeamModifierApply()`
+  rather than multiplying the weight by `omcBeamModifierTransmission()`
+  itself, which is what lets the choice between weight and roulette be the
+  modifier's to declare. A modifier that returns a fraction that is not a
+  number is now treated as having stopped the particle rather than being
+  multiplied into its weight.
+- The MATLAB interface accepts a third output argument. Mode `'dij'` refuses
+  it -- a beamlet that started nothing comes back as a column of zeros, which
+  says so already.
 - build.yml's artifact collection now sorts binaries into per-target
   subfolders and vendors DLLs per binary, based on each binary's actual
   import table, instead of a blanket per-job DLL list -- the MinGW-built

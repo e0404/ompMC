@@ -19,7 +19,8 @@ Build ompMC and its Python extension.
 :::{grid-item-card} {octicon}`package` Python API
 :link: python-api/index
 :link-type: doc
-`Geometry`, `Spectrum`, `calc_dij`, `calc_cube`, `calc_forward`.
+`Geometry`, `Spectrum`, `calc_dij`, `calc_cube`, `calc_forward`,
+`calc_forward_phsp`.
 :::
 
 :::{grid-item-card} {octicon}`file-code` C API

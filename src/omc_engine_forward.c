@@ -80,29 +80,22 @@ static int runBatches(struct OmcSource *source,
 
             if (source->sample(source, global, ihist, &particle)) {
 
-                /* What the collimator lets through, asked before the particle
+                /* What the collimator does with it, asked before the particle
                  is carried anywhere: one that is stopped is stopped, and need
                  not be carried first. */
-                double through =
-                    omcBeamModifierTransmission(modifier, &particle);
-
-                if (through <= 0.0) {
+                if (!omcBeamModifierApply(modifier, &particle)) {
                     batchBlocked++;
                 }
-                else {
-                    particle.weight *= through;
+                else if (omcSourcePlace(&particle)) {
+                    /* Only what got into the phantom counts as energy put in,
+                     so that the fraction of it that ends up deposited means
+                     what it says. */
+                    scoreSource(particle.energy*particle.weight);
 
-                    if (omcSourcePlace(&particle)) {
-                        /* Only what got into the phantom counts as energy put
-                         in, so that the fraction of it that ends up deposited
-                         means what it says. */
-                        scoreSource(particle.energy*particle.weight);
+                    batchStarted++;
 
-                        batchStarted++;
-
-                        /* Start electromagnetic shower simulation */
-                        shower();
-                    }
+                    /* Start electromagnetic shower simulation */
+                    shower();
                 }
             }
         }

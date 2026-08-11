@@ -1,15 +1,20 @@
 """ompMC - OpenMP parallel Monte Carlo photon and electron transport.
 
-Two calculations are available, sharing the same phantom, physics and source
-spectra:
+Four calculations are available, sharing the same phantom and physics:
 
 ``calc_dij``
     One sparse column of dose per beamlet, the dose influence matrix a
     treatment planning system optimizes against.
+``calc_forward``
+    Dose everywhere in the phantom from a whole weighted set of beamlets at
+    once -- what ``calc_dij(...) @ weights`` would give, computed directly.
+``calc_forward_phsp``
+    The same, from the particles of an IAEA phase space file rather than
+    from a spectrum through an aperture.
 ``calc_cube``
     Dose everywhere in the phantom from a single collimated beam.
 
-Both take the phantom as numpy arrays::
+All take the phantom as numpy arrays::
 
     import numpy as np, ompmc
 
@@ -44,9 +49,13 @@ __all__ = [
     "Spectrum",
     "BeamletSource",
     "CollimatedSource",
+    "PhaseSpaceSource",
+    "ApertureMask",
     "Physics",
+    "RunSummary",
     "calc_dij",
     "calc_forward",
+    "calc_forward_phsp",
     "calc_cube",
     "data_path",
     "__version__",
@@ -437,6 +446,281 @@ class CollimatedSource:
 
 
 @dataclass
+class PhaseSpaceSource:
+    """Particles read from an IAEA phase space file, one per history.
+
+    A phase space is a record of every particle that crossed a plane in some
+    earlier simulation of a treatment head -- the ones published at
+    https://www-nds.iaea.org/phsp/ are the output of full models of real
+    linacs. Using one starts histories from the machine's own particles
+    rather than from a spectrum through an aperture, which is the difference
+    between modelling the beam and describing it.
+
+    The file is a pair, ``name.IAEAheader`` and ``name.IAEAphsp``; `path` is
+    either the shared base name or either half of it.
+
+    Parameters
+    ----------
+    path : str or os.PathLike
+        Base name of the dataset, with or without the extension.
+    order : {"replay", "random"}, optional
+        ``"replay"`` walks the file in order from `first`, wrapping at the
+        end, and draws no random numbers. ``"random"`` picks a particle per
+        history, costing one random number, which is worth it when a run is
+        much shorter than the file and a contiguous stretch of it would
+        sample only one part of the beam.
+    first : int, optional
+        Particle the replay starts at. Ignored when `order` is
+        ``"random"``.
+    rotation : array_like, optional
+        ``3x3`` rotation carrying the phase space's coordinate system into
+        the phantom's, applied to positions and directions alike. Defaults
+        to no rotation.
+    translation : array_like, optional
+        Three offsets in cm, added after `rotation`. Defaults to no
+        translation.
+
+    Raises
+    ------
+    ValueError
+        If `order` is not one of the two names, `first` is negative,
+        `rotation` is not ``3x3`` or is not a rotation, or `translation` is
+        not a three vector.
+
+    Notes
+    -----
+    ompMC transports photons, electrons and positrons; a neutron or proton
+    in the file starts no history and is counted as one that produced
+    nothing.
+    """
+
+    path: str | os.PathLike
+    order: str = "replay"
+    first: int = 0
+    rotation: np.ndarray | None = None
+    translation: np.ndarray | None = None
+
+    _ORDERS = {"replay": 0, "random": 1}
+
+    def __post_init__(self) -> None:
+        if self.order not in self._ORDERS:
+            raise ValueError(
+                f"order is {self.order!r}, expected 'replay' or 'random'"
+            )
+        if self.first < 0:
+            raise ValueError(f"first is {self.first}, it cannot be negative")
+
+        if self.rotation is None:
+            self.rotation = np.eye(3)
+        self.rotation = np.ascontiguousarray(self.rotation, dtype=np.float64)
+        if self.rotation.shape != (3, 3):
+            raise ValueError(
+                f"rotation has shape {self.rotation.shape}, expected (3, 3)"
+            )
+
+        # A matrix that is not a rotation would stretch the directions it
+        # turns, and those have to stay unit vectors. The core checks the
+        # determinant too; catching it here says so in Python terms.
+        if not np.isclose(np.linalg.det(self.rotation), 1.0, atol=1e-6):
+            raise ValueError(
+                f"rotation has determinant "
+                f"{float(np.linalg.det(self.rotation)):.6g}, and a rotation "
+                f"has 1"
+            )
+
+        if self.translation is None:
+            self.translation = np.zeros(3)
+        self.translation = np.ascontiguousarray(self.translation,
+                                                dtype=np.float64).ravel()
+        if self.translation.size != 3:
+            raise ValueError(
+                f"translation has {self.translation.size} entries, expected 3"
+            )
+
+    @property
+    def _payload(self) -> dict:
+        return {
+            "path": str(self.path),
+            "order": self._ORDERS[self.order],
+            "first": int(self.first),
+            # Row major, which is how the core reads the nine values
+            "rotation": [float(v) for v in self.rotation.ravel(order="C")],
+            "translation": [float(v) for v in self.translation],
+        }
+
+
+@dataclass
+class ApertureMask:
+    """Something in the beam's way: a transmission grid on a plane.
+
+    The mask sits on the plane ``z = z`` of the phantom's coordinate system,
+    where a jaw or a leaf bank would be, and cell ``(i, j)`` holds the
+    fraction of a particle crossing it that gets through -- 1 open, 0 shut,
+    anything between for a leaf that transmits.
+
+    It works by back projection from wherever the source put the particle,
+    so it composes with any source and does not care which side of the plane
+    the particle started on. That is what makes it possible to cut a field
+    out of a phase space recorded above the jaws, as the IAEA ones are.
+
+    Parameters
+    ----------
+    z : float
+        The plane the mask sits on, in cm.
+    x0, y0 : float
+        Lower corner of the grid, in cm.
+    dx, dy : float
+        Cell size in cm, both positive.
+    transmission : array_like
+        ``(nx, ny)`` fractions in ``[0, 1]``, the first axis along x.
+    outside : float, optional
+        What gets through beside the grid, in ``[0, 1]``. Zero -- what a
+        field stop does -- is the default.
+    roulette : bool, optional
+        How a partly transmitting cell is paid for. False multiplies the
+        particle's weight by the fraction and transports it regardless, so a
+        2% leaf costs a full shower for a fiftieth of the dose but draws no
+        random numbers at all. True lets the particle through with that
+        probability at full weight instead, spending the time on the
+        particles that matter at the price of one random number and more
+        noise per history. Cells that are fully open or fully shut are
+        decided without drawing either way, so an all-or-nothing aperture
+        behaves identically under both.
+
+    Raises
+    ------
+    ValueError
+        If `transmission` is not a non-empty 2-D grid of values in
+        ``[0, 1]``, the cells are not positive, or `outside` is outside
+        ``[0, 1]``.
+
+    Notes
+    -----
+    This is a mask, not a collimator: it attenuates and blocks, but does not
+    scatter and does not harden the spectrum of what it lets through. Good
+    for the fluence, poor for the penumbra -- the same simplification the
+    beamlet weights of :func:`calc_forward` make.
+    """
+
+    z: float
+    x0: float
+    y0: float
+    dx: float
+    dy: float
+    transmission: np.ndarray
+    outside: float = 0.0
+    roulette: bool = False
+
+    def __post_init__(self) -> None:
+        # Fortran order puts x contiguous, which is the layout the core reads
+        self.transmission = np.asfortranarray(self.transmission,
+                                              dtype=np.float64)
+        if self.transmission.ndim != 2 or self.transmission.size == 0:
+            raise ValueError(
+                f"transmission must be a non-empty (nx, ny) grid, got shape "
+                f"{self.transmission.shape}"
+            )
+        if not np.all(np.isfinite(self.transmission)):
+            raise ValueError("transmission holds values that are not finite")
+        if self.transmission.min() < 0.0 or self.transmission.max() > 1.0:
+            raise ValueError(
+                f"transmission runs from {self.transmission.min():.6g} to "
+                f"{self.transmission.max():.6g}, and a fraction has to be "
+                f"between 0 and 1"
+            )
+
+        if not (self.dx > 0.0 and self.dy > 0.0):
+            raise ValueError(
+                f"the cells are {self.dx} by {self.dy} cm, and both have to "
+                f"be positive"
+            )
+        if not 0.0 <= self.outside <= 1.0:
+            raise ValueError(
+                f"outside is {self.outside}, and a fraction has to be between "
+                f"0 and 1"
+            )
+
+    @classmethod
+    def rectangle(cls, z: float, x_min: float, x_max: float, y_min: float,
+                  y_max: float, *, outside: float = 0.0,
+                  roulette: bool = False) -> "ApertureMask":
+        """One open cell: a rectangular field, which is most of the use.
+
+        Parameters
+        ----------
+        z : float
+            The plane the aperture sits on, in cm.
+        x_min, x_max, y_min, y_max : float
+            The opening, in cm. Note these are at `z`, not at isocentre: an
+            opening of ``w`` at ``z`` grows to ``w * iso / z`` there.
+        outside : float, optional
+            What gets through beyond the opening; 0 by default.
+        roulette : bool, optional
+            As in the constructor. Makes no difference to an opening that is
+            fully open and fully shut outside it.
+
+        Returns
+        -------
+        ApertureMask
+
+        Raises
+        ------
+        ValueError
+            If the opening has zero or negative width in either direction.
+        """
+        if not (x_max > x_min and y_max > y_min):
+            raise ValueError(
+                f"the opening runs from {x_min} to {x_max} across and "
+                f"{y_min} to {y_max} up, and both have to be positive"
+            )
+
+        return cls(z=z, x0=x_min, y0=y_min, dx=x_max - x_min,
+                   dy=y_max - y_min, transmission=np.ones((1, 1)),
+                   outside=outside, roulette=roulette)
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        """Cells along x and y."""
+        return (int(self.transmission.shape[0]),
+                int(self.transmission.shape[1]))
+
+    @property
+    def _payload(self) -> dict:
+        return {
+            "z": float(self.z),
+            "x0": float(self.x0),
+            "y0": float(self.y0),
+            "dx": float(self.dx),
+            "dy": float(self.dy),
+            "transmission": self.transmission,
+            "outside": float(self.outside),
+            "roulette": bool(self.roulette),
+        }
+
+
+@dataclass
+class RunSummary:
+    """What became of the histories a run asked for."""
+
+    n_histories: int
+    """Histories actually run: the number asked for, rounded down to a whole
+    number of batches."""
+
+    n_started: int
+    """Histories that put a particle into the phantom."""
+
+    n_blocked: int
+    """Histories a collimator stopped, before the particle was carried
+    anywhere. The rest -- ``n_histories - n_started - n_blocked`` -- got past
+    the collimator but missed the phantom, or offered a particle ompMC does
+    not transport."""
+
+    energy_fraction: float
+    """The fraction of the energy that entered the phantom which stayed in
+    it; the rest left through a face."""
+
+
+@dataclass
 class Physics:
     """Transport parameters and where the interaction data lives.
 
@@ -648,6 +932,7 @@ def calc_forward(
     gaussian_source: bool = False,
     source_width: float = 0.2123,
     output_dose: bool = True,
+    collimator: ApertureMask | None = None,
     progress: Callable[[float], bool | None] | None = None,
     verbosity: int = 0,
 ):
@@ -696,6 +981,12 @@ def calc_forward(
         If true, the dose is in Gy for exactly these weights -- doubling
         them doubles it. If false, the mean deposited energy is returned
         instead.
+    collimator : ApertureMask, optional
+        Something in the beam's way, on top of the weights. Usually
+        unnecessary -- with beamlets the collimation is already in the
+        weights -- and worth reaching for only where the weights cannot say
+        what is wanted, such as a block cutting across beamlets or a leaf
+        that transmits.
     progress : callable, optional
         Called with the fraction finished, in ``[0, 1]``, once per batch.
         Returning ``False`` stops the calculation.
@@ -764,12 +1055,15 @@ def calc_forward(
     }
 
     (dose, uncertainty, completed,
-     _nhist, _nsampled, _nweighted, _kept, _fraction) = _ompmc.calc_forward(
+     _nhist, _nsampled, _nweighted, _kept, _fraction,
+     _blocked) = _ompmc.calc_forward(
         geometry.density, geometry.material, geometry.x_bounds,
         geometry.y_bounds, geometry.z_bounds, list(geometry.materials),
         source.i_beam, source.source, source.corner, source.side1,
         source.side2, weights, options, physics.input_items(),
-        spectrum._payload, progress, int(verbosity),
+        spectrum._payload,
+        collimator._payload if collimator is not None else None,
+        progress, int(verbosity),
     )
 
     if not completed:
@@ -781,6 +1075,131 @@ def calc_forward(
     shape = geometry.shape
     return (dose.reshape(shape, order="F"),
             uncertainty.reshape(shape, order="F"))
+
+
+def calc_forward_phsp(
+    geometry: Geometry,
+    source: PhaseSpaceSource,
+    physics: Physics | None = None,
+    *,
+    n_histories: int = 10_000,
+    n_batches: int = 10,
+    output_dose: bool = True,
+    collimator: ApertureMask | None = None,
+    progress: Callable[[float], bool | None] | None = None,
+    verbosity: int = 0,
+):
+    """Calculate the dose from the particles of a phase space file.
+
+    One particle of the file starts each history, moved into the phantom's
+    coordinate system by the source's transform and then carried to whatever
+    face of the phantom it enters by. There is no `spectrum` argument: the
+    file carries the energy of every particle it holds, which is most of the
+    reason for using one.
+
+    The whole file is read into memory, so it costs about its own size on
+    disk -- gigabytes for a published dataset.
+
+    Parameters
+    ----------
+    geometry : Geometry
+        The voxel phantom.
+    source : PhaseSpaceSource
+        The file, and where it sits relative to the phantom.
+    physics : Physics, optional
+        Transport parameters and data file locations. Defaults to
+        ``Physics()``.
+    n_histories : int, optional
+        Histories simulated. A history whose particle misses the phantom, or
+        which the collimator stops, still counts as one -- see
+        :class:`RunSummary`.
+    n_batches : int, optional
+        Statistical batches, at least 2, needed for the uncertainty
+        estimate.
+    output_dose : bool, optional
+        If true, dose per history in Gy. If false, the mean deposited
+        energy.
+    collimator : ApertureMask, optional
+        Something in the beam's way. The published phase spaces are recorded
+        above the jaws, field independent on purpose, so this is how a field
+        gets cut out of one.
+    progress : callable, optional
+        Called with the fraction finished, in ``[0, 1]``, once per batch.
+        Returning ``False`` stops the calculation.
+    verbosity : int, optional
+        Log level passed to the engine.
+
+    Returns
+    -------
+    dose : numpy.ndarray
+        Cube shaped like the phantom.
+    uncertainty : numpy.ndarray
+        Cube shaped like the phantom, the relative uncertainty of `dose`,
+        and 0.9999999 where nothing was deposited.
+    summary : RunSummary
+        What became of the histories. Worth looking at here in a way it is
+        not for beamlets: a phase space is recorded wherever the original
+        simulation scored it, not aimed at this phantom, so it is normal for
+        most histories to start nothing.
+
+    Raises
+    ------
+    ValueError
+        If `n_batches` or `n_histories` are out of range.
+    RuntimeError
+        If the file cannot be read, does not match its header, or holds no
+        particles.
+    KeyboardInterrupt
+        If `progress` returned false, or Ctrl-C was pressed, before any
+        result was available.
+
+    Warnings
+    --------
+    One particle per history. A phase space records which particles a single
+    original history left behind, and those are correlated. Drawing them one
+    at a time still gets the dose right on average, but the uncertainty a run
+    reports comes out smaller than the truth by however much they are
+    correlated.
+
+    Examples
+    --------
+    Cutting a 10 x 10 cm field at 100 cm out of a phase space scored at the
+    top of the jaws::
+
+        source = ompmc.PhaseSpaceSource("Varian_TrueBeam6MV_01")
+        jaw = ompmc.ApertureMask.rectangle(40.0, -2.0, 2.0, -2.0, 2.0)
+
+        dose, unc, summary = ompmc.calc_forward_phsp(
+            geometry, source, n_histories=1_000_000, collimator=jaw)
+    """
+    _check_run(n_histories, n_batches, 0)
+
+    physics = physics or Physics()
+
+    options = {
+        "n_histories": int(n_histories),
+        "n_batches": int(n_batches),
+        "output_dose": bool(output_dose),
+    }
+
+    (dose, uncertainty, completed, nhist, started, blocked,
+     fraction) = _ompmc.calc_forward_phsp(
+        geometry.density, geometry.material, geometry.x_bounds,
+        geometry.y_bounds, geometry.z_bounds, list(geometry.materials),
+        source._payload, options, physics.input_items(),
+        collimator._payload if collimator is not None else None,
+        progress, int(verbosity),
+    )
+
+    if not completed:
+        raise KeyboardInterrupt(
+            "the calculation was stopped before any result was available")
+
+    shape = geometry.shape
+    return (dose.reshape(shape, order="F"),
+            uncertainty.reshape(shape, order="F"),
+            RunSummary(int(nhist), int(started), int(blocked),
+                       float(fraction)))
 
 
 def calc_cube(
