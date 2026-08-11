@@ -23,8 +23,10 @@
 
 #include "omc_geom.h"
 #include "omc_host.h"
+#include "omc_phsp.h"
 #include "omc_random.h"
 #include "omc_score.h"
+#include "omc_source_phsp.h"
 #include "omc_spectrum.h"
 #include "omc_utilities.h"
 #include "ompmc.h"
@@ -215,6 +217,139 @@ static int findBeamlet(const int *offset, int nbeamlets, int h) {
 }
 
 /******************************************************************************/
+/* Running the batches.
+
+ The two calculations below differ in one line -- where a history's particle
+ comes from -- and agree on everything around it: how many batches there are,
+ which random stream each history gets, when the batch is accumulated and when
+ the caller is asked whether to carry on. That agreement is worth more than it
+ looks. The random stream is indexed by a history number that has to be unique
+ over the whole run for the answer not to depend on how OpenMP handed the
+ histories out, and two copies of that indexing would be two chances to get it
+ wrong. So it lives here once, and what differs is passed in. */
+
+struct HistoryStarter {
+    /*! Put this history's particle on the stack.
+
+     @param source Whatever the starter needs, unchanged.
+     @param ihist Global history index, unique over the run.
+     @param ihistInBatch Index within the batch, which is what shares the
+     histories out among beamlets.
+     @return 1 if there is a particle to shower, 0 if the history is empty. */
+    int (*start)(const void *source, uint64_t ihist, int ihistInBatch);
+
+    const void *source;
+};
+
+/*! @return 1 if the progress callback stopped the run. */
+static int runBatches(const struct HistoryStarter *starter, int nbatch,
+                      int nperbatch, double batchScale,
+                      const struct OmcForwardCallbacks *callbacks,
+                      unsigned long long *started) {
+
+    unsigned long long nstarted = 0;
+    int aborted = 0;
+
+    for (int ibatch = 0; ibatch < nbatch; ibatch++) {
+        int ihist;
+        /* int rather than a wider type because MSVC implements OpenMP 2.0,
+         whose reductions are fussier, and a batch cannot start more
+         histories than the nperbatch it runs. */
+        int batchStarted = 0;
+
+        #pragma omp parallel for schedule(dynamic) reduction(+:batchStarted)
+        for (ihist = 0; ihist < nperbatch; ihist++) {
+            /* Point the RNG at this history's stream; the index is unique
+             across batches, so results do not depend on the scheduling */
+            uint64_t global = (uint64_t)ibatch*(uint64_t)nperbatch
+                              + (uint64_t)ihist;
+
+            setRandomHistory(global);
+
+            /* Initialize particle history. A history that starts nothing is
+             a history all the same -- it happened, it just had nothing in
+             it -- so it counts towards the fluence and only skips the
+             shower. */
+            if (starter->start(starter->source, global, ihist)) {
+                batchStarted++;
+
+                /* Start electromagnetic shower simulation */
+                shower();
+            }
+        }
+
+        nstarted += (unsigned long long)batchStarted;
+
+        /* Accumulate results of current batch for statistical analysis. */
+        accumEndep(batchScale);
+
+        if (callbacks && callbacks->progress &&
+            !callbacks->progress((double)(ibatch+1)/(double)nbatch,
+                                 callbacks->user)) {
+            aborted = 1;
+            break;
+        }
+    }
+
+    if (started != NULL) {
+        *started = nstarted;
+    }
+
+    return aborted;
+}
+
+/* Rounding the run to whole batches, which both calculations do the same
+ way: a run too short for one history per batch is stretched rather than
+ refused, and what is left over after the division is dropped. */
+static void roundToBatches(int nhistWanted, int nbatch, int *nhist,
+                           int *nperbatch) {
+
+    int histories = nhistWanted;
+
+    if (histories/nbatch == 0) {
+        histories = nbatch;
+    }
+
+    *nperbatch = histories/nbatch;
+    *nhist = *nperbatch*nbatch;
+
+    return;
+}
+
+/******************************************************************************/
+
+/* What a beamlet history needs: which beamlets there are, and how the
+ histories of a batch were shared out among them. */
+struct BeamletStarter {
+    const struct OmcBeamletSampler *sampler;
+    const struct Allocation *alloc;
+    int nbeamlets;
+};
+
+static int startBeamlet(const void *source, uint64_t ihist, int ihistInBatch) {
+
+    const struct BeamletStarter *s = (const struct BeamletStarter *)source;
+
+    (void)ihist;
+
+    int ibeamlet = findBeamlet(s->alloc->offset, s->nbeamlets, ihistInBatch);
+
+    omcBeamletSample(s->sampler, ibeamlet, s->alloc->weight[ibeamlet]);
+
+    /* A beamlet particle is aimed at the phantom by construction, so there
+     is always one to shower. */
+    return 1;
+}
+
+static int startPhsp(const void *source, uint64_t ihist, int ihistInBatch) {
+
+    (void)ihistInBatch;
+
+    return omcPhspSourceSample((const struct OmcPhspSampler *)source, ihist,
+                               1.0);
+}
+
+/******************************************************************************/
 
 int omcCalcForward(const struct OmcForwardOptions *opt,
                    const struct OmcBeamletSource *src,
@@ -247,15 +382,11 @@ int omcCalcForward(const struct OmcForwardOptions *opt,
     sampler.geometry = opt->sourceGeometry;
     sampler.gaussianWidth = opt->sourceGaussianWidth;
 
-    int nhist = opt->nhist;
     int nbatch = opt->nbatch;
+    int nhist;
+    int nperbatch;
 
-    if (nhist/nbatch == 0) {
-        nhist = nbatch;
-    }
-
-    int nperbatch = nhist/nbatch;
-    nhist = nperbatch*nbatch;
+    roundToBatches(opt->nhist, nbatch, &nhist, &nperbatch);
 
     struct Allocation alloc;
     alloc.count = NULL;
@@ -295,41 +426,22 @@ int omcCalcForward(const struct OmcForwardOptions *opt,
       initStack();
     }
 
-    int aborted = 0;
+    struct BeamletStarter beamlets;
+    beamlets.sampler = &sampler;
+    beamlets.alloc = &alloc;
+    beamlets.nbeamlets = src->nbeamlets;
 
-    for (int ibatch = 0; ibatch < nbatch; ibatch++) {
-        int ihist;
+    struct HistoryStarter starter;
+    starter.start = startBeamlet;
+    starter.source = &beamlets;
 
-        #pragma omp parallel for schedule(dynamic)
-        for (ihist = 0; ihist < nperbatch; ihist++) {
-            /* Point the RNG at this history's stream; the index is unique
-             across batches, so results do not depend on the scheduling */
-            setRandomHistory((uint64_t)ibatch*(uint64_t)nperbatch
-                             + (uint64_t)ihist);
-
-            int ibeamlet = findBeamlet(alloc.offset, src->nbeamlets, ihist);
-
-            /* Initialize particle history */
-            omcBeamletSample(&sampler, ibeamlet, alloc.weight[ibeamlet]);
-
-            /* Start electromagnetic shower simulation */
-            shower();
-        }
-
-        /* Accumulate results of current batch for statistical analysis. The
-         particle weights above sum the batch to the fluence of nperbatch
-         histories rather than to the fluence the caller asked for, so the
-         ratio between the two goes on here -- once per batch, rather than on
-         every particle. */
-        accumEndep(alloc.totalWeight/(double)nperbatch);
-
-        if (callbacks && callbacks->progress &&
-            !callbacks->progress((double)(ibatch+1)/(double)nbatch,
-                                 callbacks->user)) {
-            aborted = 1;
-            break;
-        }
-    }
+    /* The particle weights sum the batch to the fluence of nperbatch
+     histories rather than to the fluence the caller asked for, so the ratio
+     between the two goes on the batch -- once per batch, rather than on
+     every particle. */
+    int aborted = runBatches(&starter, nbatch, nperbatch,
+                             alloc.totalWeight/(double)nperbatch,
+                             callbacks, NULL);
 
     /* The fraction of the incident energy that stayed in the phantom, while
      the scoring arrays still hold energies rather than doses. Both sides are
@@ -369,6 +481,125 @@ int omcCalcForward(const struct OmcForwardOptions *opt,
     }
 
     freeAllocation(&alloc);
+
+    return !aborted;
+}
+
+/******************************************************************************/
+
+int omcCalcForwardPhsp(const struct OmcForwardPhspOptions *opt,
+                       const struct OmcPhsp *phsp,
+                       double *dose, double *uncertainty,
+                       const struct OmcForwardCallbacks *callbacks,
+                       struct OmcForwardPhspSummary *summary) {
+
+    if (opt->nbatch < 2) {
+        /* The batch variance divides by nbatch - 1 */
+        omcFail("ompMC:forward:tooFewBatches",
+            "Number of batches is %d, at least 2 are needed for the "
+            "uncertainty estimate.", opt->nbatch);
+    }
+
+    struct OmcPhspSampler sampler;
+    sampler.phsp = phsp;
+    sampler.order = opt->order;
+    sampler.first = opt->first;
+    sampler.transform = opt->transform;
+
+    /* Everything that could be wrong with the source is settled here, on the
+     master thread, rather than from inside the parallel region where a
+     failure would call the host from a place it cannot expect. */
+    omcPhspSourceCheck(&sampler);
+
+    int nbatch = opt->nbatch;
+    int nhist;
+    int nperbatch;
+
+    roundToBatches(opt->nhist, nbatch, &nhist, &nperbatch);
+
+    int gridsize = geometry.isize*geometry.jsize*geometry.ksize;
+
+    omcLog(OMC_LOG_DETAIL, "Total number of particle histories: %d", nhist);
+    omcLog(OMC_LOG_DETAIL, "Number of statistical batches: %d", nbatch);
+    omcLog(OMC_LOG_DETAIL, "Histories per batch: %d", nperbatch);
+
+    if ((unsigned long long)nhist > omcPhspCount(phsp) &&
+        opt->order == OMC_PHSP_REPLAY) {
+        omcLog(OMC_LOG_WARNING, "Running %d histories through a phase space "
+               "of %llu particles replays some of them more than once, which "
+               "buys less than the history count suggests: a particle used "
+               "twice tells you no more the second time about what the beam "
+               "does, only about what this phantom does with it.",
+               nhist, omcPhspCount(phsp));
+    }
+
+    /* Preparation of scoring struct */
+    initScore(gridsize);
+
+    #pragma omp parallel
+    {
+      /* Initialize random number generator */
+      initRandom();
+
+      /* Initialize particle stack */
+      initStack();
+    }
+
+    struct HistoryStarter starter;
+    starter.start = startPhsp;
+    starter.source = &sampler;
+
+    /* Nothing to rescale per batch: the particles carry the weights the file
+     gave them, and the dose comes out per history when the accumulated
+     energy is divided by the history count below. */
+    unsigned long long started = 0;
+    int aborted = runBatches(&starter, nbatch, nperbatch, 1.0, callbacks,
+                             &started);
+
+    if (!aborted) {
+        omcLog(OMC_LOG_DETAIL, "%llu of %d histories put a particle in the "
+               "phantom.", started, nhist);
+
+        if (started == 0) {
+            omcLog(OMC_LOG_WARNING, "Not one history put a particle in the "
+                   "phantom. Check where the phase space sits relative to it: "
+                   "the transform that carries one to the other is the usual "
+                   "thing to have wrong.");
+        }
+    }
+
+    /* The fraction of the incident energy that stayed in the phantom, while
+     the scoring arrays still hold energies rather than doses. Both sides are
+     weighted -- omcPhspSourceSample() puts the particle weight through to
+     scoreSource() as well -- and the batch scale is 1, so they are directly
+     comparable. */
+    if (summary && !aborted) {
+        double etot = 0.0;
+        for (int irl = 1; irl < gridsize + 1; irl++) {
+            etot += score.accum_endep[irl];
+        }
+
+        summary->nhist = nhist;
+        summary->nperbatch = nperbatch;
+        summary->started = started;
+        summary->energyFraction = score.ensrc > 0.0 ? etot/score.ensrc : 0.0;
+    }
+
+    /* Per history, counting the ones whose particle missed: they are part of
+     the fluence the file stands for. */
+    if (!aborted) {
+        omcScoreToCube(nbatch, (double)nperbatch, opt->outputDose, dose,
+                       uncertainty);
+    }
+
+    cleanScore();
+
+    //Cleaning private random generators and particle stack
+    #pragma omp parallel
+    {
+      cleanRandom();
+      cleanStack();
+    }
 
     return !aborted;
 }

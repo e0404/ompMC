@@ -25,7 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run does not depend on how its histories were scheduled. A history whose
   particle misses the phantom, or is a neutron or proton, produces nothing
   and says so, which is why it returns a value the caller has to check before
-  showering. No engine or user code drives it yet.
+  showering.
+- `omcCalcForwardPhsp()`, the forward engine driven from a phase space instead
+  of from weighted beamlets. There are no beamlets and no spectrum: the file
+  says what the particles are and where they are going, and the result comes
+  out per history rather than for a set of weights. Histories whose particle
+  misses the phantom count among those it is divided by, since they are
+  fluence the file stands for. No user code exposes it yet.
 - This changelog.
 - Release packaging workflow (`release.yml`): on a `v*` tag, packages
   build.yml's binaries into per-platform zips (`omc_dosxyz` + the MATLAB MEX

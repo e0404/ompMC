@@ -58,8 +58,10 @@
 #define OMC_ENGINE_FORWARD_H
 
 #include "omc_source_beamlet.h"
+#include "omc_source_phsp.h"
 
 struct OmcSpectrum;
+struct OmcPhsp;
 
 /*! Run parameters for one forward calculation. */
 struct OmcForwardOptions {
@@ -135,5 +137,67 @@ int omcCalcForward(const struct OmcForwardOptions *options,
                    double *dose, double *uncertainty,
                    const struct OmcForwardCallbacks *callbacks,
                    struct OmcForwardSummary *summary);
+
+/*! Run parameters for a forward calculation from a phase space.
+
+ There are no beamlets and no spectrum here: a phase space already says what
+ the particles are, where they start and where they are going, so what would
+ have been collimation and a source model is whatever the simulation that
+ wrote the file did. */
+struct OmcForwardPhspOptions {
+    int nhist;                  ///< histories, i.e. particles drawn from the file
+    int nbatch;                 ///< statistical batches to split them into
+
+    enum OmcPhspOrder order;    ///< REPLAY or RANDOM, see omc_source_phsp.h
+    unsigned long long first;   ///< first particle to replay, REPLAY only
+
+    struct OmcPhspTransform transform;   ///< phase space to phantom
+
+    int outputDose;             ///< 1 : dose in Gy per history, 0 : mean deposited energy
+};
+
+/*! What a phase space run did, for hosts that want to report it. Optional. */
+struct OmcForwardPhspSummary {
+    int nhist;                  ///< histories actually run, rounded to whole batches
+    int nperbatch;              ///< histories per batch
+
+    /*! Histories that put a particle in the phantom. The rest drew a particle
+     pointing somewhere else, or one ompMC does not transport. */
+    unsigned long long started;
+
+    double energyFraction;      ///< deposited energy over incident kinetic energy
+};
+
+/*! Transport histories drawn from a phase space and write the results into
+ dose[] and, unless it is NULL, uncertainty[]. Both are supplied by the caller
+ and hold one entry per voxel, indexed like the phantom:
+ `ix + iy*isize + iz*isize*jsize`.
+
+ Unlike omcCalcForward(), which returns the dose for the beamlet weights it
+ was given, this returns it PER HISTORY -- per particle drawn from the file.
+ Histories that drew a particle missing the phantom count among them, because
+ they are part of the fluence the file represents: leaving them out would
+ scale the answer up by however much of the beam misses. Multiply by the
+ number of particles the file stands for to get an absolute dose.
+
+ @param options Run parameters.
+ @param phsp The phase space, already read by omcPhspFromFile().
+ @param dose Caller-supplied array of `isize*jsize*ksize` entries.
+ @param uncertainty Caller-supplied array of the same size, or `NULL`. Holds
+ the RELATIVE uncertainty of the dose in that voxel, and is 0.9999999
+ wherever nothing was deposited, the same convention omcCalcCube() follows.
+ @param callbacks Progress reporting; see struct OmcForwardCallbacks.
+ @param summary Optional; filled in with what the run did.
+ @return Nonzero when the run finished, 0 when the progress callback stopped
+ it.
+
+ @warning The host still has to have filled struct Geom, called
+ initRegions(), initMediaData() and initVrt(), as for omcCalcForward(). What
+ it does NOT need is a spectrum. */
+int omcCalcForwardPhsp(const struct OmcForwardPhspOptions *options,
+                       const struct OmcPhsp *phsp,
+                       double *dose, double *uncertainty,
+                       const struct OmcForwardCallbacks *callbacks,
+                       struct OmcForwardPhspSummary *summary);
 
 #endif

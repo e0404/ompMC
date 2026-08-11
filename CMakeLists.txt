@@ -727,6 +727,22 @@ if(OMPMC_BUILD_TESTS)
 
     add_test(NAME phsp_source COMMAND test_omc_source_phsp)
 
+    # Transports for real, so it needs the PEGS and cross section data and
+    # runs from the repository root like the media and smoke tests.
+    add_executable(test_omc_forward_phsp tests/test_omc_forward_phsp.c)
+    target_link_libraries(test_omc_forward_phsp
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_forward_phsp)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_forward_phsp PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME phsp_forward COMMAND test_omc_forward_phsp
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
     # Needs the PEGS and cross section data, so it runs from the repository
     # root like the smoke test below.
     add_executable(test_media_data tests/test_media_data.c)
