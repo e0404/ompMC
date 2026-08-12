@@ -70,9 +70,9 @@ static const char *current_test = "";
         current_test = #fn;                                                   \
         tests_run++;                                                          \
         int _before = tests_failed;                                           \
+        printf("%-52s ", #fn);                                                \
         fn();                                                                 \
-        printf("%-52s %s\n", #fn,                                             \
-               tests_failed == _before ? "ok" : "FAILED");                    \
+        printf("%s\n", tests_failed == _before ? "ok" : "FAILED");            \
     } while (0)
 
 static void silentLog(int level, const char *message, void *user) {
@@ -473,10 +473,11 @@ static void test_the_rotation_check_is_not_only_the_determinant(void) {
     /* And a matrix holding a NaN, which used to pass because every
      comparison against NaN is false, including the one that was meant to
      turn it away. */
-    struct OmcPhspSampler nan = samplerFor(&made.phsp);
-    nan.transform.rotation[4] = 0.0/0.0;
+    struct OmcPhspSampler broken = samplerFor(&made.phsp);
+    broken.transform.rotation[4] = nan("");     /* 0.0/0.0 is a compile
+                                                   error on MSVC */
 
-    EXPECT_FAIL("ompMC:phspSource:notARotation", omcPhspSourceCheck(&nan));
+    EXPECT_FAIL("ompMC:phspSource:notARotation", omcPhspSourceCheck(&broken));
 
     tearDownPhantom();
 }

@@ -64,9 +64,9 @@ static const char *current_test = "";
         current_test = #fn;                                                   \
         tests_run++;                                                          \
         int _before = tests_failed;                                           \
+        printf("%-50s ", #fn);                                                \
         fn();                                                                 \
-        printf("%-50s %s\n", #fn,                                             \
-               tests_failed == _before ? "ok" : "FAILED");                    \
+        printf("%s\n", tests_failed == _before ? "ok" : "FAILED");            \
     } while (0)
 
 static void silentLog(int level, const char *message, void *user) {

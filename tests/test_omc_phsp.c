@@ -61,9 +61,9 @@ static const char *current_test = "";
         current_test = #fn;                                                   \
         tests_run++;                                                          \
         int _before = tests_failed;                                           \
+        printf("%-52s ", #fn);                                                \
         fn();                                                                 \
-        printf("%-52s %s\n", #fn,                                             \
-               tests_failed == _before ? "ok" : "FAILED");                    \
+        printf("%s\n", tests_failed == _before ? "ok" : "FAILED");            \
     } while (0)
 
 /*******************************************************************************
