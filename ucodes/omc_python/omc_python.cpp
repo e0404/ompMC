@@ -62,11 +62,14 @@
 #include <vector>
 
 extern "C" {
+#include "omc_collimator.h"
 #include "omc_engine_cube.h"
 #include "omc_engine_dij.h"
 #include "omc_engine_forward.h"
 #include "omc_geom.h"
 #include "omc_host.h"
+#include "omc_phsp.h"
+#include "omc_source_phsp.h"
 #include "omc_spectrum.h"
 #include "omc_utilities.h"
 #include "omc_version.h"
@@ -193,6 +196,7 @@ using IntCube = nb::ndarray<const int32_t, nb::ndim<3>, nb::f_contig, nb::device
 using Vector = nb::ndarray<const double, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
 using IntVector = nb::ndarray<const int32_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
 using Triples = nb::ndarray<const double, nb::shape<-1, 3>, nb::f_contig, nb::device::cpu>;
+using Grid = nb::ndarray<const double, nb::ndim<2>, nb::f_contig, nb::device::cpu>;
 
 /* How the source energies are described. Points into the caller's arrays and
  strings, both of which outlive the run. */
@@ -424,6 +428,72 @@ static void parseBeamletSource(struct OmcBeamletSource &src,
 }
 
 /******************************************************************************/
+/* The collimator, shared by every forward calculation.
+
+ The transmission values are copied rather than borrowed: they are the only
+ thing here small enough that copying is free, and the copy has to outlive the
+ GIL release either way. The struct therefore has to live in the caller's
+ frame -- the mask points into its own vector -- which is why this fills one
+ in place instead of returning it. */
+
+struct CollimatorInput {
+    struct OmcApertureMask mask;
+    std::vector<double> transmission;
+    bool roulette;
+    bool present;
+};
+
+static void parseCollimator(const nb::object &object, CollimatorInput &out) {
+
+    out.present = false;
+    out.roulette = false;
+    std::memset(&out.mask, 0, sizeof(out.mask));
+
+    if (object.is_none()) {
+        return;
+    }
+
+    nb::dict spec = nb::cast<nb::dict>(object);
+
+    /* Fortran ordered, so the first axis is contiguous -- which is the x runs
+     fastest layout struct OmcApertureMask asks for. */
+    auto values = nb::cast<Grid>(spec["transmission"]);
+
+    out.mask.nx = (int) values.shape(0);
+    out.mask.ny = (int) values.shape(1);
+
+    const size_t ncells = (size_t) out.mask.nx*(size_t) out.mask.ny;
+    out.transmission.assign(values.data(), values.data() + ncells);
+
+    out.mask.z = nb::cast<double>(spec["z"]);
+    out.mask.x0 = nb::cast<double>(spec["x0"]);
+    out.mask.y0 = nb::cast<double>(spec["y0"]);
+    out.mask.dx = nb::cast<double>(spec["dx"]);
+    out.mask.dy = nb::cast<double>(spec["dy"]);
+    out.mask.outside = nb::cast<double>(spec["outside"]);
+    out.mask.transmission = out.transmission.data();
+
+    out.roulette = nb::cast<bool>(spec["roulette"]);
+    out.present = true;
+}
+
+/* Dress a parsed collimator as the modifier an engine takes, or hand back
+ nothing at all for an open beam. @p modifier lives in the caller's frame. */
+static const struct OmcBeamModifier *
+useCollimator(CollimatorInput *input, struct OmcBeamModifier *modifier) {
+
+    if (input == nullptr || !input->present) {
+        return nullptr;
+    }
+
+    omcApertureMaskAsModifier(&input->mask, modifier);
+    modifier->apply = input->roulette ? OMC_MODIFIER_ROULETTE
+                                      : OMC_MODIFIER_WEIGHT;
+
+    return modifier;
+}
+
+/******************************************************************************/
 /* Dij */
 
 struct DijContext {
@@ -555,10 +625,15 @@ struct ForwardRun {
     const double *weights;
     const SpectrumInput *spectrumInput;
     const GeometryInput *geometry;
+    CollimatorInput *collimator;
     struct OmcForwardCallbacks *callbacks;
     double *dose;
     double *uncertainty;
     struct OmcForwardSummary *summary;
+    struct OmcBeamletStats *stats;
+    int charge;
+    enum OmcSourceGeometry sourceGeometry;
+    double sourceGaussianWidth;
     int completed;
 };
 
@@ -573,11 +648,102 @@ static void runForward(void *arg) {
     initRegions();
     initVrt();
 
-    run->completed = omcCalcForward(run->options, run->source, run->weights,
-                                    &spectrum, run->dose, run->uncertainty,
-                                    run->callbacks, run->summary);
+    /* The engine takes any source; these are weighted beamlets. */
+    struct OmcBeamletHistories histories;
+    histories.sampler.source = run->source;
+    histories.sampler.spectrum = &spectrum;
+    histories.sampler.charge = run->charge;
+    histories.sampler.geometry = run->sourceGeometry;
+    histories.sampler.gaussianWidth = run->sourceGaussianWidth;
+    histories.weights = run->weights;
+
+    struct OmcSource source;
+    omcBeamletHistoriesAsSource(&histories, &source);
+
+    /* Usually nothing: with beamlets the collimation is already in the
+     weights the caller handed over, and a mask on top of them is for the
+     cases the weights cannot express -- a block, or a leaf that transmits. */
+    struct OmcBeamModifier modifier;
+    const struct OmcBeamModifier *use = useCollimator(run->collimator,
+                                                      &modifier);
+
+    run->completed = omcCalcForward(run->options, &source, use, run->dose,
+                                    run->uncertainty, run->callbacks,
+                                    run->summary);
+
+    /* How the histories were shared out belongs to the beamlet source, so it
+     is asked of it rather than found in the engine's summary. */
+    omcBeamletHistoriesStats(&histories, run->stats);
 
     omcSpectrumFree(&spectrum);
+    cleanupPhysics();
+}
+
+/******************************************************************************/
+/* Forward, from a phase space file */
+
+/* Where the phase space sits and how to draw from it. The path is a copy
+ because the run reads it with the GIL released. */
+struct PhspInput {
+    std::string path;
+    int order;                  // 0 replay in order, 1 draw at random
+    uint64_t first;
+    double rotation[9];
+    double translation[3];
+};
+
+struct PhspRun {
+    const struct OmcForwardOptions *options;
+    const PhspInput *phsp;
+    const GeometryInput *geometry;
+    CollimatorInput *collimator;
+    struct OmcForwardCallbacks *callbacks;
+    double *dose;
+    double *uncertainty;
+    struct OmcForwardSummary *summary;
+
+    /* Zeroed by the caller and freed by the caller, so that a file that
+     fails to load halfway through is still released: the longjmp() out of
+     omcFail() does not come back through here. */
+    struct OmcPhsp *file;
+
+    int completed;
+};
+
+static void runForwardPhsp(void *arg) {
+
+    PhspRun *run = (PhspRun *) arg;
+
+    installGeometry(run->geometry);
+    initMediaData();
+    initRegions();
+    initVrt();
+
+    /* No spectrum: a phase space carries the energy of every particle it
+     holds, which is most of the reason for using one. */
+    omcPhspFromFile(run->file, run->phsp->path.c_str());
+
+    struct OmcPhspSampler sampler;
+    std::memset(&sampler, 0, sizeof(sampler));
+    sampler.phsp = run->file;
+    sampler.order = run->phsp->order == 1 ? OMC_PHSP_RANDOM : OMC_PHSP_REPLAY;
+    sampler.first = run->phsp->first;
+    std::memcpy(sampler.transform.rotation, run->phsp->rotation,
+                sizeof(sampler.transform.rotation));
+    std::memcpy(sampler.transform.translation, run->phsp->translation,
+                sizeof(sampler.transform.translation));
+
+    struct OmcSource source;
+    omcPhspSamplerAsSource(&sampler, &source);
+
+    struct OmcBeamModifier modifier;
+    const struct OmcBeamModifier *use = useCollimator(run->collimator,
+                                                      &modifier);
+
+    run->completed = omcCalcForward(run->options, &source, use, run->dose,
+                                    run->uncertainty, run->callbacks,
+                                    run->summary);
+
     cleanupPhysics();
 }
 
@@ -739,8 +905,8 @@ NB_MODULE(_ompmc, m) {
            Vector z_bounds, std::vector<std::string> materials,
            IntVector i_beam, Triples source, Triples corner, Triples side1,
            Triples side2, Vector weights, nb::dict options,
-           nb::dict input_items, nb::dict spectrum, nb::object progress,
-           int verbosity) {
+           nb::dict input_items, nb::dict spectrum, nb::object collimator,
+           nb::object progress, int verbosity) {
 
         GeometryInput geo = parseGeometry(density, material, x_bounds,
                                           y_bounds, z_bounds, materials);
@@ -760,10 +926,6 @@ NB_MODULE(_ompmc, m) {
         struct OmcForwardOptions opt;
         opt.nhist = nb::cast<int>(options["n_histories"]);
         opt.nbatch = nb::cast<int>(options["n_batches"]);
-        opt.charge = nb::cast<int>(options["charge"]);
-        opt.sourceGeometry = nb::cast<bool>(options["gaussian_source"])
-            ? OMC_SOURCE_GAUSSIAN : OMC_SOURCE_POINT;
-        opt.sourceGaussianWidth = nb::cast<double>(options["source_width"]);
         opt.outputDose = nb::cast<bool>(options["output_dose"]) ? 1 : 0;
 
         installHost();
@@ -783,9 +945,19 @@ NB_MODULE(_ompmc, m) {
         callbacks.progress = forwardProgress;
         callbacks.user = &ctx;
 
+        CollimatorInput collimatorInput;
+        parseCollimator(collimator, collimatorInput);
+
         struct OmcForwardSummary summary{};
+        struct OmcBeamletStats stats{};
         ForwardRun run{&opt, &src, weights.data(), &spectrumInput, &geo,
+                       &collimatorInput,
                        &callbacks, dose.data(), uncertainty.data(), &summary,
+                       &stats,
+                       nb::cast<int>(options["charge"]),
+                       nb::cast<bool>(options["gaussian_source"])
+                           ? OMC_SOURCE_GAUSSIAN : OMC_SOURCE_POINT,
+                       nb::cast<double>(options["source_width"]),
                        0};
 
         bool ok;
@@ -809,14 +981,106 @@ NB_MODULE(_ompmc, m) {
         return nb::make_tuple(adopt(std::move(dose)),
                               adopt(std::move(uncertainty)),
                               run.completed != 0,
-                              summary.nhist, summary.nsampled,
-                              summary.nweighted,
-                              summary.sampledWeight/summary.totalWeight,
-                              summary.energyFraction);
+                              summary.nhist, stats.nsampled,
+                              stats.nweighted,
+                              stats.totalWeight > 0.0
+                                  ? stats.sampledWeight/stats.totalWeight
+                                  : 0.0,
+                              summary.energyFraction, summary.blocked);
     },
     "density"_a, "material"_a, "x_bounds"_a,
     "y_bounds"_a, "z_bounds"_a, "materials"_a, "i_beam"_a,
     "source"_a, "corner"_a, "side1"_a, "side2"_a, "weights"_a, "options"_a,
-    "input_items"_a, "spectrum"_a, "progress"_a.none(), "verbosity"_a,
+    "input_items"_a, "spectrum"_a, "collimator"_a.none(), "progress"_a.none(),
+    "verbosity"_a,
     "Dose in every voxel from a whole weighted set of beamlets.");
+
+    m.def("calc_forward_phsp",
+        [](Cube density, IntCube material, Vector x_bounds, Vector y_bounds,
+           Vector z_bounds, std::vector<std::string> materials,
+           nb::dict phsp, nb::dict options, nb::dict input_items,
+           nb::object collimator, nb::object progress, int verbosity) {
+
+        GeometryInput geo = parseGeometry(density, material, x_bounds,
+                                          y_bounds, z_bounds, materials);
+
+        PhspInput phspInput;
+        phspInput.path = nb::cast<std::string>(phsp["path"]);
+        phspInput.order = nb::cast<int>(phsp["order"]);
+        phspInput.first = nb::cast<uint64_t>(phsp["first"]);
+
+        auto rotation = nb::cast<std::vector<double>>(phsp["rotation"]);
+        auto translation = nb::cast<std::vector<double>>(phsp["translation"]);
+
+        if (rotation.size() != 9 || translation.size() != 3) {
+            throw std::invalid_argument("the phase space transform needs a "
+                "nine element rotation and a three element translation");
+        }
+        std::memcpy(phspInput.rotation, rotation.data(),
+                    sizeof(phspInput.rotation));
+        std::memcpy(phspInput.translation, translation.data(),
+                    sizeof(phspInput.translation));
+
+        struct OmcForwardOptions opt;
+        opt.nhist = nb::cast<int>(options["n_histories"]);
+        opt.nbatch = nb::cast<int>(options["n_batches"]);
+        opt.outputDose = nb::cast<bool>(options["output_dose"]) ? 1 : 0;
+
+        installHost();
+        verbose_flag = verbosity;
+        applyInputItems(input_items);
+
+        const size_t gridsize = (size_t)geo.isize*(size_t)geo.jsize
+                                *(size_t)geo.ksize;
+        std::vector<double> dose(gridsize, 0.0);
+        std::vector<double> uncertainty(gridsize, 0.0);
+
+        ForwardContext ctx;
+        ctx.progress.callable = progress.is_none() ? nullptr : progress.ptr();
+        ctx.progress.cancelled = false;
+
+        struct OmcForwardCallbacks callbacks;
+        callbacks.progress = forwardProgress;
+        callbacks.user = &ctx;
+
+        CollimatorInput collimatorInput;
+        parseCollimator(collimator, collimatorInput);
+
+        /* Zeroed here rather than in the run, so that freeing it below is
+         safe however far into the load the failure came. */
+        struct OmcPhsp file;
+        std::memset(&file, 0, sizeof(file));
+
+        struct OmcForwardSummary summary{};
+        PhspRun run{&opt, &phspInput, &geo, &collimatorInput, &callbacks,
+                    dose.data(), uncertainty.data(), &summary, &file, 0};
+
+        bool ok;
+        {
+            nb::gil_scoped_release nogil;
+            ok = runGuarded(&runForwardPhsp, &run);
+
+            /* The particles are the biggest thing a run of this kind holds --
+             gigabytes for a published data set -- so they go back before the
+             GIL does. */
+            omcPhspFree(&file);
+        }
+
+        if (!ok) {
+            throw std::runtime_error(failId + ": " + failMessage);
+        }
+        if (ctx.progress.cancelled) {
+            throw nb::python_error();
+        }
+
+        return nb::make_tuple(adopt(std::move(dose)),
+                              adopt(std::move(uncertainty)),
+                              run.completed != 0,
+                              summary.nhist, summary.started, summary.blocked,
+                              summary.energyFraction);
+    },
+    "density"_a, "material"_a, "x_bounds"_a, "y_bounds"_a, "z_bounds"_a,
+    "materials"_a, "phsp"_a, "options"_a, "input_items"_a,
+    "collimator"_a.none(), "progress"_a.none(), "verbosity"_a,
+    "Dose in every voxel from the particles of an IAEA phase space file.");
 }

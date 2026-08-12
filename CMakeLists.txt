@@ -158,7 +158,11 @@ add_library(ompmc_core STATIC
     src/omc_host.c
     src/omc_geom.c
     src/omc_spectrum.c
+    src/omc_phsp.c
+    src/omc_collimator.c
+    src/omc_source.c
     src/omc_source_beamlet.c
+    src/omc_source_phsp.c
     src/omc_engine_dij.c
     src/omc_engine_cube.c
     src/omc_engine_forward.c)
@@ -694,6 +698,93 @@ if(OMPMC_BUILD_TESTS)
     endif()
 
     add_test(NAME unit COMMAND test_ompmc)
+
+    # Writes most of the phase space files it reads, next to itself, but the
+    # small committed one it also reads stays in the source tree.
+    add_executable(test_omc_phsp tests/test_omc_phsp.c)
+    target_link_libraries(test_omc_phsp PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_phsp)
+
+    target_compile_definitions(test_omc_phsp PRIVATE
+        OMPMC_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+
+    if(MSVC)
+        target_compile_definitions(test_omc_phsp PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME phsp COMMAND test_omc_phsp)
+
+    add_executable(test_omc_source_phsp tests/test_omc_source_phsp.c)
+    target_link_libraries(test_omc_source_phsp
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_source_phsp)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_source_phsp PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME phsp_source COMMAND test_omc_source_phsp)
+
+    add_executable(test_omc_source_beamlet tests/test_omc_source_beamlet.c)
+    target_link_libraries(test_omc_source_beamlet
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_source_beamlet)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_source_beamlet PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME beamlet_source COMMAND test_omc_source_beamlet)
+
+    add_executable(test_omc_collimator tests/test_omc_collimator.c)
+    target_link_libraries(test_omc_collimator
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_collimator)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_collimator PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME collimator COMMAND test_omc_collimator)
+
+    # Transports for real, so it needs the PEGS and cross section data and
+    # runs from the repository root like the media and smoke tests.
+    add_executable(test_omc_forward_phsp tests/test_omc_forward_phsp.c)
+    target_link_libraries(test_omc_forward_phsp
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_forward_phsp)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_forward_phsp PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME phsp_forward COMMAND test_omc_forward_phsp
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+    # Transports for real as well, so it runs from the repository root too.
+    add_executable(test_omc_engine_dij tests/test_omc_engine_dij.c)
+    target_link_libraries(test_omc_engine_dij
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_engine_dij)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_engine_dij PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME dij COMMAND test_omc_engine_dij
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     # Needs the PEGS and cross section data, so it runs from the repository
     # root like the smoke test below.

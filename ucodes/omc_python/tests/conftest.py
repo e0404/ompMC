@@ -1,5 +1,6 @@
 """Shared fixtures for the ompMC Python tests."""
 
+import struct
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +35,83 @@ def water_physics():
         global_ecut=0.521,
         global_pcut=0.01,
     )
+
+
+@pytest.fixture
+def phsp_beam(tmp_path):
+    """An IAEA phase space pair, written here rather than committed.
+
+    Ten 6 MeV photons a centimetre above the `water_phantom` block, spread
+    over the middle of it and heading straight in along +z. Every variable is
+    stored, which makes the record 29 bytes: the type byte, the energy, then
+    x, y, z, u, v and the weight. W is never stored in this format -- it is
+    reconstructed from u and v, with the sign of the type byte -- so its
+    flag adds no bytes.
+
+    Returns
+    -------
+    str
+        The base name of the pair, which is what
+        :class:`ompmc.PhaseSpaceSource` takes.
+    """
+    n = 10
+    record_length = 1 + 4 + 4*5 + 4
+
+    records = bytearray()
+    for i in range(n):
+        records.append(1)                       # a photon, w > 0
+        records += struct.pack(
+            "<7f",
+            -6.0,                               # negative: opens a history
+            -2.0 + 4.0*(i % 5)/4.0,             # x
+            -2.0 + 4.0*(i % 3)/2.0,             # y
+            -1.0,                               # z, a centimetre above
+            0.0, 0.0,                           # u, v, so w is +1
+            1.0,                                # weight
+        )
+
+    assert len(records) == n*record_length
+
+    stem = tmp_path / "beam"
+    stem.with_suffix(".IAEAphsp").write_bytes(bytes(records))
+    stem.with_suffix(".IAEAheader").write_text(f"""$IAEA_INDEX:
+0
+// Written by the ompMC Python tests. Not a recording of anything.
+
+$FILE_TYPE:
+0
+
+$CHECKSUM:
+{n*record_length}
+
+$RECORD_CONTENTS:
+1     // X is stored ?
+1     // Y is stored ?
+1     // Z is stored ?
+1     // U is stored ?
+1     // V is stored ?
+1     // W is stored ?
+1     // Weight is stored ?
+0     // Extra floats stored ?
+0     // Extra longs stored ?
+
+$RECORD_LENGTH:
+{record_length}
+
+$BYTE_ORDER:
+1234
+
+$ORIG_HISTORIES:
+{n}
+
+$PARTICLES:
+{n}
+
+$PHOTONS:
+{n}
+""")
+
+    return str(stem)
 
 
 @pytest.fixture(scope="session")

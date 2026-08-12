@@ -1,0 +1,6 @@
+# The binary half of an IAEA phase space dataset is a packed record stream,
+# and the tests read the exact bytes back. Git guesses binary from the content
+# and would guess right here, but a phase space file that happens to hold no
+# zero byte early on would be guessed wrong and have its line endings
+# rewritten, which is not a failure anyone would enjoy diagnosing.
+*.IAEAphsp binary

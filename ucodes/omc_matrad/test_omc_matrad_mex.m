@@ -514,6 +514,204 @@ catch err
 end
 fprintf('An unknown mcOpt.mode was rejected.\n');
 
+%% mcOpt.mode = 'forward_phsp' starts histories from a phase space file
+%
+% There is no phase space in the repository to read -- the published ones are
+% gigabytes -- so one is written here. Its particles are the central rays of
+% the fixture's own beamlets, which is the one thing certain to reach the
+% patient in this geometry, so a run that deposits nothing is the interface
+% being wrong rather than the beam missing.
+
+phspStem = fullfile(tempdir(), sprintf('ompmc_test_phsp_%d', round(1e6*rand())));
+cleanupPhsp = onCleanup(@() delete([phspStem '.IAEAheader'], ...
+                                   [phspStem '.IAEAphsp']));
+
+nParticles = min(nBixels, 20);
+recordLength = 1 + 4 + 4*5 + 4;         % type, energy, x y z u v, weight
+
+fid = fopen([phspStem '.IAEAphsp'], 'w', 'ieee-le');
+if fid < 0
+    error('ompMC:test:phspWriteFailed', ...
+        'Could not write the test phase space to %s.', phspStem);
+end
+
+for iParticle = 1:nParticles
+    iBeam = fixture.mcSrc.iBeam(iParticle);
+
+    from = [fixture.mcSrc.xSource(iBeam), fixture.mcSrc.ySource(iBeam), ...
+            fixture.mcSrc.zSource(iBeam)];
+
+    % The middle of this beamlet's aperture
+    to = [fixture.mcSrc.xCorner(iParticle), fixture.mcSrc.yCorner(iParticle), ...
+          fixture.mcSrc.zCorner(iParticle)] ...
+        + 0.5*[fixture.mcSrc.xSide1(iParticle), fixture.mcSrc.ySide1(iParticle), ...
+               fixture.mcSrc.zSide1(iParticle)] ...
+        + 0.5*[fixture.mcSrc.xSide2(iParticle), fixture.mcSrc.ySide2(iParticle), ...
+               fixture.mcSrc.zSide2(iParticle)];
+
+    direction = (to - from)/norm(to - from);
+
+    % W is never stored in this format: it is rebuilt from u and v, and the
+    % sign of the type byte is what says which way it points.
+    typeByte = 1;                       % a photon
+    if direction(3) < 0
+        typeByte = -1;
+    end
+
+    fwrite(fid, typeByte, 'int8');
+    % A negative energy is how the format marks the start of a history
+    fwrite(fid, [-6.0, from, direction(1:2), 1.0], 'float32');
+end
+fclose(fid);
+
+fid = fopen([phspStem '.IAEAheader'], 'w');
+fprintf(fid, '$IAEA_INDEX:\n0\n\n');
+fprintf(fid, '$FILE_TYPE:\n0\n\n');
+fprintf(fid, '$CHECKSUM:\n%d\n\n', nParticles*recordLength);
+fprintf(fid, '$RECORD_CONTENTS:\n1\n1\n1\n1\n1\n1\n1\n0\n0\n\n');
+fprintf(fid, '$RECORD_LENGTH:\n%d\n\n', recordLength);
+fprintf(fid, '$BYTE_ORDER:\n1234\n\n');
+fprintf(fid, '$ORIG_HISTORIES:\n%d\n\n', nParticles);
+fprintf(fid, '$PARTICLES:\n%d\n\n', nParticles);
+fprintf(fid, '$PHOTONS:\n%d\n', nParticles);
+fclose(fid);
+
+mcSrcPhsp = fixture.mcSrc;
+mcSrcPhsp.phaseSpace = struct('file', phspStem);
+
+mcOptPhsp = mcOpt;
+mcOptPhsp.mode = 'forward_phsp';
+mcOptPhsp.nHistories = mcOpt.nHistories*nBixels;
+
+tStart = tic;
+[phspDose, phspUnc, phspSummary] = omc_matrad(fixture.cubeRho, ...
+    fixture.cubeMatIx, fixture.mcGeo, mcSrcPhsp, mcOptPhsp);
+fprintf('Phase space calculation with %d histories took %.1f s.\n', ...
+    mcOptPhsp.nHistories, toc(tStart));
+
+if phspSummary.nStarted ~= phspSummary.nHistories || phspSummary.nBlocked ~= 0
+    error('ompMC:test:phspSummary', ...
+        ['Every history of an open beam aimed at the patient should start: ', ...
+         '%d of %d did, and %d were blocked with no collimator.'], ...
+        phspSummary.nStarted, phspSummary.nHistories, phspSummary.nBlocked);
+end
+
+if ~isequal(size(phspDose), size(fixture.cubeRho))
+    error('ompMC:test:phspWrongSize', ...
+        'The phase space dose cube is %s, expected %s.', ...
+        mat2str(size(phspDose)), mat2str(size(fixture.cubeRho)));
+end
+if any(~isfinite(phspDose(:))) || any(phspDose(:) < 0)
+    error('ompMC:test:phspBadDose', ...
+        'The phase space dose cube holds non-finite or negative entries.');
+end
+if ~any(phspDose(:) > 0)
+    error('ompMC:test:phspNoDose', ...
+        'The phase space dose cube is all zero.');
+end
+if ~isequal(size(phspUnc), size(phspDose))
+    error('ompMC:test:phspUncSize', ...
+        'The phase space uncertainty cube is the wrong size.');
+end
+fprintf('Phase space mode deposited dose in %d voxels.\n', ...
+    sum(phspDose(:) > 0));
+
+% A collimator shut across the whole beam has to stop all of it, which is
+% also what says mcSrc.collimator is read at all.
+mcSrcShut = mcSrcPhsp;
+mcSrcShut.collimator = struct('z', 0, 'x0', -1000, 'y0', -1000, ...
+    'dx', 2000, 'dy', 2000, 'transmission', 0, 'outside', 0);
+
+[shutDose, ~, shutSummary] = omc_matrad(fixture.cubeRho, fixture.cubeMatIx, ...
+    fixture.mcGeo, mcSrcShut, mcOptPhsp);
+
+if any(shutDose(:) ~= 0)
+    error('ompMC:test:collimatorLeaked', ...
+        'A shut collimator let %d voxels receive dose.', ...
+        sum(shutDose(:) ~= 0));
+end
+if shutSummary.nBlocked ~= shutSummary.nHistories
+    error('ompMC:test:collimatorCount', ...
+        'A shut collimator stopped %d of %d histories.', ...
+        shutSummary.nBlocked, shutSummary.nHistories);
+end
+fprintf('A shut collimator stopped the whole beam.\n');
+
+% A half transmitting one, spent both ways. What has to hold is that the two
+% agree on the dose -- that is the whole claim roulette makes -- while
+% getting there differently: the weight mode transports every history at half
+% the weight, roulette stops about half of them and transports the rest
+% whole.
+%
+% Note what is NOT asserted: that either comes to half the open dose. This
+% fixture's beam runs almost inside the z = 0 plane the mask sits on -- the
+% direction cosines along z are all under 0.1, and four of the twenty
+% beamlets have theirs at exactly 0. A particle travelling along the plane
+% never crosses it and is stopped whatever the mask says, so a fifth of the
+% histories are gone before the transmission is even looked at.
+
+mcSrcHalfWeight = mcSrcPhsp;
+mcSrcHalfWeight.collimator = struct('z', 0, 'x0', -1000, 'y0', -1000, ...
+    'dx', 2000, 'dy', 2000, 'transmission', 0.5, 'outside', 0.5);
+
+mcSrcRoulette = mcSrcHalfWeight;
+mcSrcRoulette.collimator.roulette = true;
+
+[weightDose, ~, weightSummary] = omc_matrad(fixture.cubeRho, ...
+    fixture.cubeMatIx, fixture.mcGeo, mcSrcHalfWeight, mcOptPhsp);
+[rouletteDose, ~, rouletteSummary] = omc_matrad(fixture.cubeRho, ...
+    fixture.cubeMatIx, fixture.mcGeo, mcSrcRoulette, mcOptPhsp);
+
+agreement = sum(rouletteDose(:))/sum(weightDose(:));
+if abs(agreement - 1.0) > 0.05
+    error('ompMC:test:rouletteMismatch', ...
+        ['Roulette through a half open collimator gave %.4g of what the ', ...
+         'same collimator gave by weight; the two have to agree.'], agreement);
+end
+
+% And the saving roulette buys: it reaches that dose from far fewer showers.
+if rouletteSummary.nStarted >= 0.75*weightSummary.nStarted
+    error('ompMC:test:rouletteNoSaving', ...
+        ['Roulette transported %d histories against %d by weight; it is ', ...
+         'supposed to stop about half of what gets to it.'], ...
+        rouletteSummary.nStarted, weightSummary.nStarted);
+end
+
+fprintf(['Roulette agreed with the weight mode to %.1f%% while ', ...
+    'transporting %d histories instead of %d.\n'], ...
+    100*abs(agreement - 1.0), rouletteSummary.nStarted, ...
+    weightSummary.nStarted);
+
+% What the mode rejects.
+phspBadCases = { ...
+    'missing',   'matRad:omc_matrad:missingField',  []; ...
+    'badOrder',  'matRad:omc_matrad:invalidField',  ...
+        struct('file', phspStem, 'order', 'shuffle'); ...
+    'noFile',    'ompMC:phsp:openFailed',           ...
+        struct('file', [phspStem '_not_here'])};
+
+for iCase = 1:size(phspBadCases, 1)
+    mcSrcBad = fixture.mcSrc;
+    if ~isempty(phspBadCases{iCase, 3})
+        mcSrcBad.phaseSpace = phspBadCases{iCase, 3};
+    end
+
+    try
+        omc_matrad(fixture.cubeRho, fixture.cubeMatIx, ...
+            fixture.mcGeo, mcSrcBad, mcOptPhsp);
+        error('ompMC:test:badPhspAccepted', ...
+            'Phase space case "%s" was accepted.', phspBadCases{iCase, 1});
+    catch err
+        if ~strcmp(err.identifier, phspBadCases{iCase, 2})
+            rethrow(err);
+        end
+    end
+end
+fprintf(['A missing phaseSpace struct, an unknown order and a file that ', ...
+    'is not there were rejected.\n']);
+
+clear cleanupPhsp
+
 %% Releasing the MEX file after a parallel region
 
 % This is the part that used to bring MATLAB down. Once an OpenMP parallel

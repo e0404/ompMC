@@ -1,0 +1,87 @@
+$IAEA_INDEX:
+0
+// A small phase space written by hand for the ompMC unit tests. It is not a
+// recording of anything: the particles are made up, and chosen to cover the
+// corners of the format rather than to look like a beam.
+
+$TITLE:
+ompMC test phase space, 10 particles
+
+$FILE_TYPE:
+   0     // phase space file
+
+$CHECKSUM:
+250
+
+$RECORD_CONTENTS:
+    1     // X is stored ?
+    1     // Y is stored ?
+    0     // Z is stored ?
+    1     // U is stored ?
+    1     // V is stored ?
+    1     // W is stored ?
+    0     // Weight is stored ?
+    0     // Extra floats stored ?
+    1     // Extra longs stored ?
+    1     // Extra long 1 is the incremental history number
+
+$RECORD_CONSTANT:
+    50.0000     // Constant Z
+     1.0000     // Constant Weight
+
+$RECORD_LENGTH:
+25
+
+$BYTE_ORDER:
+1234
+
+$ORIG_HISTORIES:
+9
+
+$PARTICLES:
+10
+
+$PHOTONS:
+7
+
+$ELECTRONS:
+2
+
+$POSITRONS:
+1
+
+$TRANSPORT_PARAMETERS:
+None. The particles were written by hand, not transported.
+
+$MACHINE_TYPE:
+None
+
+$MONTE_CARLO_CODE_VERSION:
+None
+
+$GLOBAL_PHOTON_ENERGY_CUTOFF:
+0.010
+
+$GLOBAL_PARTICLE_ENERGY_CUTOFF:
+0.700
+
+$COORDINATE_SYSTEM_DESCRIPTION:
+Right handed, z along the beam axis, the scoring plane at z = 50 cm.
+
+$BEAM_NAME:
+none
+
+$FIELD_SIZE:
+10 cm x 10 cm
+
+$NOMINAL_SSD:
+100 cm
+
+$AUTHORS:
+ompMC
+
+$ADDITIONAL_NOTES:
+Particle 1 opens a history, particle 5 has a negative type byte and so a
+negative w, and the u and v of particle 10 add up to a unit vector on their
+own, leaving w zero.
+

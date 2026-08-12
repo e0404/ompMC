@@ -313,6 +313,308 @@ class TestCalcForward:
             ompmc.calc_forward(f["geometry"], f["source"], w)
 
 
+class TestPhaseSpaceSourceValidation:
+
+    def test_defaults_to_the_identity_transform(self):
+        source = ompmc.PhaseSpaceSource("beam")
+        assert np.array_equal(source.rotation, np.eye(3))
+        assert np.array_equal(source.translation, np.zeros(3))
+        assert source._payload["order"] == 0
+
+    def test_accepts_random_order(self):
+        assert ompmc.PhaseSpaceSource("beam", order="random")._payload[
+            "order"] == 1
+
+    def test_rejects_an_unknown_order(self):
+        with pytest.raises(ValueError, match="replay"):
+            ompmc.PhaseSpaceSource("beam", order="shuffle")
+
+    def test_rejects_a_negative_start(self):
+        with pytest.raises(ValueError, match="negative"):
+            ompmc.PhaseSpaceSource("beam", first=-1)
+
+    def test_rejects_a_matrix_that_is_not_a_rotation(self):
+        # A matrix that is not a rotation would stretch the directions it
+        # turns, and those have to stay unit vectors.
+        with pytest.raises(ValueError, match="determinant|orthonormal"):
+            ompmc.PhaseSpaceSource("beam", rotation=2.0*np.eye(3))
+
+    def test_rejects_what_the_determinant_alone_would_admit(self):
+        # A shear: determinant exactly 1, and (0,1,0) still comes out
+        # (1,1,0), which is not a unit vector.
+        shear = np.array([[1.0, 1.0, 0.0],
+                          [0.0, 1.0, 0.0],
+                          [0.0, 0.0, 1.0]])
+        assert np.isclose(np.linalg.det(shear), 1.0)
+        with pytest.raises(ValueError, match="orthonormal"):
+            ompmc.PhaseSpaceSource("beam", rotation=shear)
+
+        # A reflection: orthonormal, determinant -1, turns a right handed
+        # coordinate system into a left handed one.
+        with pytest.raises(ValueError, match="determinant"):
+            ompmc.PhaseSpaceSource("beam", rotation=np.diag([-1.0, 1.0, 1.0]))
+
+        # And a NaN, which passes every comparison asked of it.
+        nan = np.eye(3)
+        nan[1, 1] = np.nan
+        with pytest.raises(ValueError, match="finite"):
+            ompmc.PhaseSpaceSource("beam", rotation=nan)
+
+    def test_rejects_a_misshaped_transform(self):
+        with pytest.raises(ValueError, match=r"\(3, 3\)"):
+            ompmc.PhaseSpaceSource("beam", rotation=np.eye(4))
+        with pytest.raises(ValueError, match="expected 3"):
+            ompmc.PhaseSpaceSource("beam", translation=[1.0, 2.0])
+
+    def test_a_real_rotation_goes_through_row_major(self):
+        # A quarter turn about z, so the payload has to read across rows.
+        rotation = np.array([[0.0, -1.0, 0.0],
+                             [1.0, 0.0, 0.0],
+                             [0.0, 0.0, 1.0]])
+        source = ompmc.PhaseSpaceSource("beam", rotation=rotation,
+                                        translation=[1.0, 2.0, 3.0])
+
+        assert source._payload["rotation"] == [0.0, -1.0, 0.0,
+                                               1.0, 0.0, 0.0,
+                                               0.0, 0.0, 1.0]
+        assert source._payload["translation"] == [1.0, 2.0, 3.0]
+
+
+class TestApertureMaskValidation:
+
+    def test_a_rectangle_is_one_open_cell(self):
+        mask = ompmc.ApertureMask.rectangle(40.0, -2.0, 2.0, -3.0, 3.0)
+
+        assert mask.shape == (1, 1)
+        assert mask.transmission[0, 0] == 1.0
+        assert (mask.x0, mask.y0, mask.dx, mask.dy) == (-2.0, -3.0, 4.0, 6.0)
+        assert mask.outside == 0.0
+
+    def test_rejects_a_rectangle_with_no_width(self):
+        with pytest.raises(ValueError, match="positive"):
+            ompmc.ApertureMask.rectangle(40.0, 2.0, 2.0, -3.0, 3.0)
+
+    def test_rejects_transmission_outside_zero_to_one(self):
+        # Above one would quietly multiply the dose rather than fail.
+        with pytest.raises(ValueError, match="between 0 and 1"):
+            ompmc.ApertureMask(z=1.0, x0=0.0, y0=0.0, dx=1.0, dy=1.0,
+                               transmission=[[1.5]])
+        with pytest.raises(ValueError, match="between 0 and 1"):
+            ompmc.ApertureMask(z=1.0, x0=0.0, y0=0.0, dx=1.0, dy=1.0,
+                               transmission=[[-0.5]])
+
+    def test_rejects_cells_with_no_size(self):
+        with pytest.raises(ValueError, match="positive"):
+            ompmc.ApertureMask(z=1.0, x0=0.0, y0=0.0, dx=0.0, dy=1.0,
+                               transmission=[[1.0]])
+
+    def test_rejects_an_out_of_range_outside(self):
+        with pytest.raises(ValueError, match="between 0 and 1"):
+            ompmc.ApertureMask(z=1.0, x0=0.0, y0=0.0, dx=1.0, dy=1.0,
+                               transmission=[[1.0]], outside=2.0)
+
+    def test_rejects_a_grid_that_is_not_two_dimensional(self):
+        with pytest.raises(ValueError, match="non-empty"):
+            ompmc.ApertureMask(z=1.0, x0=0.0, y0=0.0, dx=1.0, dy=1.0,
+                               transmission=[1.0, 1.0])
+
+    def test_the_grid_keeps_x_first(self):
+        mask = ompmc.ApertureMask(z=1.0, x0=0.0, y0=0.0, dx=1.0, dy=1.0,
+                                  transmission=[[1.0, 0.0], [0.5, 0.0]])
+        assert mask.shape == (2, 2)
+        # Fortran order, so the flat layout has x running fastest, which is
+        # what the core reads.
+        assert list(mask._payload["transmission"].ravel(order="F")) == [
+            1.0, 0.5, 0.0, 0.0]
+
+
+class TestCalcForwardPhsp:
+    """The phase space engine, driven from a file the test writes itself.
+
+    Ten photons a centimetre above the water block, spread across the middle
+    of it and heading straight in, which is enough to tell dose from no dose
+    and a blocked beam from an open one.
+    """
+
+    def test_deposits_dose_with_a_buildup_region(self, phsp_beam,
+                                                 water_phantom, water_physics):
+        source = ompmc.PhaseSpaceSource(phsp_beam)
+
+        dose, uncertainty, summary = ompmc.calc_forward_phsp(
+            water_phantom, source, water_physics,
+            n_histories=4000, n_batches=4)
+
+        assert dose.shape == water_phantom.shape
+        assert np.all(np.isfinite(dose)) and np.all(dose >= 0.0)
+        assert dose.max() > 0.0
+
+        assert summary.n_histories == 4000
+        assert summary.n_started == 4000       # all of them are aimed in
+        assert summary.n_blocked == 0
+        assert 0.0 < summary.energy_fraction < 1.0
+
+        # Photons build up over the first centimetres.
+        depth = dose.sum(axis=(0, 1))
+        assert depth[0] < 0.9*depth.max()
+
+    def test_a_missing_file_is_an_exception(self, water_phantom,
+                                            water_physics):
+        with pytest.raises(RuntimeError):
+            ompmc.calc_forward_phsp(
+                water_phantom, ompmc.PhaseSpaceSource("no_such_phase_space"),
+                water_physics, n_histories=100, n_batches=2)
+
+    def test_a_transform_can_aim_the_beam_away(self, phsp_beam, water_phantom,
+                                               water_physics):
+        # A half turn about x turns the particles round, and the translation
+        # puts them back above the tank afterwards -- the turn alone would
+        # carry z = -1 to z = +1, which is inside it. Facing away from the
+        # phantom from outside it, nothing starts and nothing is deposited.
+        away = ompmc.PhaseSpaceSource(
+            phsp_beam,
+            rotation=np.array([[1.0, 0.0, 0.0],
+                               [0.0, -1.0, 0.0],
+                               [0.0, 0.0, -1.0]]),
+            translation=[0.0, 0.0, -2.0])
+
+        dose, _, summary = ompmc.calc_forward_phsp(
+            water_phantom, away, water_physics, n_histories=400, n_batches=2)
+
+        assert summary.n_started == 0
+        assert dose.max() == 0.0
+
+    def test_a_shut_collimator_stops_everything(self, phsp_beam,
+                                                water_phantom, water_physics):
+        shut = ompmc.ApertureMask(z=-0.5, x0=-50.0, y0=-50.0, dx=100.0,
+                                  dy=100.0, transmission=[[0.0]], outside=0.0)
+
+        dose, _, summary = ompmc.calc_forward_phsp(
+            water_phantom, ompmc.PhaseSpaceSource(phsp_beam), water_physics,
+            n_histories=400, n_batches=2, collimator=shut)
+
+        assert summary.n_blocked == 400
+        assert summary.n_started == 0
+        assert dose.max() == 0.0
+
+    def test_an_open_collimator_changes_nothing(self, phsp_beam,
+                                                water_phantom, water_physics):
+        wide = ompmc.ApertureMask.rectangle(-0.5, -50.0, 50.0, -50.0, 50.0)
+
+        source = ompmc.PhaseSpaceSource(phsp_beam)
+        kwargs = dict(n_histories=2000, n_batches=2)
+
+        bare, _, bare_summary = ompmc.calc_forward_phsp(
+            water_phantom, source, water_physics, **kwargs)
+        through, _, open_summary = ompmc.calc_forward_phsp(
+            water_phantom, source, water_physics, collimator=wide, **kwargs)
+
+        assert open_summary.n_blocked == 0
+        assert open_summary.n_started == bare_summary.n_started
+
+        # An open mask draws no random numbers and changes no weight, so the
+        # two runs are the same run; only the order threads accumulated in
+        # can differ.
+        assert through.sum() == pytest.approx(bare.sum(), rel=1e-9)
+
+    def test_a_half_transmitting_collimator_halves_the_dose(
+            self, phsp_beam, water_phantom, water_physics):
+        half = ompmc.ApertureMask(z=-0.5, x0=-50.0, y0=-50.0, dx=100.0,
+                                  dy=100.0, transmission=[[0.5]], outside=0.5)
+
+        source = ompmc.PhaseSpaceSource(phsp_beam)
+        kwargs = dict(n_histories=2000, n_batches=2)
+
+        bare, _, _ = ompmc.calc_forward_phsp(
+            water_phantom, source, water_physics, **kwargs)
+        attenuated, _, summary = ompmc.calc_forward_phsp(
+            water_phantom, source, water_physics, collimator=half, **kwargs)
+
+        # Weight, not roulette: every history still transports.
+        assert summary.n_blocked == 0
+        assert attenuated.sum() == pytest.approx(0.5*bare.sum(), rel=1e-9)
+
+    def test_roulette_stops_half_and_keeps_the_dose(self, phsp_beam,
+                                                    water_phantom,
+                                                    water_physics):
+        half = ompmc.ApertureMask(z=-0.5, x0=-50.0, y0=-50.0, dx=100.0,
+                                  dy=100.0, transmission=[[0.5]], outside=0.5,
+                                  roulette=True)
+
+        source = ompmc.PhaseSpaceSource(phsp_beam)
+        kwargs = dict(n_histories=8000, n_batches=4)
+
+        bare, _, _ = ompmc.calc_forward_phsp(
+            water_phantom, source, water_physics, **kwargs)
+        played, _, summary = ompmc.calc_forward_phsp(
+            water_phantom, source, water_physics, collimator=half, **kwargs)
+
+        # Where the saving is: half the histories never reach a shower.
+        assert 0.45 < summary.n_blocked/summary.n_histories < 0.55
+        assert summary.n_blocked + summary.n_started == summary.n_histories
+
+        # And the same dose, up to the noise roulette adds.
+        assert played.sum() == pytest.approx(0.5*bare.sum(), rel=0.05)
+
+    def test_a_multi_cell_grid_keeps_its_orientation(self, phsp_beam,
+                                                     water_phantom,
+                                                     water_physics):
+        """Two cells across x, the negative one open. If the grid reached the
+        engine transposed or flipped, the dose would land on the wrong side of
+        the tank -- which nothing about a single cell mask can tell you."""
+        halved = ompmc.ApertureMask(
+            z=-0.5, x0=-50.0, y0=-50.0, dx=50.0, dy=100.0,
+            transmission=[[1.0], [0.0]],        # (nx, ny) = (2, 1)
+            outside=0.0)
+
+        assert halved.shape == (2, 1)
+
+        dose, _, summary = ompmc.calc_forward_phsp(
+            water_phantom, ompmc.PhaseSpaceSource(phsp_beam), water_physics,
+            n_histories=4000, n_batches=4, collimator=halved)
+
+        # The fixture puts particles at x of -2, -1, 0, 1 and 2 in turn, so
+        # the four in ten at a negative x are the ones that get through.
+        assert summary.n_blocked/summary.n_histories == pytest.approx(0.6,
+                                                                      abs=0.02)
+
+        n = water_phantom.shape[0]
+        assert dose[:n//2].sum() > 10.0*dose[n//2:].sum()
+
+    def test_random_order_also_works(self, phsp_beam, water_phantom,
+                                     water_physics):
+        source = ompmc.PhaseSpaceSource(phsp_beam, order="random")
+
+        dose, _, summary = ompmc.calc_forward_phsp(
+            water_phantom, source, water_physics, n_histories=2000,
+            n_batches=2)
+
+        assert summary.n_started == 2000
+        assert dose.max() > 0.0
+
+    def test_rejects_a_single_batch(self, phsp_beam, water_phantom):
+        with pytest.raises(ValueError, match="at least 2"):
+            ompmc.calc_forward_phsp(water_phantom,
+                                    ompmc.PhaseSpaceSource(phsp_beam),
+                                    n_batches=1)
+
+
+def test_calc_forward_takes_a_collimator(matrad_fixture):
+    """Beamlets collimate through their weights, but a mask still applies --
+    for a block cutting across them, or a leaf that transmits."""
+    f = matrad_fixture
+    weights = np.ones(f["source"].n_beamlets)
+
+    # A plane the beamlets all cross, shut everywhere.
+    shut = ompmc.ApertureMask(z=0.0, x0=-500.0, y0=-500.0, dx=1000.0,
+                              dy=1000.0, transmission=[[0.0]], outside=0.0)
+
+    dose, _ = ompmc.calc_forward(
+        f["geometry"], f["source"], weights, f["spectrum"], f["physics"],
+        n_histories=2000, n_batches=2, collimator=shut)
+
+    assert dose.max() == 0.0
+
+
 class TestProgress:
 
     def test_reports_monotonic_progress(self, matrad_fixture):

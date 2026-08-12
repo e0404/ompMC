@@ -25,6 +25,7 @@
 #include "omc_host.h"
 #include "omc_random.h"
 #include "omc_score.h"
+#include "omc_source.h"
 #include "omc_spectrum.h"
 #include "omc_utilities.h"
 #include "ompmc.h"
@@ -43,7 +44,7 @@
     #pragma omp threadprivate(stack)
 #endif
 
-/* What the current call is working on. omcBeamletSample() runs once per
+/* What the current call is working on. omcBeamletProduce() runs once per
  history on every thread, so this is read-only for the duration of the call
  and set up before any parallel region starts. */
 static const struct OmcDijOptions *options;
@@ -221,10 +222,16 @@ int omcCalcDij(const struct OmcDijOptions *opt,
                                  + (uint64_t)ihist);
 
                 /* Initialize particle history */
-                omcBeamletSample(&sampler, ibeamlet, 1.0);
+                struct OmcSourceParticle particle;
 
-                /* Start electromagnetic shower simulation */
-                shower();
+                if (omcBeamletProduce(&sampler, ibeamlet, 1.0, &particle) &&
+                    omcSourcePlace(&particle)) {
+
+                    scoreSource(particle.energy*particle.weight);
+
+                    /* Start electromagnetic shower simulation */
+                    shower();
+                }
             }
 
             /* Accumulate results of current batch for statistical analysis */
