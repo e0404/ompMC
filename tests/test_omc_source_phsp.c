@@ -82,18 +82,35 @@ static void silentLog(int level, const char *message, void *user) {
 static jmp_buf fail_jmp;
 static char fail_id[128];
 static int fail_seen;
+static int fail_armed;          /* is there a live setjmp() to come back to? */
 
 static void catchingFail(const char *id, const char *message, void *user) {
 
-    (void)message; (void)user;
+    (void)user;
     snprintf(fail_id, sizeof(fail_id), "%s", id != NULL ? id : "");
     fail_seen = 1;
+
+    /* A failure nobody was expecting. There is no live setjmp() to return
+     to, and jumping into a frame that has already returned is undefined
+     behaviour -- in practice a crash with nothing printed, which is a
+     miserable way to be told that a call went wrong. Say what happened and
+     stop instead. */
+    if (!fail_armed) {
+        printf("\n  FAIL %s: unexpected failure %s\n         %s\n",
+               current_test, id != NULL ? id : "(no id)",
+               message != NULL ? message : "");
+        fflush(stdout);
+        exit(EXIT_FAILURE);
+    }
+
+    fail_armed = 0;
     longjmp(fail_jmp, 1);
 }
 
 static void installFailCatcher(void) {
 
     fail_seen = 0;
+    fail_armed = 0;
     fail_id[0] = '\0';
 
     struct OmcHost catcher = {silentLog, catchingFail, NULL};
@@ -104,9 +121,11 @@ static void installFailCatcher(void) {
     do {                                                                      \
         fail_seen = 0;                                                        \
         fail_id[0] = '\0';                                                    \
+        fail_armed = 1;                                                       \
         if (setjmp(fail_jmp) == 0) {                                          \
             call;                                                             \
         }                                                                     \
+        fail_armed = 0;                                                       \
         if (!fail_seen) {                                                     \
             printf("  FAIL %s:%d in %s: %s did not fail, expected %s\n",      \
                    __FILE__, __LINE__, current_test, #call, (id));            \
@@ -122,9 +141,11 @@ static void installFailCatcher(void) {
 #define EXPECT_OK(call)                                                       \
     do {                                                                      \
         fail_seen = 0;                                                        \
+        fail_armed = 1;                                                       \
         if (setjmp(fail_jmp) == 0) {                                          \
             call;                                                             \
         }                                                                     \
+        fail_armed = 0;                                                       \
         if (fail_seen) {                                                      \
             printf("  FAIL %s:%d in %s: %s failed with %s\n",                 \
                    __FILE__, __LINE__, current_test, #call, fail_id);         \
@@ -421,6 +442,41 @@ static void test_a_transform_that_is_not_a_rotation_is_refused(void) {
     sampler.transform.rotation[0] = 2.0;        /* scales x */
 
     EXPECT_FAIL("ompMC:phspSource:notARotation", omcPhspSourceCheck(&sampler));
+
+    tearDownPhantom();
+}
+
+/* The determinant on its own does not settle it, and these are the three ways
+ a matrix gets past that check without being a rotation. */
+static void test_the_rotation_check_is_not_only_the_determinant(void) {
+
+    setUpPhantom();
+
+    struct Made1 one = straightDown();
+    struct Made made;
+    makePhsp(&made, &one, 1);
+
+    /* A shear. Determinant exactly 1, and it still stretches what it turns:
+     (0,1,0) comes out (1,1,0), which is no longer a unit vector. */
+    struct OmcPhspSampler shear = samplerFor(&made.phsp);
+    shear.transform.rotation[1] = 1.0;
+
+    EXPECT_FAIL("ompMC:phspSource:notARotation", omcPhspSourceCheck(&shear));
+
+    /* A reflection. Orthonormal rows, determinant -1, and it turns a right
+     handed coordinate system into a left handed one. */
+    struct OmcPhspSampler mirror = samplerFor(&made.phsp);
+    mirror.transform.rotation[0] = -1.0;
+
+    EXPECT_FAIL("ompMC:phspSource:notARotation", omcPhspSourceCheck(&mirror));
+
+    /* And a matrix holding a NaN, which used to pass because every
+     comparison against NaN is false, including the one that was meant to
+     turn it away. */
+    struct OmcPhspSampler nan = samplerFor(&made.phsp);
+    nan.transform.rotation[4] = 0.0/0.0;
+
+    EXPECT_FAIL("ompMC:phspSource:notARotation", omcPhspSourceCheck(&nan));
 
     tearDownPhantom();
 }
@@ -789,6 +845,10 @@ static void test_check_refuses_an_empty_or_confused_sampler(void) {
 
 int main(void) {
 
+    /* Unbuffered, so a test that brings the process down still leaves behind
+     the list of the ones that got that far. */
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     printf("ompMC phase space source tests\n\n");
 
     /* The source puts particles on the thread local stack, which the library
@@ -807,6 +867,7 @@ int main(void) {
     RUN(test_translation_moves_the_particle_not_its_direction);
     RUN(test_rotation_turns_the_particle_and_its_direction);
     RUN(test_a_transform_that_is_not_a_rotation_is_refused);
+    RUN(test_the_rotation_check_is_not_only_the_determinant);
 
     RUN(test_particle_is_carried_to_the_phantom_surface);
     RUN(test_particle_entering_from_the_side);

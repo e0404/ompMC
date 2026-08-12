@@ -463,12 +463,12 @@ class PhaseSpaceSource:
     ----------
     path : str or os.PathLike
         Base name of the dataset, with or without the extension.
-    order : {"replay", "random"}, optional
-        ``"replay"`` walks the file in order from `first`, wrapping at the
-        end, and draws no random numbers. ``"random"`` picks a particle per
-        history, costing one random number, which is worth it when a run is
-        much shorter than the file and a contiguous stretch of it would
-        sample only one part of the beam.
+    order : str, optional
+        ``"replay"`` (the default) walks the file in order from `first`,
+        wrapping at the end, and draws no random numbers. ``"random"`` picks
+        a particle per history, costing one random number, which is worth it
+        when a run is much shorter than the file and a contiguous stretch of
+        it would sample only one part of the beam.
     first : int, optional
         Particle the replay starts at. Ignored when `order` is
         ``"random"``.
@@ -519,13 +519,27 @@ class PhaseSpaceSource:
             )
 
         # A matrix that is not a rotation would stretch the directions it
-        # turns, and those have to stay unit vectors. The core checks the
-        # determinant too; catching it here says so in Python terms.
+        # turns, and those have to stay unit vectors. The determinant alone
+        # does not settle it -- a shear like [[1,1,0],[0,1,0],[0,0,1]] has
+        # determinant 1 and still stretches, and a matrix holding a NaN
+        # passes any comparison asked of it. What makes a rotation is
+        # orthonormal rows, with the determinant then telling a rotation
+        # from a reflection. The core checks the same thing; catching it
+        # here says so in Python terms.
+        if not np.all(np.isfinite(self.rotation)):
+            raise ValueError("rotation holds values that are not finite")
+        if not np.allclose(self.rotation @ self.rotation.T, np.eye(3),
+                           atol=1e-6):
+            raise ValueError(
+                "rotation is not orthonormal: its rows have to be unit "
+                "vectors at right angles to each other, or it would stretch "
+                "the directions it turns"
+            )
         if not np.isclose(np.linalg.det(self.rotation), 1.0, atol=1e-6):
             raise ValueError(
                 f"rotation has determinant "
                 f"{float(np.linalg.det(self.rotation)):.6g}, and a rotation "
-                f"has 1"
+                f"has 1; -1 with orthonormal rows is a reflection"
             )
 
         if self.translation is None:
@@ -703,7 +717,7 @@ class RunSummary:
     """What became of the histories a run asked for."""
 
     n_histories: int
-    """Histories actually run: the number asked for, rounded down to a whole
+    """Histories actually run -- the number asked for, rounded down to a whole
     number of batches."""
 
     n_started: int

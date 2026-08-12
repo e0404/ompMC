@@ -349,6 +349,15 @@ static void beamletPrepare(struct OmcSource *self, int nperbatch) {
 
     h->allocation = a;
 
+    /* Copied out of the working memory now, because the engine gives that
+     back through release() before it returns and the caller only gets to
+     ask afterwards. None of these four change once the histories have been
+     shared out, so the copy stays true for the whole run. */
+    h->stats.nweighted = a->nweighted;
+    h->stats.nsampled = a->nsampled;
+    h->stats.totalWeight = a->totalWeight;
+    h->stats.sampledWeight = a->sampledWeight;
+
     omcLog(OMC_LOG_DETAIL, "Beamlets with weight: %d of %d, %d of them sampled",
            a->nweighted, h->sampler.source->nbeamlets, a->nsampled);
 
@@ -407,6 +416,7 @@ void omcBeamletHistoriesAsSource(struct OmcBeamletHistories *histories,
                                  struct OmcSource *source) {
 
     histories->allocation = NULL;
+    memset(&histories->stats, 0, sizeof(histories->stats));
 
     source->check = beamletCheck;
     source->prepare = beamletPrepare;
@@ -422,17 +432,7 @@ void omcBeamletHistoriesAsSource(struct OmcBeamletHistories *histories,
 void omcBeamletHistoriesStats(const struct OmcBeamletHistories *histories,
                               struct OmcBeamletStats *stats) {
 
-    const struct Allocation *a = (const struct Allocation *)histories->allocation;
-
-    if (a == NULL) {
-        memset(stats, 0, sizeof(*stats));
-        return;
-    }
-
-    stats->nweighted = a->nweighted;
-    stats->nsampled = a->nsampled;
-    stats->totalWeight = a->totalWeight;
-    stats->sampledWeight = a->sampledWeight;
+    *stats = histories->stats;
 
     return;
 }

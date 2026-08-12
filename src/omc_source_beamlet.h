@@ -116,21 +116,26 @@ int omcBeamletProduce(const struct OmcBeamletSampler *sampler, int ibeamlet,
  their weights, which is what makes one run cover a whole fluence map instead
  of one beamlet. Fill in #sampler and #weights; the rest is private and set up
  by struct OmcSource::prepare(). */
-struct OmcBeamletHistories {
-    struct OmcBeamletSampler sampler;   ///< which beamlets, which spectrum
-    const double *weights;              ///< one per beamlet, finite and >= 0
-
-    /*! @cond OMC_INTERNAL */
-    void *allocation;
-    /*! @endcond */
-};
-
 /*! What sharing the histories out among the beamlets came to. */
 struct OmcBeamletStats {
     int nweighted;              ///< beamlets asked for with a weight above zero
     int nsampled;               ///< of those, the ones that got any histories
     double totalWeight;         ///< sum of the weights asked for
     double sampledWeight;       ///< sum over the beamlets that got histories
+};
+
+struct OmcBeamletHistories {
+    struct OmcBeamletSampler sampler;   ///< which beamlets, which spectrum
+    const double *weights;              ///< one per beamlet, finite and >= 0
+
+    /*! @cond OMC_INTERNAL */
+    void *allocation;
+
+    /*! Kept here rather than only in the allocation, which struct
+     OmcSource::release() gives back before the engine returns -- and the
+     caller has no chance to ask before then. */
+    struct OmcBeamletStats stats;
+    /*! @endcond */
 };
 
 /*! Present weighted beamlets to an engine as a source.
@@ -141,7 +146,10 @@ struct OmcBeamletStats {
 void omcBeamletHistoriesAsSource(struct OmcBeamletHistories *histories,
                                  struct OmcSource *source);
 
-/*! @param histories The beamlets, after a run has prepared them.
+/*! @param histories The beamlets, after a run has prepared them. Asking
+ after the run has finished is the normal case and works: what the answer
+ describes is settled before the first history and outlives the working
+ memory struct OmcSource::release() gives back.
  @param stats Filled in with how the histories were shared out. Zeroed if the
  source has not been prepared. */
 void omcBeamletHistoriesStats(const struct OmcBeamletHistories *histories,

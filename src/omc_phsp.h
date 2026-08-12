@@ -217,8 +217,11 @@ void omcPhspHeaderFromFile(struct OmcPhspHeader *header, const char *path);
  @warning A file holding a different number of particles than its header
  announces is NOT one of those things. It is reported through omcLog() and
  read anyway, as many particles as are actually there, because the published
- datasets include one of those and refusing it would help nobody. Callers
- that care should compare omcPhspCount() with
+ datasets include one of those and refusing it would help nobody. This holds
+ in both directions: the file is read to its end, so a header that counts
+ too few does not cost you the rest of it any more than one that counts too
+ many invents a particle. The header's count is only the first guess at how
+ much memory to take. Callers that care should compare omcPhspCount() with
  struct OmcPhspHeader::particles. */
 void omcPhspFromFile(struct OmcPhsp *phsp, const char *path);
 

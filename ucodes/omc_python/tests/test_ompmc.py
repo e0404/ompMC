@@ -336,8 +336,29 @@ class TestPhaseSpaceSourceValidation:
     def test_rejects_a_matrix_that_is_not_a_rotation(self):
         # A matrix that is not a rotation would stretch the directions it
         # turns, and those have to stay unit vectors.
-        with pytest.raises(ValueError, match="determinant"):
+        with pytest.raises(ValueError, match="determinant|orthonormal"):
             ompmc.PhaseSpaceSource("beam", rotation=2.0*np.eye(3))
+
+    def test_rejects_what_the_determinant_alone_would_admit(self):
+        # A shear: determinant exactly 1, and (0,1,0) still comes out
+        # (1,1,0), which is not a unit vector.
+        shear = np.array([[1.0, 1.0, 0.0],
+                          [0.0, 1.0, 0.0],
+                          [0.0, 0.0, 1.0]])
+        assert np.isclose(np.linalg.det(shear), 1.0)
+        with pytest.raises(ValueError, match="orthonormal"):
+            ompmc.PhaseSpaceSource("beam", rotation=shear)
+
+        # A reflection: orthonormal, determinant -1, turns a right handed
+        # coordinate system into a left handed one.
+        with pytest.raises(ValueError, match="determinant"):
+            ompmc.PhaseSpaceSource("beam", rotation=np.diag([-1.0, 1.0, 1.0]))
+
+        # And a NaN, which passes every comparison asked of it.
+        nan = np.eye(3)
+        nan[1, 1] = np.nan
+        with pytest.raises(ValueError, match="finite"):
+            ompmc.PhaseSpaceSource("beam", rotation=nan)
 
     def test_rejects_a_misshaped_transform(self):
         with pytest.raises(ValueError, match=r"\(3, 3\)"):

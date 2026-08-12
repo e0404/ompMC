@@ -82,18 +82,35 @@ static void silentLog(int level, const char *message, void *user) {
 static jmp_buf fail_jmp;
 static char fail_id[128];
 static int fail_seen;
+static int fail_armed;          /* is there a live setjmp() to come back to? */
 
 static void catchingFail(const char *id, const char *message, void *user) {
 
-    (void)message; (void)user;
+    (void)user;
     snprintf(fail_id, sizeof(fail_id), "%s", id != NULL ? id : "");
     fail_seen = 1;
+
+    /* A failure nobody was expecting. There is no live setjmp() to return
+     to, and jumping into a frame that has already returned is undefined
+     behaviour -- in practice a crash with nothing printed, which is a
+     miserable way to be told that a call went wrong. Say what happened and
+     stop instead. */
+    if (!fail_armed) {
+        printf("\n  FAIL %s: unexpected failure %s\n         %s\n",
+               current_test, id != NULL ? id : "(no id)",
+               message != NULL ? message : "");
+        fflush(stdout);
+        exit(EXIT_FAILURE);
+    }
+
+    fail_armed = 0;
     longjmp(fail_jmp, 1);
 }
 
 static void installFailCatcher(void) {
 
     fail_seen = 0;
+    fail_armed = 0;
     fail_id[0] = '\0';
 
     struct OmcHost catcher = {silentLog, catchingFail, NULL};
@@ -105,9 +122,11 @@ static void installFailCatcher(void) {
     do {                                                                      \
         fail_seen = 0;                                                        \
         fail_id[0] = '\0';                                                    \
+        fail_armed = 1;                                                       \
         if (setjmp(fail_jmp) == 0) {                                          \
             call;                                                             \
         }                                                                     \
+        fail_armed = 0;                                                       \
         if (!fail_seen) {                                                     \
             printf("  FAIL %s:%d in %s: %s did not fail, expected %s\n",      \
                    __FILE__, __LINE__, current_test, #call, (id));            \
@@ -124,9 +143,11 @@ static void installFailCatcher(void) {
 #define EXPECT_OK(call)                                                       \
     do {                                                                      \
         fail_seen = 0;                                                        \
+        fail_armed = 1;                                                       \
         if (setjmp(fail_jmp) == 0) {                                          \
             call;                                                             \
         }                                                                     \
+        fail_armed = 0;                                                       \
         if (fail_seen) {                                                      \
             printf("  FAIL %s:%d in %s: %s failed with %s\n",                 \
                    __FILE__, __LINE__, current_test, #call, fail_id);         \
@@ -1331,6 +1352,54 @@ static void test_header_overcounting_particles_is_survivable(void) {
     removeDataset(stem);
 }
 
+/* And the other direction: a header that counts fewer particles than the file
+ holds. The count comes from the file either way -- reading only as far as the
+ header promised would quietly drop the rest, which is the more dangerous of
+ the two mistakes, since nothing about the result would look wrong. */
+static void test_header_undercounting_particles_reads_them_all(void) {
+
+    const char *stem = "phsp_undercount";
+    struct HeaderSpec spec = validSpec(2);
+    struct RecordSpec records[5];
+    unsigned char bytes[256];
+    struct OmcPhsp phsp;
+    struct OmcPhspRecord got;
+    size_t packed;
+
+    for (int i = 0; i < 5; i++) {
+        records[i] = validRecord();
+        records[i].energy = 1.0f + (float)i;
+    }
+
+    /* The header says two, the file holds five, and the checksum agrees with
+     the file rather than with the header. */
+    spec.checksum = 5*29;
+
+    if (!writeHeaderFile(stem, &spec)) {
+        return;
+    }
+
+    packed = packRecords(bytes, &spec, records, 5);
+    if (!writePhspFile(stem, bytes, packed)) {
+        return;
+    }
+
+    EXPECT_OK(omcPhspFromFile(&phsp, stem));
+
+    CHECK(phsp.header.particles == 2);
+    CHECK(omcPhspCount(&phsp) == 5);
+
+    /* Every one of them is there, including the last, which reading only the
+     header's two would have left behind. */
+    EXPECT_OK(omcPhspGet(&phsp, 4, &got));
+    CHECK_CLOSE(got.energy, 5.0, 1e-6);
+
+    EXPECT_FAIL("ompMC:phsp:indexOutOfRange", omcPhspGet(&phsp, 5, &got));
+
+    omcPhspFree(&phsp);
+    removeDataset(stem);
+}
+
 /* A file cut off in the middle of a record keeps the records that made it. */
 static void test_partial_last_record_is_dropped(void) {
 
@@ -1574,6 +1643,11 @@ static void test_reads_committed_example(void) {
 
 int main(void) {
 
+    /* Unbuffered, so that a test which brings the process down still leaves
+     behind the list of the ones that got that far. CTest reads stdout
+     through a pipe, where it would otherwise be block buffered and lost. */
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     printf("ompMC IAEA phase space reader tests\n\n");
 
     installFailCatcher();
@@ -1607,6 +1681,7 @@ int main(void) {
     RUN(test_next_pops_then_stops);
     RUN(test_get_out_of_range_fails);
     RUN(test_header_overcounting_particles_is_survivable);
+    RUN(test_header_undercounting_particles_reads_them_all);
     RUN(test_partial_last_record_is_dropped);
     RUN(test_phsp_file_without_a_whole_record_fails);
     RUN(test_trailing_bytes_warn_but_load);

@@ -27,6 +27,8 @@
 #include "omc_random.h"
 
 #include <math.h>
+#include <stddef.h>             /* NULL; math.h happens to bring it on some
+                                   platforms and not on glibc */
 
 /******************************************************************************/
 
@@ -64,10 +66,45 @@ void omcPhspSourceCheck(const struct OmcPhspSampler *sampler) {
             "work out where its particles enter one.");
     }
 
-    /* The determinant says whether the rotation is one. A caller who meant
-     to turn the phase space by 30 degrees and mistyped a matrix element
-     would otherwise find out from the dose distribution. */
+    /* Whether the rotation is one. A caller who meant to turn the phase
+     space by 30 degrees and mistyped a matrix element would otherwise find
+     out from the dose distribution.
+
+     The determinant alone does not settle it: a shear such as
+     {{1,1,0},{0,1,0},{0,0,1}} has determinant 1 and still stretches what it
+     turns, and a matrix holding a NaN passes any comparison asked of it
+     because every comparison against NaN is false. What makes a matrix a
+     rotation is that its rows are unit vectors at right angles to each
+     other -- R times its transpose is the identity -- with the determinant
+     then telling a rotation from a reflection. */
     const double *r = sampler->transform.rotation;
+
+    for (int i = 0; i < 9; i++) {
+        if (!isfinite(r[i])) {
+            omcFail("ompMC:phspSource:notARotation",
+                "Element %d of the phase space to phantom rotation is not a "
+                "finite number.", i);
+        }
+    }
+
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            double dot = r[3*i]*r[3*j] + r[3*i + 1]*r[3*j + 1]
+                       + r[3*i + 2]*r[3*j + 2];
+            double want = (i == j) ? 1.0 : 0.0;
+
+            if (fabs(dot - want) > 1.0e-6) {
+                omcFail("ompMC:phspSource:notARotation",
+                    "Rows %d and %d of the phase space to phantom rotation "
+                    "have dot product %g, and a rotation's rows are unit "
+                    "vectors at right angles, so it should be %g. A matrix "
+                    "that is not a rotation would stretch the directions it "
+                    "turns, and they have to stay unit vectors.",
+                    i, j, dot, want);
+            }
+        }
+    }
+
     double det = r[0]*(r[4]*r[8] - r[5]*r[7])
                - r[1]*(r[3]*r[8] - r[5]*r[6])
                + r[2]*(r[3]*r[7] - r[4]*r[6]);
@@ -75,9 +112,9 @@ void omcPhspSourceCheck(const struct OmcPhspSampler *sampler) {
     if (fabs(det - 1.0) > 1.0e-6) {
         omcFail("ompMC:phspSource:notARotation",
             "The phase space to phantom rotation has determinant %g, and a "
-            "rotation has 1. A matrix that is not one would stretch the "
-            "directions it turns, and they have to stay unit vectors.",
-            det);
+            "rotation has 1. A determinant of -1 with orthonormal rows is a "
+            "reflection, which turns a right handed coordinate system into a "
+            "left handed one.", det);
     }
 
     if (sampler->phsp->newHistories == 0) {

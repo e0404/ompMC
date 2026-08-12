@@ -26,6 +26,8 @@
 #include "omc_source.h"
 
 #include <math.h>
+#include <stddef.h>             /* NULL; math.h happens to bring it on some
+                                   platforms and not on glibc */
 
 /******************************************************************************/
 

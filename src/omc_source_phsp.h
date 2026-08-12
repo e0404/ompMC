@@ -36,7 +36,8 @@
      struct OmcSource source;
      omcPhspSamplerAsSource(&sampler, &source);
 
-     omcCalcForward(&options, &source, dose, uncertainty, NULL, &summary);
+     omcCalcForward(&options, &source, NULL, dose, uncertainty, NULL,
+                    &summary);
 
  A phase space particle differs from a beamlet one in two ways worth knowing.
  It is recorded wherever the original simulation scored it, which need not be

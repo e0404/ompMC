@@ -678,6 +678,10 @@ static void test_roulette_gives_the_same_dose_more_cheaply(void) {
 
 int main(void) {
 
+    /* Unbuffered, so a test that brings the process down still leaves behind
+     the list of the ones that got that far. */
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     printf("ompMC phase space forward calculation tests\n\n");
 
     RUN(test_a_photon_beam_builds_up_and_falls_off);

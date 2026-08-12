@@ -983,7 +983,9 @@ NB_MODULE(_ompmc, m) {
                               run.completed != 0,
                               summary.nhist, stats.nsampled,
                               stats.nweighted,
-                              stats.sampledWeight/stats.totalWeight,
+                              stats.totalWeight > 0.0
+                                  ? stats.sampledWeight/stats.totalWeight
+                                  : 0.0,
                               summary.energyFraction, summary.blocked);
     },
     "density"_a, "material"_a, "x_bounds"_a,

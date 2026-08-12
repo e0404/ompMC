@@ -696,22 +696,63 @@ void omcPhspFromFile(struct OmcPhsp *phsp, const char *path) {
             "address at once.", phspPath, needed);
     }
 
-    if (needed > 0) {
-        phsp->raw = malloc((size_t)needed);
-        if (phsp->raw == NULL) {
-            fclose(fp);
-            omcFail("ompMC:phsp:outOfMemory",
-                "Could not hold the %llu bytes of phase space file %s.",
-                needed, phspPath);
-        }
+    /* The whole file, however long it turns out to be. The header's count is
+     only the first guess at the size, because it is not authoritative in
+     either direction: the datasets IAEA publishes include one whose
+     $PARTICLES: is a particle more than the file holds, and a file that has
+     grown since its header was written is no stranger. Reading to the end
+     settles the count from the bytes that are there, which is what this
+     reader promises, and does it without asking the platform how big the
+     file is -- a question with a 64 bit answer that is awkward to ask
+     portably on Windows. */
+    size_t capacity = needed > 0 ? (size_t)needed
+                                 : (size_t)phsp->header.recordLength;
+    unsigned long long nread = 0;
+
+    phsp->raw = malloc(capacity);
+    if (phsp->raw == NULL) {
+        fclose(fp);
+        omcFail("ompMC:phsp:outOfMemory",
+            "Could not hold the %llu bytes of phase space file %s.",
+            (unsigned long long)capacity, phspPath);
     }
 
-    /* The whole file in one read, which also settles how long it actually is
-     without asking for its size: a file shorter than the header promised
-     comes up short here, and a longer one leaves something behind. */
-    unsigned long long nread = needed > 0 ?
-        (unsigned long long)fread(phsp->raw, 1, (size_t)needed, fp) : 0;
-    int hasMore = fgetc(fp) != EOF;
+    for (;;) {
+        nread += (unsigned long long)fread(phsp->raw + nread, 1,
+                                           capacity - (size_t)nread, fp);
+
+        if ((unsigned long long)capacity > nread) {
+            break;              /* came up short, so that was the lot */
+        }
+
+        /* The buffer is exactly full, which says nothing about whether the
+         file is. One byte settles it. */
+        int probe = fgetc(fp);
+        if (probe == EOF) {
+            break;
+        }
+
+        if (capacity > SIZE_MAX/2) {
+            fclose(fp);
+            omcPhspFree(phsp);
+            omcFail("ompMC:phsp:outOfMemory",
+                "Phase space file %s is larger than this build can address at "
+                "once.", phspPath);
+        }
+
+        unsigned char *grown = realloc(phsp->raw, capacity*2);
+        if (grown == NULL) {
+            fclose(fp);
+            omcPhspFree(phsp);
+            omcFail("ompMC:phsp:outOfMemory",
+                "Could not hold the %llu bytes of phase space file %s.",
+                (unsigned long long)capacity*2, phspPath);
+        }
+
+        phsp->raw = grown;
+        capacity *= 2;
+        phsp->raw[nread++] = (unsigned char)probe;
+    }
 
     fclose(fp);
 
@@ -747,12 +788,7 @@ void omcPhspFromFile(struct OmcPhsp *phsp, const char *path) {
                claimed);
     }
 
-    if (hasMore) {
-        omcLog(OMC_LOG_WARNING, "Phase space file %s is longer than the %llu "
-               "particles its header announces. The rest is ignored.",
-               phspPath, claimed);
-    }
-    else if (phsp->header.checksum != nread) {
+    if (phsp->header.checksum != nread) {
         /* The format defines the checksum as the size of the binary file. */
         omcLog(OMC_LOG_WARNING, "Phase space file %s is %llu bytes, and its "
                "header puts the checksum at %llu. One of the two was written "

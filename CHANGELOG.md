@@ -14,9 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   <https://www-nds.iaea.org/phsp/>. It reads the header on its own or the
   whole file into memory, and hands the particles back either by index or by
   popping them one at a time. How many particles there are is counted from
-  the file rather than believed from the header, which is what it takes to
-  read the published datasets; a file that marks no histories is reported,
-  since nothing drawing from one can group the particles it holds.
+  the file rather than believed from the header -- in both directions, since
+  the file is read to its end -- which is what it takes to read the published
+  datasets; a file that marks no histories is reported, since nothing drawing
+  from one can group the particles it holds.
 - `omc_source_phsp`, a source that starts histories from a phase space read
   by `omc_phsp`. It turns and moves the particles into the phantom's
   coordinate system, carries them to the face they enter it by, and puts one
