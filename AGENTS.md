@@ -83,3 +83,39 @@ why.
   host can install its own sink. Both are documented as master-thread-only —
   they are not safe to call from inside a parallel region except at the three
   sites noted above.
+
+## Release process
+
+Day-to-day work merges into `develop`. `master` carries releases only, and is
+what a `v*` tag is cut from.
+
+1. **Branch.** `rc/<version>` off `develop` — `rc/0.3.0`, not `release/0.3.0`.
+   The release candidate is what gets reviewed, so `develop` stays open for
+   new work while it is.
+2. **Bump.** The version lives in exactly one place, the `project(ompMC
+   VERSION ...)` call in `CMakeLists.txt`. `pyproject.toml` (through
+   scikit-build-core's regex provider), `docs/conf.py` and the C code's
+   `OMPMC_VERSION_STRING` all read it from there, so nothing else is edited.
+   `CITATION.cff` carries no version field on purpose.
+3. **Changelog.** `CHANGELOG.md` is Keep a Changelog: rename `## [Unreleased]`
+   to `## [<version>] - <date>`, open a fresh empty `Unreleased`, and update
+   the two link references at the bottom of the file.
+4. **Merge, then tag.** PR the `rc/` branch into `master`, and only tag once it
+   is merged. Merge `master` back into `develop` afterwards, so the two do not
+   drift.
+
+**A tag is a publication, not a bookmark.** Pushing `v<version>` triggers two
+irreversible things, so it is the last step rather than a way to mark a
+commit:
+
+- `wheels.yml` publishes `ompmc <version>` to PyPI through trusted publishing.
+  PyPI never lets a version number be reused, so a mistake here is permanent.
+- `release.yml` packages the per-platform zips `build.yml` already built and
+  attaches them to a GitHub Release.
+
+`release.yml` reacts to `build.yml` finishing via `workflow_run`, and GitHub
+evaluates such a workflow's definition **only from the default branch**. It
+therefore cannot package a tag pushed before the version of `release.yml` that
+handles it reached `master` — which is the real reason step 4 tags after the
+merge rather than before. Its `workflow_dispatch` input re-packages an existing
+tag if that ordering is ever got wrong.
