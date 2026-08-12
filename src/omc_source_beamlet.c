@@ -198,10 +198,10 @@ static void buildAllocation(struct Allocation *a, int nbeamlets,
             nbeamlets);
     }
 
-    /* Total weight, and the heaviest beamlet, which absorbs the rounding of
-     the cumulative sum at the end */
+    /* The total, which every share below is a fraction of. Nothing else about
+     the weights is needed: the rounding of the cumulative sum is absorbed by
+     the last beamlet, which closes the account exactly. */
     double total = 0.0;
-    int heaviest = 0;
 
     for (int i = 0; i < nbeamlets; i++) {
         if (!isfinite(weights[i]) || weights[i] < 0.0) {
@@ -210,9 +210,6 @@ static void buildAllocation(struct Allocation *a, int nbeamlets,
                 "Beamlet weight %d is %g; weights must be finite and zero "
                 "or positive.",
                 i + 1, weights[i]);
-        }
-        if (weights[i] > weights[heaviest]) {
-            heaviest = i;
         }
         total += weights[i];
     }

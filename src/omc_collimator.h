@@ -139,6 +139,10 @@ struct OmcBeamModifier {
  The simplest useful case is a single cell: one open cell of the size of the
  field, with #outside left at 0, is a rectangular aperture.
 
+ A particle that never crosses the plane -- one travelling along it, or one
+ whose position or direction is not a number -- is stopped rather than looked
+ up, since there is no cell to ask about it.
+
  @warning #transmission belongs to the caller and must outlive the run. */
 struct OmcApertureMask {
     double z;                   ///< the plane the mask sits on, in cm

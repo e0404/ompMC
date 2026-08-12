@@ -80,6 +80,10 @@ int omcSourcePlace(const struct OmcSourceParticle *particle) {
     double y = particle->y;
     double z = particle->z;
 
+    /* tenter starts at 0 and only ever grows, so a ray that clears every slab
+     clears it in front of the particle: one heading away from the phantom is
+     turned down by clipSlab() itself, on the slab whose exit is behind it,
+     rather than needing a check of its own here. */
     double tenter = 0.0;        /* already inside enters at once */
     double texit = DBL_MAX;
 
@@ -89,11 +93,6 @@ int omcSourcePlace(const struct OmcSourceParticle *particle) {
                   geometry.ybounds[geometry.jsize], &tenter, &texit) ||
         !clipSlab(z, particle->w, geometry.zbounds[0],
                   geometry.zbounds[geometry.ksize], &tenter, &texit)) {
-        return 0;
-    }
-
-    /* Behind the particle rather than in front of it: it is heading away. */
-    if (texit < 0.0) {
         return 0;
     }
 

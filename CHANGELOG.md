@@ -106,6 +106,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   modifier's to declare. A modifier that returns a fraction that is not a
   number is now treated as having stopped the particle rather than being
   multiplied into its weight.
+- An aperture mask stops a particle whose crossing point is not a number,
+  rather than looking it up. Every comparison against a NaN is false, so such
+  a particle used to fall through the bounds check into a cast that indexed
+  the transmission grid with whatever the cast made of it. The modifier is
+  asked before the particle is placed in the phantom, so nothing upstream has
+  vouched for it by then.
+- `omcSourcePlace()` no longer checks whether the phantom is behind the
+  particle. The interval it clips starts at the particle and only ever
+  narrows from there, so a ray that clears every slab clears it in front:
+  one heading away is already turned down by the slab whose exit is behind
+  it.
 - The MATLAB interface accepts a third output argument. Mode `'dij'` refuses
   it -- a beamlet that started nothing comes back as a column of zeros, which
   says so already.

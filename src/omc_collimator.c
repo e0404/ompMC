@@ -151,6 +151,19 @@ static double maskTransmission(const struct OmcBeamModifier *self,
     double x = particle->x + t*particle->u;
     double y = particle->y + t*particle->v;
 
+    /* A crossing point that is not a number is not a place: it is no more
+     outside the grid than it is in any cell of it, and it is stopped for the
+     same reason a particle parallel to the plane is. This is not only
+     tidiness. Every comparison below is false for a NaN, so one would fall
+     through the bounds check into the cast that follows and index the
+     transmission array with whatever the cast made of it -- undefined, and in
+     practice a read from somewhere else entirely. The modifier is asked
+     before omcSourcePlace(), so nothing upstream has vouched for the
+     particle yet. */
+    if (!isfinite(x) || !isfinite(y)) {
+        return 0.0;
+    }
+
     double fi = (x - mask->x0)/mask->dx;
     double fj = (y - mask->y0)/mask->dy;
 

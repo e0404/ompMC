@@ -337,6 +337,59 @@ static void test_a_particle_parallel_to_the_plane_is_stopped(void) {
     CHECK_CLOSE(omcBeamModifierTransmission(&modifier, &p), 0.0, 1e-15);
 }
 
+/* And one whose position or direction is not a number does not cross it
+ either. Worth its own test because of how it would fail otherwise: every
+ comparison against a NaN is false, so such a particle would sail past the
+ bounds check straight into the cast that indexes the transmission grid, and
+ read from wherever that landed. The modifier is asked before the particle has
+ been placed in the phantom, so nothing upstream has vouched for it. */
+static void test_a_particle_that_is_not_a_number_is_stopped(void) {
+
+    struct OmcApertureMask mask = maskFixture();
+    mask.outside = 1.0;         /* so "stopped" cannot be outside() in disguise */
+
+    struct OmcBeamModifier modifier;
+    omcApertureMaskAsModifier(&mask, &modifier);
+
+    /* Each of these is a particle the open cell would otherwise have let
+     through, with one quantity spoilt. */
+    struct OmcSourceParticle p;
+
+    p = straight(); p.z = 10.0; p.x = nan(""); p.y = -0.5;
+    CHECK_CLOSE(omcBeamModifierTransmission(&modifier, &p), 0.0, 1e-15);
+
+    p = straight(); p.z = 10.0; p.x = -0.5; p.y = nan("");
+    CHECK_CLOSE(omcBeamModifierTransmission(&modifier, &p), 0.0, 1e-15);
+
+    p = straight(); p.x = -0.5; p.y = -0.5; p.z = nan("");
+    CHECK_CLOSE(omcBeamModifierTransmission(&modifier, &p), 0.0, 1e-15);
+
+    p = straight(); p.x = -0.5; p.y = -0.5; p.w = nan("");
+    CHECK_CLOSE(omcBeamModifierTransmission(&modifier, &p), 0.0, 1e-15);
+
+    /* An infinite direction across the plane is the same story once it has
+     been multiplied by the zero distance along it. */
+    p = straight(); p.x = -0.5; p.y = -0.5; p.z = 10.0; p.u = HUGE_VAL;
+    CHECK_CLOSE(omcBeamModifierTransmission(&modifier, &p), 0.0, 1e-15);
+
+    /* An infinite position is off the grid rather than in it, whichever way
+     it went. */
+    p = straight(); p.z = 10.0; p.x = HUGE_VAL; p.y = -0.5;
+    CHECK_CLOSE(omcBeamModifierTransmission(&modifier, &p), 0.0, 1e-15);
+
+    p = straight(); p.z = 10.0; p.x = -HUGE_VAL; p.y = -0.5;
+    CHECK_CLOSE(omcBeamModifierTransmission(&modifier, &p), 0.0, 1e-15);
+
+    /* And applying it stops the particle rather than scaling its weight by
+     something that is not a number. */
+    p = straight(); p.z = 10.0; p.x = nan(""); p.y = -0.5; p.weight = 4.0;
+    CHECK(omcBeamModifierApply(&modifier, &p) == 0);
+    CHECK_CLOSE(p.weight, 4.0, 1e-15);
+
+    modifier.apply = OMC_MODIFIER_ROULETTE;
+    CHECK(omcBeamModifierApply(&modifier, &p) == 0);
+}
+
 /* A single open cell is a rectangular field, which is the shape most of the
  use of this will take. */
 static void test_one_cell_is_a_rectangular_aperture(void) {
@@ -603,6 +656,18 @@ static void test_check_rejects_an_unusable_mask(void) {
     omcApertureMaskAsModifier(&thin, &modifier);
     EXPECT_FAIL("ompMC:collimator:badCellSize", modifier.check(&modifier));
 
+    /* A plane that is not a number would put every particle's crossing point
+     nowhere, and stop the whole beam without saying why. */
+    struct OmcApertureMask nowhere = maskFixture();
+    nowhere.z = nan("");
+    omcApertureMaskAsModifier(&nowhere, &modifier);
+    EXPECT_FAIL("ompMC:collimator:badPlane", modifier.check(&modifier));
+
+    struct OmcApertureMask offCorner = maskFixture();
+    offCorner.y0 = HUGE_VAL;
+    omcApertureMaskAsModifier(&offCorner, &modifier);
+    EXPECT_FAIL("ompMC:collimator:badPlane", modifier.check(&modifier));
+
     struct OmcApertureMask nothing = maskFixture();
     nothing.transmission = NULL;
     omcApertureMaskAsModifier(&nothing, &modifier);
@@ -640,6 +705,7 @@ int main(void) {
     RUN(test_outside_the_grid_takes_the_outside_value);
     RUN(test_a_mask_behind_the_particle_still_decides);
     RUN(test_a_particle_parallel_to_the_plane_is_stopped);
+    RUN(test_a_particle_that_is_not_a_number_is_stopped);
     RUN(test_one_cell_is_a_rectangular_aperture);
     RUN(test_the_mask_draws_no_random_numbers);
     RUN(test_weight_mode_scales_the_weight_and_keeps_the_particle);
