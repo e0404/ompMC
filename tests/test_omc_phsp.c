@@ -15,6 +15,25 @@
  by the last test as a check on the fixture builders themselves.
 *****************************************************************************/
 
+/* Before anything can include setjmp.h.
+
+ On x86-64 MinGW, longjmp() unwinds with SEH: it walks every frame between
+ itself and the setjmp() using the unwind data the compiler left behind, and
+ faults if any of it is missing or wrong. The jumps here start inside
+ omcFail(), which is noreturn and lives in a static library built with link
+ time optimisation -- a combination that gives the optimiser every reason to
+ leave a frame it never expects to return through in a state that walk
+ cannot follow. This test crashed on the MinGW CI jobs and nowhere else:
+ not on MSVC, not under AddressSanitizer, not on two local MinGW versions,
+ and not in three hundred consecutive local runs.
+
+ Asking MinGW for the non-SEH setjmp gives `_setjmp(buf, NULL)`, which
+ restores the registers and does not unwind. That is all this harness wants
+ from it. Every other toolchain is unaffected. */
+#if defined(__MINGW32__)
+    #define __USE_MINGW_SETJMP_NON_SEH 1
+#endif
+
 #include "omc_host.h"
 #include "omc_phsp.h"
 

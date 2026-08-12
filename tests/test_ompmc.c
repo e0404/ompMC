@@ -12,6 +12,13 @@
  instead.
 *****************************************************************************/
 
+/* Before anything can include setjmp.h; see the comment in
+ tests/test_omc_phsp.c for why MinGW's SEH-unwinding longjmp() is not what
+ this harness wants. */
+#if defined(__MINGW32__)
+    #define __USE_MINGW_SETJMP_NON_SEH 1
+#endif
+
 #include "ompmc.h"
 #include "omc_engine_cube.h"
 #include "omc_geom.h"

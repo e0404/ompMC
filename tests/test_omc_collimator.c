@@ -11,6 +11,13 @@
  test_omc_forward_phsp.c.
 *****************************************************************************/
 
+/* Before anything can include setjmp.h; see the comment in
+ tests/test_omc_phsp.c for why MinGW's SEH-unwinding longjmp() is not what
+ this harness wants. */
+#if defined(__MINGW32__)
+    #define __USE_MINGW_SETJMP_NON_SEH 1
+#endif
+
 #include "omc_collimator.h"
 #include "omc_host.h"
 #include "omc_random.h"
