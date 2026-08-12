@@ -951,8 +951,298 @@ static void test_header_per_type_counts(void) {
 }
 
 /*******************************************************************************
+* Headers no HeaderSpec can describe
+*
+* A header is written by somebody else's program, and the ways one can come out
+* wrong are not all ways this test file's writer can produce. These are raw
+* text, one valid block at a time with exactly one of them spoilt, so what each
+* test is about is the line that differs from the block beside it.
+*
+* Every one of these has to fail by saying which block was wrong, not by
+* reading a record out of a header it half understood.
+*******************************************************************************/
+
+#define OK_FILE_TYPE  "$FILE_TYPE:\n0\n\n"
+#define OK_BYTE_ORDER "$BYTE_ORDER:\n1234\n\n"
+#define OK_CHECKSUM   "$CHECKSUM:\n87\n\n"
+#define OK_CONTENTS   "$RECORD_CONTENTS:\n1\n1\n1\n1\n1\n1\n1\n0\n0\n\n"
+#define OK_LENGTH     "$RECORD_LENGTH:\n29\n\n"
+#define OK_ORIG       "$ORIG_HISTORIES:\n10\n\n"
+#define OK_PARTICLES  "$PARTICLES:\n3\n\n"
+
+/* Everything but the block the test is about, which it supplies itself. */
+#define OK_REST_BUT_LENGTH \
+    OK_FILE_TYPE OK_BYTE_ORDER OK_CHECKSUM OK_CONTENTS OK_ORIG OK_PARTICLES
+#define OK_REST_BUT_PARTICLES \
+    OK_FILE_TYPE OK_BYTE_ORDER OK_CHECKSUM OK_CONTENTS OK_LENGTH OK_ORIG
+#define OK_REST_BUT_CONTENTS \
+    OK_FILE_TYPE OK_BYTE_ORDER OK_CHECKSUM OK_LENGTH OK_ORIG OK_PARTICLES
+#define OK_EVERYTHING \
+    OK_FILE_TYPE OK_BYTE_ORDER OK_CHECKSUM OK_CONTENTS OK_LENGTH OK_ORIG \
+    OK_PARTICLES
+
+static int writeRawHeader(const char *stem, const char *text) {
+
+    char path[256];
+
+    datasetPath(path, sizeof(path), stem, ".IAEAheader");
+
+    return writeText(path, text);
+}
+
+/* A line starting with a $ but carrying no colon opens no block, and the
+ reader walks past it rather than taking the rest of the file to be inside
+ it. The IAEA headers in the wild carry prose, and prose has dollars in it. */
+static void test_a_dollar_line_that_opens_no_block_is_skipped(void) {
+
+    const char *stem = "phsp_dollar";
+    struct OmcPhspHeader header;
+
+    if (!writeRawHeader(stem,
+            "$this line opens nothing\n"
+            OK_EVERYTHING
+            "$and neither does this one\n")) {
+        return;
+    }
+
+    EXPECT_OK(omcPhspHeaderFromFile(&header, stem));
+
+    CHECK(header.particles == 3);
+    CHECK(header.recordLength == 29);
+
+    removeDataset(stem);
+}
+
+/* A block that is there but says nothing. Both ways it can happen: another
+ block starting straight after it, and the file simply ending. */
+static void test_a_block_with_no_value_fails(void) {
+
+    const char *stem = "phsp_emptyblock";
+    struct OmcPhspHeader header;
+
+    if (!writeRawHeader(stem, OK_REST_BUT_PARTICLES "$PARTICLES:\n" OK_LENGTH)) {
+        return;
+    }
+
+    EXPECT_FAIL("ompMC:phsp:parseFailed",
+                omcPhspHeaderFromFile(&header, stem));
+
+    /* And the same block with nothing at all after it, which is the end of
+     the file rather than the end of the block. */
+    if (!writeRawHeader(stem, OK_REST_BUT_PARTICLES OK_LENGTH "$PARTICLES:\n")) {
+        return;
+    }
+
+    EXPECT_FAIL("ompMC:phsp:parseFailed",
+                omcPhspHeaderFromFile(&header, stem));
+
+    removeDataset(stem);
+}
+
+/* Values that are not the kind of number their block calls for. Each of the
+ three parsers -- whole, unsigned whole, and real -- has its own way of being
+ handed nonsense. */
+static void test_a_value_that_is_not_a_number_fails(void) {
+
+    const char *stem = "phsp_notanumber";
+    struct OmcPhspHeader header;
+
+    /* A whole number: the record length. */
+    if (!writeRawHeader(stem,
+            OK_REST_BUT_LENGTH "$RECORD_LENGTH:\ntwenty nine\n\n")) {
+        return;
+    }
+    EXPECT_FAIL("ompMC:phsp:parseFailed",
+                omcPhspHeaderFromFile(&header, stem));
+
+    /* Trailing rubbish after a good number counts too, or "29 bytes" would
+     read as 29 and the disagreement would never surface. */
+    if (!writeRawHeader(stem,
+            OK_REST_BUT_LENGTH "$RECORD_LENGTH:\n29bytes\n\n")) {
+        return;
+    }
+    EXPECT_FAIL("ompMC:phsp:parseFailed",
+                omcPhspHeaderFromFile(&header, stem));
+
+    /* A count: the particles. */
+    if (!writeRawHeader(stem,
+            OK_REST_BUT_PARTICLES "$PARTICLES:\nquite a few\n\n")) {
+        return;
+    }
+    EXPECT_FAIL("ompMC:phsp:parseFailed",
+                omcPhspHeaderFromFile(&header, stem));
+
+    /* A negative count is not a count. strtoull() would wrap it round to
+     something enormous rather than refuse it, so it is caught before the
+     conversion rather than after. */
+    if (!writeRawHeader(stem,
+            OK_REST_BUT_PARTICLES "$PARTICLES:\n-1\n\n")) {
+        return;
+    }
+    EXPECT_FAIL("ompMC:phsp:parseFailed",
+                omcPhspHeaderFromFile(&header, stem));
+
+    /* And a real number: the value of a quantity the records do not carry. */
+    if (!writeRawHeader(stem,
+            OK_FILE_TYPE OK_BYTE_ORDER OK_CHECKSUM OK_ORIG OK_PARTICLES
+            "$RECORD_CONTENTS:\n1\n1\n0\n1\n1\n1\n1\n0\n0\n\n"
+            "$RECORD_CONSTANT:\ndeep\n\n"
+            "$RECORD_LENGTH:\n25\n\n")) {
+        return;
+    }
+    EXPECT_FAIL("ompMC:phsp:parseFailed",
+                omcPhspHeaderFromFile(&header, stem));
+
+    removeDataset(stem);
+}
+
+/* $RECORD_CONTENTS: is the block everything else is read against, so a short
+ one is caught there rather than left to come out as a record length that does
+ not add up. */
+static void test_record_contents_that_is_too_short_fails(void) {
+
+    const char *stem = "phsp_shortcontents";
+    struct OmcPhspHeader header;
+
+    if (!writeRawHeader(stem,
+            OK_REST_BUT_CONTENTS "$RECORD_CONTENTS:\n1\n1\n1\n1\n\n")) {
+        return;
+    }
+
+    EXPECT_FAIL("ompMC:phsp:parseFailed",
+                omcPhspHeaderFromFile(&header, stem));
+
+    removeDataset(stem);
+}
+
+/* The extras a record carries are announced by a count and then described one
+ by one, and a count without the descriptions is a header this reader cannot
+ lay a record out from. */
+static void test_extras_announced_but_not_described_fail(void) {
+
+    const char *stem = "phsp_extrasmissing";
+    struct OmcPhspHeader header;
+
+    if (!writeRawHeader(stem,
+            OK_REST_BUT_CONTENTS "$RECORD_CONTENTS:\n1\n1\n1\n1\n1\n1\n1\n"
+            "1\n0\n\n")) {           /* one extra float, unexplained */
+        return;
+    }
+    EXPECT_FAIL("ompMC:phsp:parseFailed",
+                omcPhspHeaderFromFile(&header, stem));
+
+    if (!writeRawHeader(stem,
+            OK_REST_BUT_CONTENTS "$RECORD_CONTENTS:\n1\n1\n1\n1\n1\n1\n1\n"
+            "0\n1\n\n")) {           /* and one extra long */
+        return;
+    }
+    EXPECT_FAIL("ompMC:phsp:parseFailed",
+                omcPhspHeaderFromFile(&header, stem));
+
+    removeDataset(stem);
+}
+
+/* More extras than this reader holds, on the long side. The float side has a
+ test of its own above; both matter, because a build compiled for one and
+ handed the other would silently lay records out short. */
+static void test_too_many_extra_longs_fails(void) {
+
+    const char *stem = "phsp_manylongs";
+    struct HeaderSpec spec = validSpec(1);
+    struct OmcPhspHeader header;
+
+    spec.nExtraLong = OMC_PHSP_MAX_EXTRA + 1;
+
+    if (!writeHeaderFile(stem, &spec)) {
+        return;
+    }
+
+    EXPECT_FAIL("ompMC:phsp:tooManyExtras",
+                omcPhspHeaderFromFile(&header, stem));
+
+    removeDataset(stem);
+}
+
+/* $RECORD_CONSTANT: carries one value per quantity the records do NOT hold,
+ in the order the format lists them -- so which line means what depends on the
+ block before it, and one line short is one quantity read as another's value.
+ Failing is the only safe answer. */
+static void test_a_record_constant_short_of_a_value_fails(void) {
+
+    const char *stem = "phsp_shortconstant";
+    struct OmcPhspHeader header;
+
+    /* Neither z nor the weight is stored, so two constants are owed and one
+     is given. */
+    if (!writeRawHeader(stem,
+            OK_FILE_TYPE OK_BYTE_ORDER OK_CHECKSUM OK_ORIG OK_PARTICLES
+            "$RECORD_CONTENTS:\n1\n1\n0\n1\n1\n1\n0\n0\n0\n\n"
+            "$RECORD_CONSTANT:\n15.0\n\n"
+            "$RECORD_LENGTH:\n21\n\n")) {
+        return;
+    }
+
+    EXPECT_FAIL("ompMC:phsp:parseFailed",
+                omcPhspHeaderFromFile(&header, stem));
+
+    removeDataset(stem);
+}
+
+/* The per type counts are the one thing in a header that may be absent, and
+ a block that is there but empty is as good as absent: it is a count the file
+ does not give, which is not the same as a count of zero but there is nothing
+ else to report. */
+static void test_an_optional_count_with_no_value_is_no_count(void) {
+
+    const char *stem = "phsp_emptycount";
+    struct OmcPhspHeader header;
+
+    if (!writeRawHeader(stem, OK_EVERYTHING "$PHOTONS:\n")) {
+        return;
+    }
+
+    EXPECT_OK(omcPhspHeaderFromFile(&header, stem));
+
+    CHECK(header.particles == 3);
+    CHECK(header.typeCount[OMC_PHSP_PHOTON - 1] == 0);
+
+    removeDataset(stem);
+}
+
+/* A path longer than the reader can hold is refused rather than quietly
+ trimmed to something that names a different file, or no file at all. */
+static void test_a_path_too_long_to_hold_fails(void) {
+
+    char huge[2048];
+    struct OmcPhspHeader header;
+
+    memset(huge, 'p', sizeof(huge) - 1);
+    huge[sizeof(huge) - 1] = '\0';
+
+    EXPECT_FAIL("ompMC:phsp:pathTooLong",
+                omcPhspHeaderFromFile(&header, huge));
+}
+
+/*******************************************************************************
 * The binary file
 *******************************************************************************/
+
+/* A dataset is two files, and a header without the phase space beside it is
+ half of one. */
+static void test_the_phase_space_file_has_to_be_there_too(void) {
+
+    const char *stem = "phsp_headeronly";
+    struct HeaderSpec spec = validSpec(1);
+    struct OmcPhsp phsp;
+
+    if (!writeHeaderFile(stem, &spec)) {
+        return;
+    }
+
+    EXPECT_FAIL("ompMC:phsp:openFailed", omcPhspFromFile(&phsp, stem));
+
+    removeDataset(stem);
+}
 
 static void test_load_single_record_all_stored(void) {
 
@@ -1688,6 +1978,17 @@ int main(void) {
     RUN(test_header_path_with_extension_accepted);
     RUN(test_header_per_type_counts);
 
+    RUN(test_a_dollar_line_that_opens_no_block_is_skipped);
+    RUN(test_a_block_with_no_value_fails);
+    RUN(test_a_value_that_is_not_a_number_fails);
+    RUN(test_record_contents_that_is_too_short_fails);
+    RUN(test_extras_announced_but_not_described_fail);
+    RUN(test_too_many_extra_longs_fails);
+    RUN(test_a_record_constant_short_of_a_value_fails);
+    RUN(test_an_optional_count_with_no_value_is_no_count);
+    RUN(test_a_path_too_long_to_hold_fails);
+
+    RUN(test_the_phase_space_file_has_to_be_there_too);
     RUN(test_load_single_record_all_stored);
     RUN(test_constants_substituted);
     RUN(test_w_constant_not_reconstructed);

@@ -729,6 +729,19 @@ if(OMPMC_BUILD_TESTS)
 
     add_test(NAME phsp_source COMMAND test_omc_source_phsp)
 
+    add_executable(test_omc_source_beamlet tests/test_omc_source_beamlet.c)
+    target_link_libraries(test_omc_source_beamlet
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_source_beamlet)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_source_beamlet PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME beamlet_source COMMAND test_omc_source_beamlet)
+
     add_executable(test_omc_collimator tests/test_omc_collimator.c)
     target_link_libraries(test_omc_collimator
         PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
@@ -756,6 +769,21 @@ if(OMPMC_BUILD_TESTS)
     endif()
 
     add_test(NAME phsp_forward COMMAND test_omc_forward_phsp
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+    # Transports for real as well, so it runs from the repository root too.
+    add_executable(test_omc_engine_dij tests/test_omc_engine_dij.c)
+    target_link_libraries(test_omc_engine_dij
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_engine_dij)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_engine_dij PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME dij COMMAND test_omc_engine_dij
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     # Needs the PEGS and cross section data, so it runs from the repository

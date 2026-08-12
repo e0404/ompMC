@@ -17,12 +17,21 @@
  has to build up to a maximum below the surface and fall away after it.
 *****************************************************************************/
 
+/* Before anything can include setjmp.h; see the comment in
+ tests/test_omc_phsp.c for why MinGW's SEH-unwinding longjmp() is not what
+ this harness wants. */
+#if defined(__MINGW32__)
+    #define __USE_MINGW_SETJMP_NON_SEH 1
+#endif
+
 #include "omc_collimator.h"
 #include "omc_engine_forward.h"
 #include "omc_geom.h"
 #include "omc_host.h"
 #include "omc_phsp.h"
+#include "omc_source_beamlet.h"
 #include "omc_source_phsp.h"
+#include "omc_spectrum.h"
 #include "omc_utilities.h"
 #include "ompmc.h"
 
@@ -59,6 +68,17 @@ static const char *current_test = "";
         }                                                                     \
     } while (0)
 
+#define CHECK_CLOSE(got, want, tol)                                           \
+    do {                                                                      \
+        double _g = (got), _w = (want);                                       \
+        if (!(fabs(_g - _w) <= (tol))) {                                      \
+            printf("  FAIL %s:%d in %s: %s == %.17g, expected %.17g "         \
+                   "(tol %g)\n", __FILE__, __LINE__, current_test,            \
+                   #got, _g, _w, (double)(tol));                              \
+            tests_failed++;                                                   \
+        }                                                                     \
+    } while (0)
+
 #define RUN(fn)                                                               \
     do {                                                                      \
         current_test = #fn;                                                   \
@@ -77,6 +97,66 @@ static void quietHost(void) {
     struct OmcHost quiet = {silentLog, NULL, NULL};
     omcSetHost(&quiet);
 }
+
+/* For the handful of tests that are about a run being refused rather than a
+ run happening. omcFail() does not return, so the only way back is a longjmp
+ to the caller that armed one. */
+static jmp_buf fail_jmp;
+static char fail_id[128];
+static int fail_seen;
+static int fail_armed;
+
+static void catchingFail(const char *id, const char *message, void *user) {
+
+    (void)user;
+    snprintf(fail_id, sizeof(fail_id), "%s", id != NULL ? id : "");
+    fail_seen = 1;
+
+    /* Nothing was expecting this one, and jumping into a frame that has
+     already returned is undefined behaviour -- in practice a crash with
+     nothing printed. Say what happened and stop instead. */
+    if (!fail_armed) {
+        printf("\n  FAIL %s: unexpected failure %s\n         %s\n",
+               current_test, id != NULL ? id : "(no id)",
+               message != NULL ? message : "");
+        fflush(stdout);
+        exit(EXIT_FAILURE);
+    }
+
+    fail_armed = 0;
+    longjmp(fail_jmp, 1);
+}
+
+static void catchingHost(void) {
+
+    fail_seen = 0;
+    fail_armed = 0;
+    fail_id[0] = '\0';
+
+    struct OmcHost catcher = {silentLog, catchingFail, NULL};
+    omcSetHost(&catcher);
+}
+
+#define EXPECT_FAIL(id, call)                                                 \
+    do {                                                                      \
+        fail_seen = 0;                                                        \
+        fail_id[0] = '\0';                                                    \
+        fail_armed = 1;                                                       \
+        if (setjmp(fail_jmp) == 0) {                                          \
+            call;                                                             \
+        }                                                                     \
+        fail_armed = 0;                                                       \
+        if (!fail_seen) {                                                     \
+            printf("  FAIL %s:%d in %s: %s did not fail, expected %s\n",      \
+                   __FILE__, __LINE__, current_test, #call, (id));            \
+            tests_failed++;                                                   \
+        }                                                                     \
+        else if (strcmp(fail_id, (id)) != 0) {                                \
+            printf("  FAIL %s:%d in %s: %s failed with %s, expected %s\n",    \
+                   __FILE__, __LINE__, current_test, #call, fail_id, (id));   \
+            tests_failed++;                                                   \
+        }                                                                     \
+    } while (0)
 
 /*******************************************************************************
 * A water tank, and the physics to transport in it
@@ -414,6 +494,252 @@ static void test_histories_that_miss_still_count(void) {
 }
 
 /*******************************************************************************
+* What the engine refuses, and what it does instead of refusing
+*
+* These are settled before the first history, on the master thread, which is
+* the only place a run may be turned down from: omcFail() out of a worker
+* thread would call the host from somewhere it cannot expect to be called.
+*******************************************************************************/
+
+/* The uncertainty is the spread over the batches, so one batch has none to
+ estimate. Returning a cube with no error bars would be worse than saying so. */
+static void test_a_run_with_too_few_batches_is_refused(void) {
+
+    struct Made made;
+    makeBeam(&made, 4, 6.0, 0);
+
+    struct OmcForwardOptions opt = optionsFor(100);
+    struct OmcPhspSampler sampler = samplerFor(&made.phsp);
+    struct OmcSource source;
+    omcPhspSamplerAsSource(&sampler, &source);
+
+    double dose[1];
+
+    catchingHost();
+
+    opt.nbatch = 1;
+    EXPECT_FAIL("ompMC:forward:tooFewBatches",
+                omcCalcForward(&opt, &source, NULL, dose, NULL, NULL, NULL));
+
+    /* A source that cannot make a particle is not a source. */
+    opt.nbatch = 4;
+    source.sample = NULL;
+    EXPECT_FAIL("ompMC:forward:noSource",
+                omcCalcForward(&opt, &source, NULL, dose, NULL, NULL, NULL));
+
+    omcSetHost(NULL);
+}
+
+/* A run too short to give every batch a history is stretched to fit rather
+ than refused: the caller asked for a rough answer, not for an argument. */
+static void test_a_run_shorter_than_its_batches_is_stretched(void) {
+
+    setUpWaterTank();
+
+    struct Made made;
+    makeBeam(&made, 4, 6.0, 0);
+
+    struct OmcForwardOptions opt = optionsFor(2);   /* over four batches */
+    struct OmcPhspSampler sampler = samplerFor(&made.phsp);
+    struct OmcSource source;
+    omcPhspSamplerAsSource(&sampler, &source);
+
+    double *dose = malloc(GRIDSIZE*sizeof(double));
+    struct OmcForwardSummary summary;
+
+    int finished = omcCalcForward(&opt, &source, NULL, dose, NULL, NULL,
+                                  &summary);
+
+    CHECK(finished == 1);
+    CHECK(summary.nperbatch == 1);
+    CHECK(summary.nhist == 4);          /* one each, rather than two in all */
+
+    free(dose);
+    tearDownWaterTank();
+}
+
+/* Counts the batches it is told about, and remembers the last fraction. */
+struct Watcher {
+    int batches;
+    double lastFraction;
+};
+
+static int countingProgress(double fraction, void *user) {
+
+    struct Watcher *watcher = (struct Watcher *)user;
+
+    watcher->batches++;
+    watcher->lastFraction = fraction;
+
+    return 1;
+}
+
+static int stoppingProgress(double fraction, void *user) {
+
+    struct Watcher *watcher = (struct Watcher *)user;
+
+    watcher->batches++;
+    watcher->lastFraction = fraction;
+
+    return 0;                   /* that will do, thank you */
+}
+
+/* A host that wants its calculation back can have it stopped. What it gets is
+ nothing rather than a half finished cube: the batches are averaged, so a run
+ abandoned partway through is a dose with no meaning. */
+static void test_a_progress_callback_can_stop_the_run(void) {
+
+    setUpWaterTank();
+
+    struct Made made;
+    makeBeam(&made, 8, 6.0, 0);
+
+    struct OmcForwardOptions opt = optionsFor(400);
+    struct OmcPhspSampler sampler = samplerFor(&made.phsp);
+    struct OmcSource source;
+    omcPhspSamplerAsSource(&sampler, &source);
+
+    double *dose = malloc(GRIDSIZE*sizeof(double));
+    struct OmcForwardSummary summary;
+
+    for (int i = 0; i < GRIDSIZE; i++) {
+        dose[i] = -1.0;             /* so an untouched cube can be told */
+    }
+
+    memset(&summary, 0, sizeof(summary));
+
+    struct Watcher watcher = {0, 0.0};
+
+    struct OmcForwardCallbacks callbacks;
+    callbacks.user = &watcher;
+
+    /* A callback that carries on sees every batch and the run finishes. */
+    callbacks.progress = countingProgress;
+
+    int finished = omcCalcForward(&opt, &source, NULL, dose, NULL, &callbacks,
+                                  &summary);
+
+    CHECK(finished == 1);
+    CHECK(watcher.batches == 4);
+    CHECK_CLOSE(watcher.lastFraction, 1.0, 1e-15);
+    CHECK(summary.nhist == 400);
+
+    /* And one that gives up is obeyed after the batch it gave up in. */
+    watcher.batches = 0;
+    callbacks.progress = stoppingProgress;
+
+    for (int i = 0; i < GRIDSIZE; i++) {
+        dose[i] = -1.0;
+    }
+    memset(&summary, 0, sizeof(summary));
+
+    finished = omcCalcForward(&opt, &source, NULL, dose, NULL, &callbacks,
+                              &summary);
+
+    CHECK(finished == 0);
+    CHECK(watcher.batches == 1);        /* stopped after the first */
+
+    /* Neither the cube nor the summary was written. */
+    CHECK(dose[0] == -1.0);
+    CHECK(dose[GRIDSIZE/2] == -1.0);
+    CHECK(summary.nhist == 0);
+
+    free(dose);
+    tearDownWaterTank();
+}
+
+/*******************************************************************************
+* The beamlet source through the same engine
+*
+* The source matRad drives, run end to end here for the same reason the phase
+* space one is: everything about it below sampling has its own unit tests in
+* test_omc_source_beamlet.c, and nothing else checks that the engine takes it,
+* prepares it, and gives back what it took.
+*******************************************************************************/
+
+static void test_a_beamlet_source_runs_the_same_engine(void) {
+
+    setUpWaterTank();
+
+    /* One beam, a metre above the tank, and one beamlet covering the middle
+     4 x 4 cm of its front face. */
+    static int ibeam[1] = {0};
+    static double xsource[1] = {0.0}, ysource[1] = {0.0}, zsource[1] = {-100.0};
+    static double xcorner[1] = {-2.0}, ycorner[1] = {-2.0}, zcorner[1] = {0.0};
+    static double xside1[1] = {4.0}, yside1[1] = {0.0}, zside1[1] = {0.0};
+    static double xside2[1] = {0.0}, yside2[1] = {4.0}, zside2[1] = {0.0};
+
+    struct OmcBeamletSource beamlets;
+    beamlets.nbeamlets = 1;
+    beamlets.ibeam = ibeam;
+    beamlets.xsource = xsource;
+    beamlets.ysource = ysource;
+    beamlets.zsource = zsource;
+    beamlets.xcorner = xcorner;
+    beamlets.ycorner = ycorner;
+    beamlets.zcorner = zcorner;
+    beamlets.xside1 = xside1;
+    beamlets.yside1 = yside1;
+    beamlets.zside1 = zside1;
+    beamlets.xside2 = xside2;
+    beamlets.yside2 = yside2;
+    beamlets.zside2 = zside2;
+
+    struct OmcSpectrum spectrum;
+    omcSpectrumMonoenergetic(&spectrum, 6.0);
+
+    double weights[1] = {2.0};
+
+    struct OmcBeamletHistories histories;
+    memset(&histories, 0, sizeof(histories));
+    histories.sampler.source = &beamlets;
+    histories.sampler.spectrum = &spectrum;
+    histories.sampler.charge = 0;
+    histories.sampler.geometry = OMC_SOURCE_POINT;
+    histories.weights = weights;
+
+    struct OmcSource source;
+    omcBeamletHistoriesAsSource(&histories, &source);
+
+    struct OmcForwardOptions opt = optionsFor(20000);
+    struct OmcForwardSummary summary;
+
+    double *dose = malloc(GRIDSIZE*sizeof(double));
+
+    int finished = omcCalcForward(&opt, &source, NULL, dose, NULL, NULL,
+                                  &summary);
+
+    CHECK(finished == 1);
+    CHECK(summary.started == 20000);    /* every one of them is aimed in */
+    CHECK(summary.blocked == 0);
+
+    /* The engine gave back what prepare() took, so asking again would be a
+     second free of it. The stats survive that, which is the whole reason they
+     are not kept in the working memory. */
+    struct OmcBeamletStats stats;
+    omcBeamletHistoriesStats(&histories, &stats);
+
+    CHECK(stats.nweighted == 1);
+    CHECK(stats.nsampled == 1);
+    CHECK_CLOSE(stats.totalWeight, 2.0, 1e-15);
+
+    /* A 4 x 4 cm field out of a 10 x 10 cm tank: the middle of the front face
+     gets the beam and the corners of the tank get only scatter. */
+    double middle = 0.0, corner = 0.0;
+
+    for (int k = 0; k < 4; k++) {
+        middle += dose[NX/2 + (NY/2)*NX + k*NX*NY];
+        corner += dose[0 + 0*NX + k*NX*NY];
+    }
+
+    CHECK(middle > 0.0);
+    CHECK(corner < 0.05*middle);
+
+    free(dose);
+    tearDownWaterTank();
+}
+
+/*******************************************************************************
 * The collimator
 *
 * The mask sits at z = -0.5, between where the phase space puts its particles
@@ -687,6 +1013,10 @@ int main(void) {
     RUN(test_a_photon_beam_builds_up_and_falls_off);
     RUN(test_a_beam_aimed_away_deposits_nothing);
     RUN(test_histories_that_miss_still_count);
+    RUN(test_a_run_with_too_few_batches_is_refused);
+    RUN(test_a_run_shorter_than_its_batches_is_stretched);
+    RUN(test_a_progress_callback_can_stop_the_run);
+    RUN(test_a_beamlet_source_runs_the_same_engine);
     RUN(test_an_open_mask_changes_nothing);
     RUN(test_a_shut_mask_stops_everything);
     RUN(test_a_half_transmitting_mask_halves_the_dose);

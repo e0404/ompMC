@@ -619,6 +619,121 @@ static void test_particle_heading_away_produces_nothing(void) {
     tearDownPhantom();
 }
 
+/* Where a particle enters the phantom is worked out in floating point, and
+ the arithmetic does not always land back exactly on the face it solved for:
+ a particle aimed at a bound can come out a fraction of an ulp outside it,
+ and a fraction of an ulp outside is outside. The voxel lookup would then
+ name a voxel that is not there, and the transport would start in it.
+
+ What is checked here is the two things that have to hold for every particle
+ that gets placed, whichever way the last bit went: it is inside the phantom,
+ and it is inside the voxel its region index names. The sweep is over entries
+ aimed exactly at a bound, because that is where the rounding has anything to
+ do -- a particle aimed down the middle lands in the middle. */
+
+/* @return 1 if the particle was placed, 0 if its ray never arrived. */
+static int placeAndCheck(const struct OmcSourceParticle *particle) {
+
+    if (!omcSourcePlace(particle)) {
+        return 0;
+    }
+
+    double x = stack.p[0].x;
+    double y = stack.p[0].y;
+    double z = stack.p[0].z;
+    int ir = stack.p[0].ir;
+
+    CHECK(ir >= 1 && ir <= NX*NY*NZ);
+
+    if (ir < 1 || ir > NX*NY*NZ) {
+        return 1;
+    }
+
+    int i = (ir - 1) % NX;
+    int j = ((ir - 1)/NX) % NY;
+    int k = (ir - 1)/(NX*NY);
+
+    CHECK(x >= xbounds[i] && x <= xbounds[i + 1]);
+    CHECK(y >= ybounds[j] && y <= ybounds[j + 1]);
+    CHECK(z >= zbounds[k] && z <= zbounds[k + 1]);
+
+    return 1;
+}
+
+static struct OmcSourceParticle aimed(double x, double y, double z,
+                                      double u, double v, double w) {
+
+    struct OmcSourceParticle p;
+    memset(&p, 0, sizeof(p));
+
+    p.charge = 0;
+    p.energy = 1.0;
+    p.x = x;  p.y = y;  p.z = z;
+    p.u = u;  p.v = v;  p.w = w;
+    p.weight = 1.0;
+
+    return p;
+}
+
+#define PLACE(...)                                                            \
+    do {                                                                      \
+        struct OmcSourceParticle _p = aimed(__VA_ARGS__);                     \
+        placed += placeAndCheck(&_p);                                         \
+        tried++;                                                              \
+    } while (0)
+
+static void test_a_particle_aimed_at_a_bound_lands_in_a_real_voxel(void) {
+
+    setUpPhantom();
+
+    int placed = 0;
+    int tried = 0;
+
+    for (int i = 1; i <= 2000; i++) {
+        double angle = 0.0007*i;
+        double s = sin(angle);
+        double c = cos(angle);
+        double start = -100.0 - 0.37*i;
+
+        /* Down the beam through the front face, at a slight angle. The z it
+         arrives at is a bound solved for and then recomputed, which is where
+         the last bit can go either way. */
+        double t = (zbounds[0] - start)/c;
+
+        PLACE(0.5, 0.5, start, 0.0, 0.0, c);
+
+        /* The same entry aimed sideways at each of the four bounds the other
+         two axes have, so the crossing lands on an edge of the box rather
+         than in the middle of the face. */
+        PLACE(xbounds[0] - t*s, 0.5, start, s, 0.0, c);
+        PLACE(xbounds[NX] + t*s, 0.5, start, -s, 0.0, c);
+        PLACE(0.5, ybounds[0] - t*s, start, 0.0, s, c);
+        PLACE(0.5, ybounds[NY] + t*s, start, 0.0, -s, c);
+
+        /* Back up through the far face, for the bound at the other end. */
+        double back = -start;
+        double tback = (zbounds[NZ] - back)/(-c);
+
+        PLACE(0.5, 0.5, back, 0.0, 0.0, -c);
+        PLACE(xbounds[0] - tback*s, 0.5, back, s, 0.0, -c);
+
+        /* And in through the side faces, so the z that gets recomputed is
+         one the x or y slab decided rather than the z slab. */
+        double tx = (xbounds[0] - start)/c;
+        double ty = (ybounds[0] - start)/c;
+
+        PLACE(start, 0.5, zbounds[0] - tx*s, c, 0.0, s);
+        PLACE(start, 0.5, zbounds[NZ] + tx*s, c, 0.0, -s);
+        PLACE(0.5, start, zbounds[0] - ty*s, 0.0, c, s);
+    }
+
+    /* And the sweep really did place particles rather than aiming them all
+     past the phantom, which would make every check above vacuous. */
+    CHECK(placed > tried/2);
+
+    tearDownPhantom();
+}
+
 /*******************************************************************************
 * What lands on the stack
 *******************************************************************************/
@@ -838,6 +953,18 @@ static void test_check_refuses_an_empty_or_confused_sampler(void) {
     struct OmcPhspSampler good = samplerFor(&made.phsp);
     EXPECT_OK(omcPhspSourceCheck(&good));
 
+    /* A phase space in which no particle opens a history is usable -- every
+     particle becomes a history of its own -- but the uncertainty it reports
+     will be optimistic, because particles that belonged to the same original
+     history are correlated and are now counted as independent. That is worth
+     a warning and not worth a refusal. */
+    struct Made unmarked;
+    makePhsp(&unmarked, &one, 1);
+    unmarked.phsp.newHistories = 0;
+
+    struct OmcPhspSampler uncorrelated = samplerFor(&unmarked.phsp);
+    EXPECT_OK(omcPhspSourceCheck(&uncorrelated));
+
     /* A caller who skips the check and hands over an empty phase space gets
      empty histories rather than a division by zero in the wrap. */
     struct Made none;
@@ -882,6 +1009,7 @@ int main(void) {
     RUN(test_particle_already_inside_stays_put);
     RUN(test_particle_missing_the_phantom_produces_nothing);
     RUN(test_particle_heading_away_produces_nothing);
+    RUN(test_a_particle_aimed_at_a_bound_lands_in_a_real_voxel);
 
     RUN(test_particle_types_become_charges);
     RUN(test_neutrons_and_protons_produce_nothing);
