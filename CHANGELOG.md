@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-13
+
 ### Added
 
 - `omc_phsp`, a reader for IAEA format phase space files
@@ -170,5 +172,6 @@ First tagged release of this fork.
 - CI build matrix extended to Windows (MSVC and MinGW), Linux x64/ARM64, and
   macOS x64/ARM64, with unit tests run via CTest on every push.
 
-[Unreleased]: https://github.com/e0404/ompMC/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/e0404/ompMC/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/e0404/ompMC/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/e0404/ompMC/releases/tag/v0.2.0
