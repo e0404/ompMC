@@ -71,7 +71,13 @@ static int clipSlab(double p, double d, double lo, double hi,
         *texit = t2;
     }
 
-    return *tenter <= *texit;
+    /* Strictly less: an interval of no length is a ray that touches the
+     phantom at a single point and is inside it for no distance at all, which
+     is not entering it. A particle sitting exactly on a face and pointing
+     out of it is the case that matters -- it would otherwise be placed on
+     the boundary, counted among the histories that started, and transported
+     just far enough to leave. */
+    return *tenter < *texit;
 }
 
 int omcSourcePlace(const struct OmcSourceParticle *particle) {

@@ -489,6 +489,43 @@ static void test_the_rotation_check_is_not_only_the_determinant(void) {
     tearDownPhantom();
 }
 
+/* The move is checked as well as the turn. Nothing downstream would catch a
+ translation that is not a number: it makes every coordinate a NaN, and a NaN
+ passes every comparison omcSourcePlace() makes because each one is false, so
+ the particle would clear the bounding box, be handed a voxel and be
+ transported from nowhere. Both hosts take the translation as three plain
+ numbers, so this check is the only thing standing in the way. */
+static void test_a_translation_that_is_not_a_number_is_refused(void) {
+
+    setUpPhantom();
+
+    struct Made1 one = straightDown();
+    struct Made made;
+    makePhsp(&made, &one, 1);
+
+    for (int i = 0; i < 3; i++) {
+        struct OmcPhspSampler nowhere = samplerFor(&made.phsp);
+        nowhere.transform.translation[i] = nan("");
+
+        EXPECT_FAIL("ompMC:phspSource:badTranslation",
+                    omcPhspSourceCheck(&nowhere));
+
+        struct OmcPhspSampler far = samplerFor(&made.phsp);
+        far.transform.translation[i] = HUGE_VAL;
+
+        EXPECT_FAIL("ompMC:phspSource:badTranslation",
+                    omcPhspSourceCheck(&far));
+    }
+
+    /* A translation that is merely large is a translation. */
+    struct OmcPhspSampler moved = samplerFor(&made.phsp);
+    moved.transform.translation[2] = -1.0e6;
+
+    EXPECT_OK(omcPhspSourceCheck(&moved));
+
+    tearDownPhantom();
+}
+
 /*******************************************************************************
 * Getting into the phantom
 *******************************************************************************/
@@ -730,6 +767,60 @@ static void test_a_particle_aimed_at_a_bound_lands_in_a_real_voxel(void) {
     /* And the sweep really did place particles rather than aiming them all
      past the phantom, which would make every check above vacuous. */
     CHECK(placed > tried/2);
+
+    tearDownPhantom();
+}
+
+/* Touching the phantom is not entering it. A particle sitting exactly on a
+ face and pointing out of it has an intersection with the box of no length at
+ all, and used to be placed anyway: on the boundary, counted among the
+ histories that started, and transported just far enough to leave again. The
+ dose was right -- there is nothing to deposit over no distance -- but the
+ count of histories that got in was not, and that count is what a run's
+ fluence is divided by. */
+static void test_a_particle_leaving_a_face_it_sits_on_never_enters(void) {
+
+    setUpPhantom();
+
+    /* Every face, pointed straight out of it. */
+    struct OmcSourceParticle out[6] = {
+        aimed(xbounds[0],  0.5, 0.5, -1.0, 0.0, 0.0),
+        aimed(xbounds[NX], 0.5, 0.5,  1.0, 0.0, 0.0),
+        aimed(0.5, ybounds[0],  0.5, 0.0, -1.0, 0.0),
+        aimed(0.5, ybounds[NY], 0.5, 0.0,  1.0, 0.0),
+        aimed(0.5, 0.5, zbounds[0],  0.0, 0.0, -1.0),
+        aimed(0.5, 0.5, zbounds[NZ], 0.0, 0.0,  1.0)
+    };
+
+    for (int i = 0; i < 6; i++) {
+        CHECK(omcSourcePlace(&out[i]) == 0);
+    }
+
+    /* The same six turned round enter, so what is being checked above is the
+     direction and not the position: a particle on a face is otherwise a
+     perfectly good particle. */
+    struct OmcSourceParticle in[6] = {
+        aimed(xbounds[0],  0.5, 0.5,  1.0, 0.0, 0.0),
+        aimed(xbounds[NX], 0.5, 0.5, -1.0, 0.0, 0.0),
+        aimed(0.5, ybounds[0],  0.5, 0.0,  1.0, 0.0),
+        aimed(0.5, ybounds[NY], 0.5, 0.0, -1.0, 0.0),
+        aimed(0.5, 0.5, zbounds[0],  0.0, 0.0,  1.0),
+        aimed(0.5, 0.5, zbounds[NZ], 0.0, 0.0, -1.0)
+    };
+
+    for (int i = 0; i < 6; i++) {
+        CHECK(omcSourcePlace(&in[i]) == 1);
+    }
+
+    /* And a ray from outside that touches the box at one corner and nowhere
+     else -- the same no-length intersection, arrived at rather than started
+     on. Aimed diagonally at the (xbounds[0], ybounds[0]) edge from ten
+     centimetres out along both axes, so it reaches the corner exactly. */
+    double d = 1.0/sqrt(2.0);
+    struct OmcSourceParticle graze =
+        aimed(xbounds[0] - 10.0, ybounds[0] + 10.0, 0.5, d, -d, 0.0);
+
+    CHECK(omcSourcePlace(&graze) == 0);
 
     tearDownPhantom();
 }
@@ -1003,6 +1094,7 @@ int main(void) {
     RUN(test_rotation_turns_the_particle_and_its_direction);
     RUN(test_a_transform_that_is_not_a_rotation_is_refused);
     RUN(test_the_rotation_check_is_not_only_the_determinant);
+    RUN(test_a_translation_that_is_not_a_number_is_refused);
 
     RUN(test_particle_is_carried_to_the_phantom_surface);
     RUN(test_particle_entering_from_the_side);
@@ -1010,6 +1102,7 @@ int main(void) {
     RUN(test_particle_missing_the_phantom_produces_nothing);
     RUN(test_particle_heading_away_produces_nothing);
     RUN(test_a_particle_aimed_at_a_bound_lands_in_a_real_voxel);
+    RUN(test_a_particle_leaving_a_face_it_sits_on_never_enters);
 
     RUN(test_particle_types_become_charges);
     RUN(test_neutrons_and_protons_produce_nothing);

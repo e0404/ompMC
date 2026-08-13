@@ -130,11 +130,25 @@ static void installHost() {
     omcSetHost(&host);
 }
 
+static void cleanupPhysics();
+static bool physicsUp = false;
+
 /* Run fn(arg) with omcFail() turned into a false return. Holds nothing that
- needs destruction: the longjmp() skips over this frame's cleanup. */
+ needs destruction: the longjmp() skips over this frame's cleanup.
+
+ That is also why the physics tables are given back from here rather than
+ left to the run function that took them: the longjmp() lands below its
+ cleanup, so a failed run would otherwise leave the cross sections, the
+ region data and the media tables allocated -- and the next call would build
+ a second set on top of them. Anything raised out of ompmc is meant to be
+ recoverable, so this holds for every failure, not only the ones a caller
+ could have avoided. */
 static bool runGuarded(void (*fn)(void *), void *arg) {
 
     if (setjmp(failJump) != 0) {
+        if (physicsUp) {
+            cleanupPhysics();
+        }
         return false;
     }
 
@@ -356,7 +370,25 @@ static void applyInputItems(const nb::dict &items) {
     }
 }
 
+/* Every run function calls this once its tables are up, so that runGuarded()
+ knows whether there is anything to give back if the run fails.
+
+ @warning Call it after the LAST of the inits, never before the first. The
+ clean*() functions free without clearing what they freed, so cleaning up
+ twice, or cleaning up tables a previous run already gave back, is a double
+ free. Marking the physics up only once every table has been freshly
+ allocated is what keeps each cleanup paired with exactly one init. The cost
+ of that rule is that a failure between the first init and this call still
+ leaks; closing that gap means clearing the pointers in the core, which is
+ not this layer's to do. */
+static void physicsIsUp() {
+
+    physicsUp = true;
+}
+
 static void cleanupPhysics() {
+
+    physicsUp = false;
 
     cleanPhoton();
     cleanRayleigh();
@@ -550,6 +582,7 @@ static void runDij(void *arg) {
     buildSpectrum(&spectrum, run->spectrumInput);
     initRegions();
     initVrt();
+    physicsIsUp();
 
     run->beamletsDone = omcCalcDij(run->options, run->source, &spectrum,
                                    run->callbacks);
@@ -598,6 +631,7 @@ static void runCube(void *arg) {
     buildSpectrum(&spectrum, run->spectrumInput);
     initRegions();
     initVrt();
+    physicsIsUp();
     omcSsdSourceInit(run->source);
 
     run->completed = omcCalcCube(run->options, run->source, &spectrum,
@@ -647,6 +681,7 @@ static void runForward(void *arg) {
     buildSpectrum(&spectrum, run->spectrumInput);
     initRegions();
     initVrt();
+    physicsIsUp();
 
     /* The engine takes any source; these are weighted beamlets. */
     struct OmcBeamletHistories histories;
@@ -714,14 +749,20 @@ static void runForwardPhsp(void *arg) {
 
     PhspRun *run = (PhspRun *) arg;
 
+    /* The file first, before anything that would have to be given back. A
+     path that does not exist is the likeliest way for this call to fail, and
+     reading it here means that failure happens while there is still nothing
+     allocated to lose.
+
+     No spectrum: a phase space carries the energy of every particle it
+     holds, which is most of the reason for using one. */
+    omcPhspFromFile(run->file, run->phsp->path.c_str());
+
     installGeometry(run->geometry);
     initMediaData();
     initRegions();
     initVrt();
-
-    /* No spectrum: a phase space carries the energy of every particle it
-     holds, which is most of the reason for using one. */
-    omcPhspFromFile(run->file, run->phsp->path.c_str());
+    physicsIsUp();
 
     struct OmcPhspSampler sampler;
     std::memset(&sampler, 0, sizeof(sampler));

@@ -117,6 +117,21 @@ void omcPhspSourceCheck(const struct OmcPhspSampler *sampler) {
             "left handed one.", det);
     }
 
+    /* And that the move is a move. Nothing downstream would catch one that
+     is not: a coordinate that is not a number passes every comparison
+     omcSourcePlace() makes of it -- each one is false -- so the particle
+     would clear the phantom's bounding box, be handed a voxel, and be
+     transported from nowhere. Both hosts take the translation as three plain
+     numbers, so this is the only place that looks at them. */
+    for (int i = 0; i < 3; i++) {
+        if (!isfinite(sampler->transform.translation[i])) {
+            omcFail("ompMC:phspSource:badTranslation",
+                "Element %d of the phase space to phantom translation is %g, "
+                "and it has to be a finite number of centimetres.",
+                i, sampler->transform.translation[i]);
+        }
+    }
+
     if (sampler->phsp->newHistories == 0) {
         omcLog(OMC_LOG_WARNING, "The phase space marks no histories, so every "
                "particle is drawn as a history of its own. The dose is right; "

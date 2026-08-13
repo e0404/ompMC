@@ -117,6 +117,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   narrows from there, so a ray that clears every slab clears it in front:
   one heading away is already turned down by the slab whose exit is behind
   it.
+- `omcSourcePlace()` treats an intersection of no length as a miss. A particle
+  sitting exactly on a face of the phantom and pointing out of it, or a ray
+  that touches the bounding box at a single corner, was placed on the
+  boundary and counted among the histories that started -- and a run's result
+  is divided by that count. The dose was unaffected, since there is nothing
+  to deposit over no distance.
+- A phase space source checks that its translation is finite, as it already
+  checked its rotation. A translation that is not a number makes every
+  coordinate a NaN, and a NaN passes every comparison `omcSourcePlace()`
+  makes of it because each one is false, so the particle would have been
+  handed a voxel and transported from nowhere. Both hosts pass the
+  translation straight through, so the core is the only place that can catch
+  it.
+- The Python interface gives the physics tables back when a run fails, not
+  only when it finishes. `omcFail()` unwinds by `longjmp` over the cleanup at
+  the end of the run, so a rejected argument or an unreadable file used to
+  leave the cross sections, regions and media allocated, and the next call
+  built another set on top of them. A phase space is now also read before any
+  of that is set up, so the likeliest failure of all -- a path that does not
+  exist -- happens while there is still nothing to lose.
 - The MATLAB interface accepts a third output argument. Mode `'dij'` refuses
   it -- a beamlet that started nothing comes back as a column of zeros, which
   says so already.

@@ -464,6 +464,56 @@ class TestCalcForwardPhsp:
                 water_phantom, ompmc.PhaseSpaceSource("no_such_phase_space"),
                 water_physics, n_histories=100, n_batches=2)
 
+    def test_a_failed_run_leaves_the_next_one_alone(self, phsp_beam,
+                                                    water_phantom,
+                                                    water_physics):
+        # A failure inside the engine unwinds by longjmp, over the cleanup
+        # the run would have done on its way out.
+        #
+        # What this pins is that failing is recoverable: whichever side of the
+        # file load the failure came from, the next run still works and still
+        # gives the same answer as one with no failure before it. It does NOT
+        # pin the leak that motivated the cleanup -- an unreleased table is
+        # invisible from here, and a run that leaked one would still compute
+        # the right dose. That half is only checked by reading the code.
+        source = ompmc.PhaseSpaceSource(phsp_beam)
+
+        clean, _, clean_summary = ompmc.calc_forward_phsp(
+            water_phantom, source, water_physics,
+            n_histories=2000, n_batches=4)
+
+        for _ in range(3):
+            with pytest.raises(RuntimeError):
+                ompmc.calc_forward_phsp(
+                    water_phantom,
+                    ompmc.PhaseSpaceSource("no_such_phase_space"),
+                    water_physics, n_histories=100, n_batches=2)
+
+            # And one that gets past the file only to be turned away by the
+            # engine's own check of the source -- the failure that happens
+            # after the physics is up rather than before it, which is the
+            # half a reordering alone would not cover.
+            nowhere = ompmc.PhaseSpaceSource(
+                phsp_beam, translation=np.array([0.0, 0.0, np.nan]))
+
+            with pytest.raises(RuntimeError, match="badTranslation"):
+                ompmc.calc_forward_phsp(
+                    water_phantom, nowhere, water_physics,
+                    n_histories=100, n_batches=2)
+
+        after, _, after_summary = ompmc.calc_forward_phsp(
+            water_phantom, source, water_physics,
+            n_histories=2000, n_batches=4)
+
+        assert after_summary.n_started == clean_summary.n_started
+
+        # Not bit-identical: a batch's deposits are summed across threads and
+        # the order they arrive in is not fixed, so the last bits move from
+        # run to run whatever happened before them. The same dose to well
+        # within that is the claim.
+        assert after.sum() == pytest.approx(clean.sum(), rel=1e-9)
+        assert np.allclose(after, clean, rtol=1e-6, atol=1e-12*clean.max())
+
     def test_a_transform_can_aim_the_beam_away(self, phsp_beam, water_phantom,
                                                water_physics):
         # A half turn about x turns the particles round, and the translation

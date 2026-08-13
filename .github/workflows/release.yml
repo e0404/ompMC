@@ -107,9 +107,15 @@ jobs:
             fi
             sha="$(git rev-list -n 1 "refs/tags/$tag")"
             # The most recent successful build.yml run for that exact commit.
+            # Filtered by commit and status at the API rather than by jq over
+            # whatever the default page happened to hold: re-packaging an
+            # older tag is exactly the case where its build has long since
+            # fallen out of the most recent runs, and searching a page that
+            # no longer contains it would report it as never having been
+            # built.
             run_id="$(gh run list --repo "${{ github.repository }}" \
-              --workflow build.yml --json databaseId,headSha,conclusion \
-              --jq "[.[] | select(.headSha == \"$sha\" and .conclusion == \"success\")][0].databaseId")"
+              --workflow build.yml --commit "$sha" --status success --limit 1 \
+              --json databaseId --jq '.[0].databaseId')"
             if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
               echo "::error::no successful build.yml run found for $tag ($sha)"
               exit 1
