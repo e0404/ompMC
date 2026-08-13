@@ -21,252 +21,415 @@
 
 #include "omc_source_beamlet.h"
 
-#include "omc_geom.h"
+#include "omc_host.h"
 #include "omc_random.h"
-#include "omc_score.h"
 #include "omc_spectrum.h"
-#include "omc_utilities.h"
-#include "ompmc.h"
 
-#include <float.h>
 #include <math.h>
-
-#if defined(_MSC_VER)
-    //use __declspec(thread) instead of threadprivate to avoid
-    //error C3053. More information in:
-    // https://stackoverflow.com/questions/12560243/using-threadprivate-directive-in-visual-studio
-    __declspec(thread) extern struct Stack stack;
-#else
-    extern struct Stack stack;
-    #pragma omp threadprivate(stack)
-#endif
+#include <stdlib.h>
+#include <string.h>
 
 /******************************************************************************/
 
-void omcBeamletSample(const struct OmcBeamletSampler *sampler,
-                      int ibeamlet, double weight) {
+int omcBeamletProduce(const struct OmcBeamletSampler *sampler, int ibeamlet,
+                      double weight, struct OmcSourceParticle *particle) {
 
-    double rnno1;
-    double rnno2;
+    const struct OmcBeamletSource *source = sampler->source;
 
-    int ijmax = geometry.isize*geometry.jsize;
-    int imax = geometry.isize;
+    particle->charge = sampler->charge;
 
-    /* Initialize first particle of the stack from source data */
-    stack.np = 0;
-    stack.p[stack.np].iq = sampler->charge;
+    /* WARNING: the random numbers below are drawn in an order the results
+     depend on. The generator is indexed per history, so a draw added,
+     removed or moved here shifts every later draw of the same history and
+     changes the dose. omcSpectrumSample() deliberately draws NOTHING for a
+     monoenergetic source for the same reason. */
+    particle->energy = omcSpectrumSample(sampler->spectrum);
 
-    /* Get primary particle energy */
-    double ein = omcSpectrumSample(sampler->spectrum);
+    /* A point of the beamlet aperture, uniformly. */
+    double rnno1 = setRandom();
+    double rnno2 = setRandom();
 
-    /* Check if the particle is an electron, in such a case add electron
-     rest mass energy */
-    if (stack.p[stack.np].iq != 0) {
-        /* Electron or positron */
-        stack.p[stack.np].e = ein + RM;
-    }
-    else {
-        /* Photon */
-        stack.p[stack.np].e = ein;
-    }
+    double xiso = rnno1*source->xside1[ibeamlet]
+                + rnno2*source->xside2[ibeamlet] + source->xcorner[ibeamlet];
+    double yiso = rnno1*source->yside1[ibeamlet]
+                + rnno2*source->yside2[ibeamlet] + source->ycorner[ibeamlet];
+    double ziso = rnno1*source->zside1[ibeamlet]
+                + rnno2*source->zside2[ibeamlet] + source->zcorner[ibeamlet];
 
-    /* Accumulate sampled kinetic energy for fraction of deposited energy
-     calculations */
-    scoreSource(ein*weight);
-
-    /* Set particle position. First obtain a random position in the rectangle
-     defined by the bixel at isocenter*/
-    double xiso = 0.0;
-    double yiso = 0.0;
-    double ziso = 0.0;
-
-    rnno1 = setRandom();
-    rnno2 = setRandom();
-
-    xiso = rnno1*sampler->source->xside1[ibeamlet] + rnno2*sampler->source->xside2[ibeamlet] +
-            sampler->source->xcorner[ibeamlet];
-    yiso = rnno1*sampler->source->yside1[ibeamlet] + rnno2*sampler->source->yside2[ibeamlet] +
-            sampler->source->ycorner[ibeamlet];
-    ziso = rnno1*sampler->source->zside1[ibeamlet] + rnno2*sampler->source->zside2[ibeamlet] +
-            sampler->source->zcorner[ibeamlet];
-
-
-    /* Norm of the resulting vector from the source of current beam to the
-     position of the particle on bixel */
-    int ibeam = sampler->source->ibeam[ibeamlet];
-
+    int ibeam = source->ibeam[ibeamlet];
     double sourcePos[3];
-
-    //Gaussian Source
 
     switch (sampler->geometry)
     {
         case OMC_SOURCE_POINT: ;
-            sourcePos[0] = sampler->source->xsource[ibeam];
-            sourcePos[1] = sampler->source->ysource[ibeam];
-            sourcePos[2] = sampler->source->zsource[ibeam];
+            sourcePos[0] = source->xsource[ibeam];
+            sourcePos[1] = source->ysource[ibeam];
+            sourcePos[2] = source->zsource[ibeam];
             break;
         case OMC_SOURCE_GAUSSIAN: ;
-            //Get the normalized collimator plane vectors
-            double planeVec1_norm;
-            double planeVec2_norm;
-            planeVec1_norm = sqrt(
-                                            sampler->source->xside1[ibeamlet]*sampler->source->xside1[ibeamlet] +
-                                            sampler->source->yside1[ibeamlet]*sampler->source->yside1[ibeamlet] +
-                                            sampler->source->zside1[ibeamlet]*sampler->source->zside1[ibeamlet]
-                                        );
-            planeVec2_norm = sqrt(
-                                            sampler->source->xside2[ibeamlet]*sampler->source->xside2[ibeamlet] +
-                                            sampler->source->yside2[ibeamlet]*sampler->source->yside2[ibeamlet] +
-                                            sampler->source->zside2[ibeamlet]*sampler->source->zside2[ibeamlet]
-                                        );
+            /* Get the normalized collimator plane vectors */
+            double planeVec1_norm = sqrt(
+                source->xside1[ibeamlet]*source->xside1[ibeamlet] +
+                source->yside1[ibeamlet]*source->yside1[ibeamlet] +
+                source->zside1[ibeamlet]*source->zside1[ibeamlet]);
+            double planeVec2_norm = sqrt(
+                source->xside2[ibeamlet]*source->xside2[ibeamlet] +
+                source->yside2[ibeamlet]*source->yside2[ibeamlet] +
+                source->zside2[ibeamlet]*source->zside2[ibeamlet]);
+
             double planeVec1[3];
-            planeVec1[0] = sampler->source->xside1[ibeamlet] / planeVec1_norm;
-            planeVec1[1] = sampler->source->yside1[ibeamlet] / planeVec1_norm;
-            planeVec1[2] = sampler->source->zside1[ibeamlet] / planeVec1_norm;
+            planeVec1[0] = source->xside1[ibeamlet]/planeVec1_norm;
+            planeVec1[1] = source->yside1[ibeamlet]/planeVec1_norm;
+            planeVec1[2] = source->zside1[ibeamlet]/planeVec1_norm;
 
             double planeVec2[3];
-            planeVec2[0] = sampler->source->xside2[ibeamlet] / planeVec2_norm;
-            planeVec2[1] = sampler->source->yside2[ibeamlet] / planeVec2_norm;
-            planeVec2[2] = sampler->source->zside2[ibeamlet] / planeVec2_norm;
+            planeVec2[0] = source->xside2[ibeamlet]/planeVec2_norm;
+            planeVec2[1] = source->yside2[ibeamlet]/planeVec2_norm;
+            planeVec2[2] = source->zside2[ibeamlet]/planeVec2_norm;
 
-            //Create two normally distributed random veriables with box-muller transform
+            /* Create two normally distributed random variables with the
+             box-muller transform */
             double rnSource[2];
             boxMuller(rnSource);
 
-            //Scale with source width
+            /* Scale with source width */
             rnSource[0] *= sampler->gaussianWidth;
             rnSource[1] *= sampler->gaussianWidth;
 
-            //Now use the plane vectors to add the random 2D offset to the source
-            sourcePos[0] = sampler->source->xsource[ibeam] + rnSource[0]*planeVec1[0] + rnSource[1]*planeVec2[0];
-            sourcePos[1] = sampler->source->ysource[ibeam] + rnSource[0]*planeVec1[1] + rnSource[1]*planeVec2[1];
-            sourcePos[2] = sampler->source->zsource[ibeam] + rnSource[0]*planeVec1[2] + rnSource[1]*planeVec2[2];
-
-
+            /* Now use the plane vectors to add the random 2D offset to the
+             source */
+            sourcePos[0] = source->xsource[ibeam]
+                + rnSource[0]*planeVec1[0] + rnSource[1]*planeVec2[0];
+            sourcePos[1] = source->ysource[ibeam]
+                + rnSource[0]*planeVec1[1] + rnSource[1]*planeVec2[1];
+            sourcePos[2] = source->zsource[ibeam]
+                + rnSource[0]*planeVec1[2] + rnSource[1]*planeVec2[2];
             break;
         default: ;
             /* Checked before the parallel region starts, so this is only a
              backstop; omcFail() from a worker thread would call the host from
              a place the host cannot expect. */
-            sourcePos[0] = sampler->source->xsource[ibeam];
-            sourcePos[1] = sampler->source->ysource[ibeam];
-            sourcePos[2] = sampler->source->zsource[ibeam];
+            sourcePos[0] = source->xsource[ibeam];
+            sourcePos[1] = source->ysource[ibeam];
+            sourcePos[2] = source->zsource[ibeam];
     }
 
-
-    //Point source
+    /* The particle starts at the source and flies through the point sampled
+     on the aperture. Where it meets the phantom is omcSourcePlace()'s
+     business, not this one's. */
     double xd = xiso - sourcePos[0];
     double yd = yiso - sourcePos[1];
     double zd = ziso - sourcePos[2];
 
-
     double vnorm = sqrt(xd*xd + yd*yd + zd*zd);
 
-    /* Direction of the particle from position on bixel to beam source*/
-    double u = -(xd)/vnorm;
-    double v = -(yd)/vnorm;
-    double w = -(zd)/vnorm;
+    particle->x = sourcePos[0];
+    particle->y = sourcePos[1];
+    particle->z = sourcePos[2];
 
-    /* Calculate the minimum distance from particle position on bixel to
-     phantom boundaries */
-    double ustep = DBL_MAX; //1.0E5;
-    double dist;
+    particle->u = xd/vnorm;
+    particle->v = yd/vnorm;
+    particle->w = zd/vnorm;
 
-    if(u > 0.0) {
-        dist = (geometry.xbounds[geometry.isize]-xiso)/u;
-        if(dist < ustep) {
-            ustep = dist;
+    particle->weight = weight;
+
+    return 1;
+}
+
+/******************************************************************************/
+/* Handing the histories out to the beamlets.
+
+ Every batch runs the same experiment: beamlet i contributes the same count[i]
+ histories to each of them, so the batches stay the independent replicas the
+ variance estimate assumes. The counts are shared out by walking the cumulative
+ weight, which needs no sort, is deterministic, and leaves each count within
+ one history of the exact share.
+
+ A beamlet whose share rounds to zero is dropped rather than given a history it
+ has not earned. What that costs is bounded -- its weight is below one
+ nperbatch-th of the total -- and it is reported rather than hidden.
+
+ The rounding that is left over rides on the particle weight instead of on the
+ counts: beamlet i wants weight[i] of the fluence and got count[i] of the
+ nperbatch histories, so each of its particles carries
+
+     wt[i] = (weight[i]/count[i]) / (W/nperbatch)
+
+ which is 1 up to the rounding, and exactly 1 when the share came out whole.
+ Keeping it near 1 rather than folding the whole fluence into it leaves the
+ transport working with the weights it has always seen; the physical scale
+ goes on the batch instead, through struct OmcSource::batchScale. */
+
+struct Allocation {
+    int *count;                 // histories per beamlet per batch
+    int *offset;                // prefix sum, nbeamlets + 1 entries
+    double *weight;             // statistical weight of each beamlet's particles
+
+    int nweighted;              // beamlets asked for with a weight above zero
+    int nsampled;               // of those, the ones that got any histories
+    double totalWeight;
+    double sampledWeight;
+};
+
+static void freeAllocation(struct Allocation *a) {
+
+    free(a->count);
+    free(a->offset);
+    free(a->weight);
+
+    a->count = NULL;
+    a->offset = NULL;
+    a->weight = NULL;
+
+    return;
+}
+
+static void buildAllocation(struct Allocation *a, int nbeamlets,
+                            const double *weights, int nperbatch) {
+
+    a->count = (int*) malloc((size_t)nbeamlets*sizeof(int));
+    a->offset = (int*) malloc(((size_t)nbeamlets + 1)*sizeof(int));
+    a->weight = (double*) malloc((size_t)nbeamlets*sizeof(double));
+
+    if (!a->count || !a->offset || !a->weight) {
+        freeAllocation(a);
+        omcFail("ompMC:forward:outOfMemory",
+            "Could not allocate the history distribution for %d beamlets.",
+            nbeamlets);
+    }
+
+    /* The total, which every share below is a fraction of. Nothing else about
+     the weights is needed: the rounding of the cumulative sum is absorbed by
+     the last beamlet, which closes the account exactly. */
+    double total = 0.0;
+
+    for (int i = 0; i < nbeamlets; i++) {
+        if (!isfinite(weights[i]) || weights[i] < 0.0) {
+            freeAllocation(a);
+            omcFail("ompMC:forward:invalidWeight",
+                "Beamlet weight %d is %g; weights must be finite and zero "
+                "or positive.",
+                i + 1, weights[i]);
+        }
+        total += weights[i];
+    }
+
+    /* Individually finite values can still overflow when summed. That would
+     make every cumulative/total allocation ratio invalid. */
+    if (!isfinite(total)) {
+        freeAllocation(a);
+        omcFail("ompMC:forward:invalidWeight",
+            "The beamlet weights sum to infinity; their scale has to leave "
+            "the total finite.");
+    }
+
+    if (total <= 0.0) {
+        freeAllocation(a);
+        omcFail("ompMC:forward:noWeight",
+            "Every beamlet weight is zero, so there is nothing to calculate.");
+    }
+
+    a->totalWeight = total;
+    a->nweighted = 0;
+    a->nsampled = 0;
+    a->sampledWeight = 0.0;
+
+    /* Walk the cumulative weight: beamlet i gets the histories between the
+     rounded cumulative share before it and the one after it. */
+    double cumulative = 0.0;
+    int placed = 0;
+
+    a->offset[0] = 0;
+
+    for (int i = 0; i < nbeamlets; i++) {
+        cumulative += weights[i];
+
+        int upto = (int)((cumulative/total)*(double)nperbatch + 0.5);
+        if (i == nbeamlets - 1) {
+            upto = nperbatch;   /* the last one closes the account exactly */
+        }
+        if (upto < placed) {
+            upto = placed;
+        }
+        if (upto > nperbatch) {
+            upto = nperbatch;
+        }
+
+        a->count[i] = upto - placed;
+        placed = upto;
+        a->offset[i + 1] = placed;
+
+        if (weights[i] > 0.0) {
+            a->nweighted++;
+        }
+
+        if (a->count[i] > 0) {
+            /* wt = (weight/count) / (total/nperbatch), which is 1 when the
+             share came out whole. */
+            a->weight[i] = (weights[i]/(double)a->count[i])
+                           /(total/(double)nperbatch);
+            if (weights[i] > 0.0) {
+                a->nsampled++;
+                a->sampledWeight += weights[i];
+            }
+        }
+        else {
+            a->weight[i] = 0.0;
         }
     }
-    if(u < 0.0) {
-        dist = -(xiso-geometry.xbounds[0])/u;
-        if(dist < ustep) {
-            ustep = dist;
+
+    return;
+}
+
+/* Which beamlet history h of a batch belongs to: the last one whose offset is
+ at or below it. A binary search rather than a walk, because this runs once
+ per history. */
+static int findBeamlet(const int *offset, int nbeamlets, int h) {
+
+    int lo = 0;
+    int hi = nbeamlets;         // the answer is in [lo, hi)
+
+    while (hi - lo > 1) {
+        int mid = lo + (hi - lo)/2;
+
+        if (offset[mid] <= h) {
+            lo = mid;
+        }
+        else {
+            hi = mid;
         }
     }
 
-    if(v > 0.0) {
-        dist = (geometry.ybounds[geometry.jsize]-yiso)/v;
-        if(dist < ustep) {
-            ustep = dist;
-        }
+    return lo;
+}
+
+/******************************************************************************/
+/* The source interface */
+
+static void beamletCheck(const struct OmcSource *self) {
+
+    const struct OmcBeamletHistories *h =
+        (const struct OmcBeamletHistories *)self->impl;
+
+    if (h->sampler.geometry != OMC_SOURCE_POINT &&
+        h->sampler.geometry != OMC_SOURCE_GAUSSIAN) {
+        omcFail("ompMC:forward:invalidSourceGeometry",
+            "Source geometry %d is not defined.", (int)h->sampler.geometry);
     }
-    if(v < 0.0) {
-        dist = -(yiso-geometry.ybounds[0])/v;
-        if(dist < ustep) {
-            ustep = dist;
-        }
+    if (h->sampler.source == NULL || h->sampler.source->nbeamlets < 1) {
+        omcFail("ompMC:forward:noBeamlets",
+            "There are no beamlets to calculate.");
+    }
+    if (h->weights == NULL) {
+        omcFail("ompMC:forward:invalidWeight",
+            "The beamlets have no weights.");
     }
 
-    if(w > 0.0) {
-        dist = (geometry.zbounds[geometry.ksize]-ziso)/w;
-        if(dist < ustep) {
-            ustep = dist;
-        }
-    }
-    if(w < 0.0) {
-        dist = -(ziso-geometry.zbounds[0])/w;
-        if(dist < ustep) {
-            ustep = dist;
-        }
-    }
+    return;
+}
 
-    /* Transport particle from bixel to surface. Adjust particle direction
-     to be incident to phantom surface */
-    stack.p[stack.np].x = xiso + ustep*u;
-    stack.p[stack.np].y = yiso + ustep*v;
-    stack.p[stack.np].z = ziso + ustep*w;
+static void beamletPrepare(struct OmcSource *self, int nperbatch) {
 
-    stack.p[stack.np].u = -u;
-    stack.p[stack.np].v = -v;
-    stack.p[stack.np].w = -w;
+    struct OmcBeamletHistories *h = (struct OmcBeamletHistories *)self->impl;
 
-    /* For numerical stability, make sure that points are really inside the
-     phantom. nextafter() moves one representable step towards the opposite
-     face; the 2.0*DBL_MIN offset used before is denormal-small and was
-     absorbed entirely when added to any normal boundary coordinate, leaving
-     the particle exactly on the boundary. */
-    if(stack.p[stack.np].x < geometry.xbounds[0]) {
-        stack.p[stack.np].x = nextafter(geometry.xbounds[0],
-                                        geometry.xbounds[geometry.isize]);
-    }
-    if(stack.p[stack.np].x > geometry.xbounds[geometry.isize]) {
-        stack.p[stack.np].x = nextafter(geometry.xbounds[geometry.isize],
-                                        geometry.xbounds[0]);
+    struct Allocation *a = (struct Allocation *) malloc(sizeof(*a));
+    if (a == NULL) {
+        omcFail("ompMC:forward:outOfMemory",
+            "Could not allocate the history distribution.");
     }
 
-    if(stack.p[stack.np].y < geometry.ybounds[0]) {
-        stack.p[stack.np].y = nextafter(geometry.ybounds[0],
-                                        geometry.ybounds[geometry.jsize]);
-    }
-    if(stack.p[stack.np].y > geometry.ybounds[geometry.jsize]) {
-        stack.p[stack.np].y = nextafter(geometry.ybounds[geometry.jsize],
-                                        geometry.ybounds[0]);
+    a->count = NULL;
+    a->offset = NULL;
+    a->weight = NULL;
+
+    buildAllocation(a, h->sampler.source->nbeamlets, h->weights, nperbatch);
+
+    h->allocation = a;
+
+    /* Copied out of the working memory now, because the engine gives that
+     back through release() before it returns and the caller only gets to
+     ask afterwards. None of these four change once the histories have been
+     shared out, so the copy stays true for the whole run. */
+    h->stats.nweighted = a->nweighted;
+    h->stats.nsampled = a->nsampled;
+    h->stats.totalWeight = a->totalWeight;
+    h->stats.sampledWeight = a->sampledWeight;
+
+    omcLog(OMC_LOG_DETAIL, "Beamlets with weight: %d of %d, %d of them sampled",
+           a->nweighted, h->sampler.source->nbeamlets, a->nsampled);
+
+    double dropped = a->totalWeight - a->sampledWeight;
+
+    if (dropped > 1.0E-3*a->totalWeight) {
+        omcLog(OMC_LOG_WARNING,
+            "%d of %d weighted beamlets are too weak to be given a history "
+            "each batch, which leaves out %.2f%% of the fluence. Raise the "
+            "number of histories or lower the number of batches.",
+            a->nweighted - a->nsampled, a->nweighted,
+            100.0*dropped/a->totalWeight);
     }
 
-    if(stack.p[stack.np].z < geometry.zbounds[0]) {
-        stack.p[stack.np].z = nextafter(geometry.zbounds[0],
-                                        geometry.zbounds[geometry.ksize]);
+    /* The particle weights sum a batch to the fluence of nperbatch histories
+     rather than to the fluence the caller asked for, so the ratio between
+     the two rides on the batch -- once per batch, rather than on every
+     particle. What comes out is then the dose for exactly these weights. */
+    self->batchScale = a->totalWeight/(double)nperbatch;
+    self->incidentFluence = 1.0;
+
+    return;
+}
+
+static int beamletSample(const struct OmcSource *self, uint64_t ihist,
+                         int ihistInBatch, struct OmcSourceParticle *particle) {
+
+    const struct OmcBeamletHistories *h =
+        (const struct OmcBeamletHistories *)self->impl;
+    const struct Allocation *a = (const struct Allocation *)h->allocation;
+
+    (void)ihist;
+
+    int ibeamlet = findBeamlet(a->offset, h->sampler.source->nbeamlets,
+                               ihistInBatch);
+
+    return omcBeamletProduce(&h->sampler, ibeamlet, a->weight[ibeamlet],
+                             particle);
+}
+
+static void beamletRelease(struct OmcSource *self) {
+
+    struct OmcBeamletHistories *h = (struct OmcBeamletHistories *)self->impl;
+    struct Allocation *a = (struct Allocation *)h->allocation;
+
+    if (a != NULL) {
+        freeAllocation(a);
+        free(a);
+        h->allocation = NULL;
     }
-    if(stack.p[stack.np].z > geometry.zbounds[geometry.ksize]) {
-        stack.p[stack.np].z = nextafter(geometry.zbounds[geometry.ksize],
-                                        geometry.zbounds[0]);
-    }
 
-    /* Determine region index of source particle */
-    int ix = omcFindVoxelIndex(geometry.xbounds, geometry.isize,
-                               stack.p[stack.np].x);
-    int iy = omcFindVoxelIndex(geometry.ybounds, geometry.jsize,
-                               stack.p[stack.np].y);
-    int iz = omcFindVoxelIndex(geometry.zbounds, geometry.ksize,
-                               stack.p[stack.np].z);
+    return;
+}
 
-    stack.p[stack.np].ir = 1 + ix + iy*imax + iz*ijmax;
+void omcBeamletHistoriesAsSource(struct OmcBeamletHistories *histories,
+                                 struct OmcSource *source) {
 
-    /* Set statistical weight and distance to closest boundary*/
-    stack.p[stack.np].wt = weight;
-    stack.p[stack.np].dnear = 0.0;
+    histories->allocation = NULL;
+    memset(&histories->stats, 0, sizeof(histories->stats));
+
+    source->check = beamletCheck;
+    source->prepare = beamletPrepare;
+    source->sample = beamletSample;
+    source->release = beamletRelease;
+    source->impl = histories;
+    source->batchScale = 1.0;
+    source->incidentFluence = 1.0;
+
+    return;
+}
+
+void omcBeamletHistoriesStats(const struct OmcBeamletHistories *histories,
+                              struct OmcBeamletStats *stats) {
+
+    *stats = histories->stats;
 
     return;
 }

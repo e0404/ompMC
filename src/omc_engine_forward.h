@@ -21,32 +21,39 @@
 
 /*!
  @file
- omc_engine_forward - Dose from a whole weighted set of beamlets, in one cube.
+ omc_engine_forward - Dose from a whole source at once, in one cube.
 
- Forward dose for a fluence map. The beamlets and their geometry are the same
- ones omc_engine_dij.h takes; what is added is one weight per beamlet, which
- is where the collimation comes in -- a closed leaf is a beamlet of weight
- zero, a partly transmitting one a beamlet of reduced weight. The result is
- what dij*weights would have been, computed directly:
+ One run, one dense dose cube, whatever the particles come from: weighted
+ beamlets making up a fluence map (omc_source_beamlet.h), a phase space
+ recorded by an earlier simulation (omc_source_phsp.h), or anything else that
+ fills in a struct OmcSource. Held against the other engine that takes
+ beamlets:
 
      omcCalcDij     nhist histories per beamlet, a sparse column each,
                     weights applied afterwards by the caller
-     omcCalcForward nhist histories in total, spread over the beamlets in
-                    proportion to their weight, one dense cube
+     omcCalcForward nhist histories in total over the whole source, one dense
+                    cube
 
- so the cost no longer grows with the number of beamlets, and a beamlet that
- is closed costs nothing at all.
+ so with beamlets the cost no longer grows with how many there are, and one
+ that is closed costs nothing at all.
 
- @warning The weights modulate FLUENCE, not spectrum: a weight of 0.02 for a
- leaf that transmits 2% starts 2% of the particles it would otherwise have
- started, with the unhardened spectrum. Attenuation through the collimator,
- its scatter and the beam hardening that comes with it are not modelled.
+ What the result MEANS is the source's business too, and it says so through
+ struct OmcSource::batchScale and struct OmcSource::incidentFluence. Weighted
+ beamlets give the dose for exactly the weights they were handed, which is
+ what makes it comparable with `dij*weights`. A phase space gives the dose per
+ history, since a file does not come with a fluence.
+
+ @warning With beamlets, the weights modulate FLUENCE, not spectrum: a weight
+ of 0.02 for a leaf that transmits 2% starts 2% of the particles it would
+ otherwise have started, with the unhardened spectrum. Attenuation through the
+ collimator, its scatter and the beam hardening that comes with it are not
+ modelled.
 
  Before calling omcCalcForward() the host must have
 
    1. filled struct Geom and called initRegions()   (omc_geom.h)
    2. called initMediaData() and initVrt()          (ompmc.h)
-   3. built the source spectrum                     (omc_spectrum.h)
+   3. set up the source, including its spectrum if it has one
 
  and afterwards it owns the cleanup of those.
 
@@ -57,20 +64,18 @@
 #ifndef OMC_ENGINE_FORWARD_H
 #define OMC_ENGINE_FORWARD_H
 
-#include "omc_source_beamlet.h"
+#include "omc_collimator.h"
+#include "omc_source.h"
 
 struct OmcSpectrum;
 
-/*! Run parameters for one forward calculation. */
+/*! Run parameters for one forward calculation. What the particles ARE is the
+ source's business, not this struct's. */
 struct OmcForwardOptions {
-    int nhist;                  ///< total histories, over all beamlets together
+    int nhist;                  ///< total histories, over the whole calculation
     int nbatch;                 ///< statistical batches to split them into
-    int charge;                 ///< 0 : photons, -1 : electrons, +1 : positrons
 
-    enum OmcSourceGeometry sourceGeometry;   ///< POINT or GAUSSIAN, see omc_source_beamlet.h
-    double sourceGaussianWidth; ///< standard deviation in cm, GAUSSIAN only
-
-    int outputDose;              ///< 1 : dose in Gy for the weights given, 0 : mean deposited energy
+    int outputDose;              ///< 1 : dose in Gy, 0 : mean deposited energy
 };
 
 /*! Callbacks omcCalcForward() reports progress through. */
@@ -91,16 +96,23 @@ struct OmcForwardCallbacks {
     void *user;                 ///< passed back to the callback, untouched
 };
 
-/*! What the run did, for hosts that want to report it. Optional. */
+/*! What the run did, for hosts that want to report it. Optional.
+
+ Anything specific to a kind of source -- how the histories were shared out
+ among beamlets, say -- belongs to that source and is asked of it, e.g.
+ through omcBeamletHistoriesStats(). */
 struct OmcForwardSummary {
     int nhist;                  ///< histories actually run, rounded to whole batches
     int nperbatch;              ///< histories per batch
 
-    int nweighted;              ///< beamlets with a weight above zero
-    int nsampled;                ///< of those, the ones that got any histories
+    /*! Histories that put a particle in the phantom. The rest drew one the
+     modifier stopped, one pointing somewhere else, or one ompMC does not
+     transport. */
+    unsigned long long started;
 
-    double totalWeight;         ///< sum of the weights asked for
-    double sampledWeight;       ///< sum over the beamlets that got histories
+    /*! Histories whose particle the beam modifier stopped outright. Zero
+     when there was no modifier. */
+    unsigned long long blocked;
 
     double energyFraction;      ///< deposited energy over incident kinetic energy
 };
@@ -110,16 +122,12 @@ struct OmcForwardSummary {
  per voxel, indexed like the phantom: `ix + iy*isize + iz*isize*jsize`.
 
  @param options Run parameters.
- @param source The beamlets, with the geometry of struct OmcBeamletSource.
- @param weights One finite, non-negative value per beamlet, and their sum
- must also be finite. Its scale carries through to the result: doubling
- every weight doubles the dose, and the dose returned is the dose for
- exactly these weights, so that it can be held against `dij*weights`.
- Beamlets are given histories in proportion to their weight, and one whose
- share rounds to zero histories contributes nothing -- the summary reports
- how much weight that was, and a warning goes to the host when it is more
- than a thousandth of the total.
- @param spectrum Source energy spectrum.
+ @param source Where the particles come from. Checked over before the
+ histories start, prepared with the batch size, and released afterwards, so
+ the same source struct can be run again but must outlive the call.
+ @param modifier What is in the beam's way -- a collimator, typically -- or
+ `NULL` for an open beam. A particle it stops costs nothing but the history it
+ used up, since it is stopped before being carried to the phantom.
  @param dose Caller-supplied array of `isize*jsize*ksize` entries.
  @param uncertainty Caller-supplied array of the same size, or `NULL`. Holds
  the RELATIVE uncertainty of the dose in that voxel, and is 0.9999999
@@ -127,11 +135,16 @@ struct OmcForwardSummary {
  @param callbacks Progress reporting; see struct OmcForwardCallbacks.
  @param summary Optional; filled in with what the run did.
  @return Nonzero when the run finished, 0 when the progress callback stopped
- it. */
+ it.
+
+ @warning Histories whose particle never reaches the phantom still count
+ among the ones the result is divided by. They are fluence the source stands
+ for that happened to miss, and leaving them out would scale the answer up by
+ however much of the beam does. struct OmcForwardSummary::started says how
+ many of them there were. */
 int omcCalcForward(const struct OmcForwardOptions *options,
-                   const struct OmcBeamletSource *source,
-                   const double *weights,
-                   const struct OmcSpectrum *spectrum,
+                   struct OmcSource *source,
+                   const struct OmcBeamModifier *modifier,
                    double *dose, double *uncertainty,
                    const struct OmcForwardCallbacks *callbacks,
                    struct OmcForwardSummary *summary);

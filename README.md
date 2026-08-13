@@ -56,7 +56,7 @@ If you use this code, please cite the work it is based on:
 | Target       | Kind                | What it does |
 |--------------|---------------------|--------------|
 | `omc_dosxyz` | command line binary | DOSXYZnrc-style standalone dose calculation on an `.egsphant` phantom, driven by a plain-text input file. Writes a `.3ddose` file. |
-| `omc_matrad` | MATLAB / Octave MEX file | Dose for matRad. Takes density and material cubes, geometry, source and option structs, and returns either a sparse beamlet dose-influence matrix `dij` or, with `mcOpt.mode = 'forward_beamlet'`, the dense dose cube of one weighted field. The same source builds against MATLAB (`.mexw64`/`.mexa64`/…) and GNU Octave (`.mex`); see [BUILDING.md](BUILDING.md#gnu-octave). |
+| `omc_matrad` | MATLAB / Octave MEX file | Dose for matRad. Takes density and material cubes, geometry, source and option structs, and returns either a sparse beamlet dose-influence matrix `dij` or, with `mcOpt.mode = 'forward_beamlet'` or `'forward_phsp'`, a dense dose cube — of one weighted field, or of the particles of an IAEA phase-space file. The same source builds against MATLAB (`.mexw64`/`.mexa64`/…) and GNU Octave (`.mex`); see [BUILDING.md](BUILDING.md#gnu-octave). |
 
 Both link against `ompmc_core`, the transport library built from [src/](src/):
 
@@ -160,7 +160,8 @@ addpath('build/bin');
 | `mcOpt.mode` | Returns |
 | --- | --- |
 | `'dij'` (default) | `[dij, dijVar]` — one sparse column per beamlet |
-| `'forward_beamlet'` | `[dose, relUnc]` — one dense cube, the size of `cubeRho` |
+| `'forward_beamlet'` | `[dose, relUnc, summary]` — one dense cube, the size of `cubeRho` |
+| `'forward_phsp'` | the same, from an IAEA phase-space file instead of beamlets |
 
 `'forward_beamlet'` computes the dose of a whole weighted field in one go. The collimation is
 given as one weight per beamlet in `mcSrc.bixelWeights`, a non-negative vector of length
@@ -193,7 +194,83 @@ deposited energy instead of Gy.
 The weights modulate **fluence, not spectrum**: a leaf transmitting 2% starts 2% of the
 particles, with the spectrum unhardened. Attenuation in the collimator, its scatter and the beam
 hardening that goes with it are not modelled. The mode is named for its source model rather than
-its output, so that a variant taking real collimator geometry can sit next to it later.
+its output, which is what lets `'forward_phsp'` sit next to it.
+
+The third output, `summary`, describes what became of the histories: `nHistories`, `nStarted`
+(how many put a particle into the phantom), `nBlocked` (how many the collimator stopped) and
+`energyFraction`. Mode `'dij'` has no equivalent and refuses it — a beamlet that started nothing
+comes back as a column of zeros, which says so already.
+
+### `mcOpt.mode = 'forward_phsp'` — starting from a phase space
+
+A phase-space file records everything that crossed a plane in an earlier simulation of a
+treatment head; the sets published at <https://www-nds.iaea.org/phsp/> are the output of full
+models of real linacs. Starting histories from those particles is the difference between
+modelling the beam and describing it. There is no spectrum and there are no beamlets: the file
+carries the energy, position and direction of every particle it holds.
+
+```matlab
+mcOpt.mode = 'forward_phsp';
+mcSrc.phaseSpace = struct('file', 'Varian_TrueBeam6MV_01');
+[dose, relUnc, summary] = omc_matrad(cubeRho, cubeMatIx, mcGeo, mcSrc, mcOpt);
+```
+
+| `mcSrc.phaseSpace` | Meaning |
+| --- | --- |
+| `file` | base name of the `.IAEAheader`/`.IAEAphsp` pair, with or without either extension |
+| `order` | `'replay'` (default) walks the file in order and draws no random numbers; `'random'` picks a particle per history, at one random number each |
+| `first` | particle the replay starts at, default `0` |
+| `rotation` | `3x3` rotation carrying the phase space into the phantom's coordinate system, default `eye(3)` |
+| `translation` | `1x3` offsets in cm, applied after `rotation`, default zeros |
+
+The whole file goes into memory, so it costs about its size on disk — gigabytes for a published
+dataset. And it was recorded wherever the original simulation scored it, not aimed at your
+phantom, so **it is normal for most histories to start nothing**; `summary.nStarted` is what
+tells that apart from a transform that is wrong.
+
+**One particle per history.** A phase space records which particles a single original history
+left behind, and those are correlated. Drawing them one at a time still gets the dose right on
+average, but the uncertainty a run reports comes out smaller than the truth by however much they
+are correlated.
+
+### `mcSrc.collimator` — something in the beam's way
+
+Optional in either forward mode. A transmission grid on a plane, applied by back projection from
+wherever the source put the particle — so it composes with either source and does not care which
+side of the plane the particle started on. That is what lets a field be cut out of a phase space
+recorded *above* the jaws, as the published ones are.
+
+```matlab
+% A 10 x 10 cm field at the 100 cm isocentre, from a jaw at 40 cm
+mcSrc.collimator = struct('z', 40, 'x0', -2, 'y0', -2, 'dx', 4, 'dy', 4, ...
+                          'transmission', 1);
+```
+
+| Field | Meaning |
+| --- | --- |
+| `z` | the plane the mask sits on, in cm |
+| `x0`, `y0` | lower corner of the grid, in cm |
+| `dx`, `dy` | cell size in cm, both positive |
+| `transmission` | matrix of fractions in `[0,1]`, one per cell, x down the rows; a scalar `1` is a rectangular aperture |
+| `outside` | what gets through beside the grid, default `0` — what a field stop does |
+| `roulette` | see below, default `false` |
+
+With beamlets this is usually unnecessary, the collimation already being in `bixelWeights`; it
+earns its place where the weights cannot say what is wanted, such as a block cutting across
+beamlets or a leaf that transmits.
+
+`roulette` chooses how a partly transmitting cell is paid for, and both give the same dose in
+the mean. `false` multiplies the particle's weight by the fraction and transports it regardless,
+so a 2% leaf costs a full shower for a fiftieth of the dose — but **draws no random numbers at
+all**, leaving every history's random stream where it would have been with the beam open, so a
+collimated run stays comparable history by history with the open one it came from. `true` lets
+the particle through with that probability at full weight instead, spending the time where the
+dose is, at the price of one random number and more noise per history. Cells that are fully open
+or fully shut are decided without drawing either way, so an all-or-nothing aperture behaves
+identically under both.
+
+This is a **mask, not a collimator**: it attenuates and blocks, but does not scatter and does not
+harden the spectrum of what it lets through — good for the fluence, poor for the penumbra.
 
 The source spectrum can either be read from a `.spectrum` file (`spectrumFile`, default
 `./spectra/mohan6.spectrum`) or passed in directly as `mcOpt.spectrum`, a struct holding the
@@ -242,7 +319,7 @@ OpenMP runtime are all it needs. Prebuilt wheels for Linux, macOS and Windows co
 `wheels` workflow and carry their own OpenMP runtime, so they need neither.
 
 The wheel bundles the cross section data, PEGS files and spectra, so nothing has to be pointed at
-the source tree. Two calculations are available, sharing the same phantom, physics and spectra:
+the source tree. Four calculations are available, sharing the same phantom and physics:
 
 ```python
 import numpy as np, ompmc
@@ -273,6 +350,15 @@ dose, uncertainty = ompmc.calc_forward(
     geometry, beamlet_source, weights, ompmc.Spectrum.default(),
     n_histories=100_000,
 )
+
+# ... or the same from a linac's own particles, with a 10 x 10 cm field at
+# 100 cm cut out of them by a jaw at 40 cm. No spectrum: the file carries one.
+dose, uncertainty, summary = ompmc.calc_forward_phsp(
+    geometry,
+    ompmc.PhaseSpaceSource("Varian_TrueBeam6MV_01"),
+    n_histories=1_000_000,
+    collimator=ompmc.ApertureMask.rectangle(40.0, -2.0, 2.0, -2.0, 2.0),
+)
 ```
 
 - **Cubes must be Fortran ordered.** The transport indexes voxels with the first axis varying
@@ -281,7 +367,17 @@ dose, uncertainty = ompmc.calc_forward(
 - `progress` is called with the fraction finished; returning `False` stops the run, as does Ctrl-C.
 - `calc_forward` is the Python side of `mcOpt.mode = 'forward_beamlet'` above, with the same two
   caveats: `n_histories` counts the whole calculation rather than one beamlet, and the weights
-  modulate fluence rather than spectrum.
+  modulate fluence rather than spectrum. It takes a `collimator=` too.
+- `calc_forward_phsp` is the Python side of `mcOpt.mode = 'forward_phsp'`, and carries the same
+  warnings: the whole file goes into memory, one particle starts each history so the reported
+  uncertainty is optimistic, and most histories starting nothing is normal — the file was
+  recorded wherever the original simulation scored it, not aimed at your phantom. It returns a
+  third value, a `RunSummary` of `n_histories`, `n_started`, `n_blocked` and `energy_fraction`,
+  which is what tells that apart from a transform that is wrong.
+- `ompmc.ApertureMask` is something in the beam's way, applied by back projection so it composes
+  with either source. `roulette=True` spends a partly transmitting cell as a survival probability
+  at full weight rather than as a weight multiplier — cheaper behind thick leaves, noisier, and
+  it draws a random number where the default draws none.
 - The GIL is released for the whole calculation, so the OpenMP threads run at full speed. The
   engines keep their state in globals, so one calculation runs at a time per process: use
   `multiprocessing`, not threads.
@@ -327,6 +423,10 @@ test_omc_matrad_mex
 
 [.github/workflows/build.yml](.github/workflows/build.yml) builds and smoke tests every push on
 Windows x64 (MSVC and MinGW), Linux x64, Linux ARM64, macOS x64 and macOS ARM64.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a history of changes.
 
 ## License
 

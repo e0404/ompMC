@@ -12,6 +12,13 @@
  instead.
 *****************************************************************************/
 
+/* Before anything can include setjmp.h; see the comment in
+ tests/test_omc_phsp.c for why MinGW's SEH-unwinding longjmp() is not what
+ this harness wants. */
+#if defined(__MINGW32__)
+    #define __USE_MINGW_SETJMP_NON_SEH 1
+#endif
+
 #include "ompmc.h"
 #include "omc_engine_cube.h"
 #include "omc_geom.h"
@@ -77,9 +84,9 @@ static const char *current_test = "";
         current_test = #fn;                                                   \
         tests_run++;                                                          \
         int _before = tests_failed;                                           \
+        printf("%-42s ", #fn);                                                \
         fn();                                                                 \
-        printf("%-42s %s\n", #fn,                                             \
-               tests_failed == _before ? "ok" : "FAILED");                    \
+        printf("%s\n", tests_failed == _before ? "ok" : "FAILED");            \
     } while (0)
 
 /*******************************************************************************
@@ -634,18 +641,35 @@ static void silentLog(int level, const char *message, void *user) {
 static jmp_buf fail_jmp;
 static char fail_id[128];
 static int fail_seen;
+static int fail_armed;          /* is there a live setjmp() to come back to? */
 
 static void catchingFail(const char *id, const char *message, void *user) {
 
-    (void)message; (void)user;
+    (void)user;
     snprintf(fail_id, sizeof(fail_id), "%s", id != NULL ? id : "");
     fail_seen = 1;
+
+    /* A failure nobody was expecting. There is no live setjmp() to return
+     to, and jumping into a frame that has already returned is undefined
+     behaviour -- in practice a crash with nothing printed, which is a
+     miserable way to be told that a call went wrong. Say what happened and
+     stop instead. */
+    if (!fail_armed) {
+        printf("\n  FAIL %s: unexpected failure %s\n         %s\n",
+               current_test, id != NULL ? id : "(no id)",
+               message != NULL ? message : "");
+        fflush(stdout);
+        exit(EXIT_FAILURE);
+    }
+
+    fail_armed = 0;
     longjmp(fail_jmp, 1);
 }
 
 static void installFailCatcher(void) {
 
     fail_seen = 0;
+    fail_armed = 0;
     fail_id[0] = '\0';
 
     struct OmcHost catcher = {silentLog, catchingFail, NULL};
@@ -884,10 +908,12 @@ static void test_parse_input_file_rejects_an_overfull_deck(void) {
     char stem[256];
     snprintf(stem, sizeof(stem), "%s", "test_input_overfull");
 
+    fail_armed = 1;
     if (setjmp(fail_jmp) == 0) {
         parseInputFile(stem);
         CHECK(!"parseInputFile() accepted more pairs than the table holds");
     }
+    fail_armed = 0;
 
     omcSetHost(NULL);
 
@@ -921,10 +947,12 @@ static void test_set_input_value_rejects_one_pair_too_many(void) {
 
     installFailCatcher();
 
+    fail_armed = 1;
     if (setjmp(fail_jmp) == 0) {
         omcSetInputValue("one too many", "1");
         CHECK(!"omcSetInputValue() accepted a pair past INPUT_PAIRS");
     }
+    fail_armed = 0;
 
     omcSetHost(NULL);
 
@@ -1135,6 +1163,10 @@ static void test_kn_sigma0_is_positive_and_falls_with_energy(void) {
 
 /*******************************************************************************/
 int main(void) {
+
+    /* Unbuffered, so a test that brings the process down still leaves behind
+     the list of the ones that got that far. */
+    setvbuf(stdout, NULL, _IONBF, 0);
 
     printf("ompMC unit tests\n\n");
 

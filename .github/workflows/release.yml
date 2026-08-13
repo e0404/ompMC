@@ -1,0 +1,349 @@
+name: release
+
+# Packages the binaries build.yml already builds and tests into per-platform
+# zips, and publishes them to a GitHub Release.
+#
+# Deliberately does not rebuild anything: it reacts to build.yml finishing
+# (workflow_run) and downloads that run's artifacts, so the binaries shipped
+# in a release are exactly the ones the build matrix compiled and smoke
+# tested, byte for byte.
+#
+# Because this workflow's own definition is only evaluated from the default
+# branch for a workflow_run trigger, it only fires for tags pushed *after*
+# this file has been merged to master -- it cannot retroactively package an
+# older tag. Use the workflow_dispatch input below for that case (or to
+# re-cut a release's zips after fixing a packaging bug, without re-tagging).
+#
+# Package layout:
+#
+#   ompmc-<version>-<platform>.zip            omc_dosxyz + the MATLAB MEX file
+#   ompmc-<version>-octave8-<platform>.zip    Octave MEX file, Octave 8.x ABI
+#   ompmc-<version>-octave10-<platform>.zip   Octave MEX file, Octave >=10 ABI
+#
+# Each build.yml job now uploads its binaries pre-sorted into
+# omc_dosxyz/omc_matrad_matlab/omc_matrad_octave subfolders, each carrying
+# only the DLLs objdump found that specific binary actually importing (see
+# the "Collect the artifacts" step in build.yml). This workflow just copies
+# those subfolders wholesale -- which DLL goes with which binary is decided
+# once, in build.yml, instead of being re-derived (and risking drifting out
+# of sync) here.
+#
+# Octave's own liboctmex carries an ABI SOVERSION (embedded in the .mex at
+# build time, see cmake/FindOctave.cmake and omc_mex_soversion.c.in) that
+# stayed at "1" from Octave 10.3.0 through 11.3.0, so one "octave10" build
+# covers both -- checked directly against local installs of both rather than
+# assumed. Octave 9 and older have no liboctmex at all and load through
+# liboctinterp instead, which is the "octave8" bucket here (build.yml's own
+# coverage stops at 8.4).
+#
+# Platform coverage matches what build.yml actually produces today:
+#   - Three separate Windows zips, one per toolchain (MSVC, MinGW GCC,
+#     llvm-mingw) -- the toolchains are not equivalent (see BUILDING.md's
+#     performance note and the OpenMP section), so all three ship rather than
+#     picking one.
+#   - linux-x64 and linux-arm64. linux-arm64 ships omc_dosxyz only: MathWorks
+#     publishes no Linux ARM MATLAB, and build.yml does not build Octave
+#     there either.
+#   - macos-x64 and macos-arm64, MATLAB MEX only.
+#   - Octave packages only for the platforms build.yml actually builds Octave
+#     on today: Windows (8 and 10) and linux-x64 (8, via apt). There is no
+#     macOS Octave job in build.yml yet, and Linux has no path to Octave 9/10
+#     without adding one (apt on Ubuntu 24.04 only has 8.4) -- both are gaps
+#     to close in build.yml first, not something this workflow can package
+#     around.
+
+on:
+  workflow_run:
+    workflows: [build]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing v* tag to (re-)package, e.g. v0.2.0'
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.id || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  # Resolves which build.yml run to pull artifacts from, and whether there is
+  # a v* tag on that exact commit at all -- most build.yml runs are plain
+  # branch/PR builds and this workflow has nothing to do for those.
+  resolve:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    outputs:
+      run_id: ${{ steps.resolve.outputs.run_id }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      is_release: ${{ steps.resolve.outputs.is_release }}
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          # Tags and history: workflow_dispatch checks out the given tag
+          # directly, workflow_run checks out the commit the triggering run
+          # built, and either way `git tag --points-at` below needs tags
+          # fetched, which a shallow checkout would not have.
+          ref: ${{ github.event.inputs.tag || github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Resolve the run, tag and version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ github.event.inputs.tag }}"
+            if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              echo "::error::tag $tag does not exist"
+              exit 1
+            fi
+            sha="$(git rev-list -n 1 "refs/tags/$tag")"
+            # The most recent successful build.yml run for that exact commit.
+            # Filtered by commit and status at the API rather than by jq over
+            # whatever the default page happened to hold: re-packaging an
+            # older tag is exactly the case where its build has long since
+            # fallen out of the most recent runs, and searching a page that
+            # no longer contains it would report it as never having been
+            # built.
+            run_id="$(gh run list --repo "${{ github.repository }}" \
+              --workflow build.yml --commit "$sha" --status success --limit 1 \
+              --json databaseId --jq '.[0].databaseId')"
+            if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+              echo "::error::no successful build.yml run found for $tag ($sha)"
+              exit 1
+            fi
+          else
+            run_id="${{ github.event.workflow_run.id }}"
+            # build.yml runs on every push, not just tags; only a v* tag
+            # pointing at exactly this commit turns that into a release.
+            tag="$(git tag --points-at HEAD | grep -m1 '^v[0-9]' || true)"
+          fi
+
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          if [ -n "$tag" ]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  package:
+    needs: resolve
+    if: needs.resolve.outputs.is_release == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # --- omc_dosxyz + MATLAB MEX, one zip per platform/toolchain -----
+          - name: windows-x64-msvc
+            artifact: ompmc-windows-x64-msvc
+            kind: full
+          - name: windows-x64-mingw
+            artifact: ompmc-windows-x64-mingw
+            kind: full
+          - name: windows-x64-llvm-mingw
+            artifact: ompmc-windows-x64-llvm-mingw
+            kind: full
+          - name: linux-x64
+            artifact: ompmc-linux-x64-gcc
+            kind: full
+          - name: linux-arm64
+            artifact: ompmc-linux-arm64-gcc
+            kind: full
+          - name: macos-x64
+            artifact: ompmc-macos-x64
+            kind: full
+          - name: macos-arm64
+            artifact: ompmc-macos-arm64
+            kind: full
+          # --- Octave MEX only, one zip per platform/ABI bucket ------------
+          # Sourced from the plain MinGW GCC jobs, not the llvm-mingw one:
+          # Octave's own Windows distribution bundles libgomp-1.dll,
+          # libgcc_s_seh-1.dll and libwinpthread-1.dll next to octave-cli.exe
+          # (checked directly against local Octave 8.4.0/10.3.0/11.3.0
+          # installs), so a GCC-built .mex resolves its OpenMP runtime
+          # against Octave's own copy for free. The llvm-mingw build needs
+          # libomp.dll vendored instead -- Octave does not ship that one --
+          # so it is skipped here in favour of the self-contained build.
+          - name: windows-x64-octave8
+            artifact: ompmc-windows-x64-mingw-octave8
+            kind: octave
+          - name: windows-x64-octave10
+            artifact: ompmc-windows-x64-mingw
+            kind: octave
+          - name: linux-x64-octave8
+            artifact: ompmc-linux-x64-gcc
+            kind: octave
+
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+
+      - name: Download the build artifact
+        uses: actions/download-artifact@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          name: ${{ matrix.artifact }}
+          path: dl
+
+      # The download restores the omc_dosxyz/omc_matrad_matlab/
+      # omc_matrad_octave subfolders build.yml uploaded verbatim, each
+      # already carrying exactly the DLLs objdump found that binary
+      # importing -- see build.yml's "Collect the artifacts" step. This step
+      # only decides which of those subfolders go into which zip, and writes
+      # the prerequisite note that isn't vendored (VC++ Redistributable,
+      # Homebrew libomp, apt libgomp1).
+      - name: Assemble the package
+        id: assemble
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.resolve.outputs.version }}"
+          name="${{ matrix.name }}"
+          pkg="ompmc-$version-$name"
+          mkdir -p "$pkg/bin"
+
+          if [ "${{ matrix.kind }}" = "full" ]; then
+            cp dl/omc_dosxyz/* "$pkg/bin/" 2>/dev/null || true
+            cp dl/omc_matrad_matlab/* "$pkg/bin/" 2>/dev/null || true
+            chmod +x "$pkg/bin/omc_dosxyz" 2>/dev/null || true
+
+            case "$name" in
+              windows-x64-msvc)
+                prereq="Requires the Microsoft Visual C++ Redistributable (x64): https://aka.ms/vs/17/release/vc_redist.x64.exe -- already present on most machines with MATLAB or Visual Studio installed."
+                ;;
+              windows-x64-mingw|windows-x64-llvm-mingw)
+                prereq="Self-contained: the required runtime DLL(s) are included in bin/, matched to what each binary in it actually imports."
+                ;;
+              linux-x64|linux-arm64)
+                prereq="Requires the GNU OpenMP runtime (libgomp1), normally already installed alongside GCC. Debian/Ubuntu: apt install libgomp1."
+                ;;
+              macos-x64|macos-arm64)
+                prereq="omc_dosxyz requires the Homebrew libomp runtime: brew install libomp. The MATLAB MEX file needs nothing extra -- see BUILDING.md."
+                ;;
+            esac
+            if [ "$name" = "linux-arm64" ]; then
+              contents="omc_dosxyz only -- MathWorks publishes no Linux ARM64 MATLAB release, so there is no MEX file for this platform."
+            else
+              contents="omc_dosxyz and the MATLAB MEX file (omc_matrad)."
+            fi
+          else
+            cp dl/omc_matrad_octave/* "$pkg/bin/"
+            prereq="Self-contained on Windows -- Octave's own installation already provides the required runtime DLLs. Requires the GNU OpenMP runtime (libgomp1) on Linux, normally already pulled in by Octave's own package dependencies."
+            case "$name" in
+              *-octave8) abi="Built for Octave 8.x (pre-liboctmex ABI)." ;;
+              *-octave10) abi="Built against Octave 10.3's liboctmex ABI (SOVERSION 1); also verified against Octave 11.3, which shares the same ABI number." ;;
+            esac
+            contents="The Octave MEX file (omc_matrad.mex). $abi"
+          fi
+
+          cp -r data pegs4 phantoms spectra "$pkg/"
+
+          # A heredoc would be simpler, but its closing delimiter has to sit
+          # at column 0 with no leading whitespace, which a YAML `run: |`
+          # block cannot give it without ending the block early -- printf
+          # avoids the indentation clash entirely.
+          {
+            printf 'ompMC %s -- %s\n\n' "$version" "$name"
+            printf '%s\n\n' "$contents"
+            printf 'Contents:\n'
+            printf '  bin/       the binary/binaries above\n'
+            printf '  data/      XCOM photon cross sections, multiple-scattering and spin data\n'
+            printf '  pegs4/     PEGS4 material data and bremsstrahlung form factors\n'
+            printf '  phantoms/  example .egsphant phantoms (WATER, TG119, PROSTATE)\n'
+            printf '  spectra/   example photon spectra (mohan6, var_6MV, 250)\n\n'
+            printf '%s\n\n' "$prereq"
+            printf 'Keep bin/, data/, pegs4/, phantoms/ and spectra/ next to each other --\n'
+            printf "the MATLAB/Octave interface and omc_dosxyz's example input files both\n"
+            printf 'refer to them by relative path.\n\n'
+            printf 'Full documentation, source and license:\n'
+            printf 'https://github.com/e0404/ompMC\n'
+          } > "$pkg/README.txt"
+
+          zip -r "$pkg.zip" "$pkg"
+          echo "zip_name=$pkg.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-zip-${{ matrix.name }}-${{ matrix.kind }}
+          path: ${{ steps.assemble.outputs.zip_name }}
+          if-no-files-found: error
+
+  publish:
+    needs: [resolve, package]
+    if: needs.resolve.outputs.is_release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+
+      - name: Download all packages
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-zip-*
+          path: dist
+          merge-multiple: true
+
+      # Lifts the matching "## [version]" section out of CHANGELOG.md so the
+      # release body does not have to be written twice; falls back to a
+      # generic note if a release is cut before the changelog is updated.
+      - name: Extract the changelog section
+        id: notes
+        run: |
+          set -euo pipefail
+          version="${{ needs.resolve.outputs.version }}"
+          # index(), not ==: the heading is "## [0.2.0] - 2026-08-06", not
+          # just "## [0.2.0]".
+          awk -v ver="## [$version]" '
+            index($0, ver) == 1 { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+
+          if [ ! -s notes.md ]; then
+            echo "_No CHANGELOG.md entry found for $version._" > notes.md
+          fi
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ needs.resolve.outputs.tag }}"
+          version="${{ needs.resolve.outputs.version }}"
+
+          args=(--title "ompMC $tag" --notes-file notes.md)
+          # 0.x and explicit pre-release suffixes (e.g. v0.2.0-rc1) are not
+          # API-stable yet -- see CHANGELOG.md -- so both are flagged as a
+          # GitHub pre-release rather than only the semver-suffix case.
+          case "$version" in
+            0.*|*-*) args+=(--prerelease) ;;
+          esac
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.zip --clobber
+          else
+            gh release create "$tag" dist/*.zip "${args[@]}"
+          fi

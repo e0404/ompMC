@@ -46,10 +46,13 @@
  is gone with them: it hid the real message behind a generic one, and quietly
  turned every exit() in scope into something that unwinds instead. */
 
+#include "omc_collimator.h"
 #include "omc_engine_dij.h"
 #include "omc_engine_forward.h"
 #include "omc_geom.h"
 #include "omc_host.h"
+#include "omc_phsp.h"
+#include "omc_source_phsp.h"
 #include "omc_spectrum.h"
 #include "omc_utilities.h"
 #include "ompmc.h"
@@ -109,17 +112,29 @@ struct OmcConfig omcConfig;
  forward mode existed keeps working untouched.
 
  The names carry the source model rather than the output, because the output
- is the same dense cube for all of them: forward_beamlet collimates by giving
- each of matRad's beamlets a weight, and a mode that takes real collimator
- geometry would join it here rather than replace it. */
+ is the same dense cube for both forward modes: forward_beamlet collimates by
+ giving each of matRad's beamlets a weight, forward_phsp starts from the
+ particles a phase space file holds instead. */
 enum OmcMode {
     OMC_MODE_DIJ = 0,
-    OMC_MODE_FORWARD_BEAMLET
+    OMC_MODE_FORWARD_BEAMLET,
+    OMC_MODE_FORWARD_PHSP
 };
 
-static const char *const modeNames[] = { "dij", "forward_beamlet" };
+static const char *const modeNames[] = {
+    "dij", "forward_beamlet", "forward_phsp"
+};
+
+#define OMC_NMODES ((int)(sizeof(modeNames)/sizeof(modeNames[0])))
 
 enum OmcMode omcMode;
+
+/*! @return whether this mode runs the forward engine rather than the Dij
+ one, which is what decides whether a collimator is worth looking for. */
+static int modeIsForward(enum OmcMode mode) {
+
+    return mode == OMC_MODE_FORWARD_BEAMLET || mode == OMC_MODE_FORWARD_PHSP;
+}
 
 /* What the engine is asked to calculate. Filled by parseInput(); only the one
  belonging to omcMode is used. */
@@ -409,7 +424,7 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
         }
 
         char *modeName = mxArrayToString(tmp_fieldpointer);
-        int nmodes = (int)(sizeof(modeNames)/sizeof(modeNames[0]));
+        int nmodes = OMC_NMODES;
         int known = 0;
 
         for (int imode = 0; imode < nmodes; imode++) {
@@ -423,10 +438,19 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
         if (!known) {
             /* mexErrMsgIdAndTxt() does not return, so the message is built
              while modeName is still around and freed before it is raised. */
+            char known_modes[BUFFER_SIZE];
+            int at = 0;
+
+            for (int imode = 0; imode < nmodes; imode++) {
+                at += snprintf(known_modes + at, sizeof(known_modes) - at,
+                               "%s'%s'", imode > 0 ? ", " : "",
+                               modeNames[imode]);
+            }
+
             char message[BUFFER_SIZE];
             snprintf(message, sizeof(message),
-                "Unknown mcOpt.mode '%s'. The modes are '%s' and '%s'.",
-                modeName ? modeName : "", modeNames[0], modeNames[1]);
+                "Unknown mcOpt.mode '%s'. The modes are %s.",
+                modeName ? modeName : "", known_modes);
             mxFree(modeName);
 
             mexErrMsgIdAndTxt("matRad:omc_matrad:invalidMode", "%s", message);
@@ -702,9 +726,6 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
      dose threshold has nothing to prune. */
     forwardOptions.nhist = dijOptions.nhist;
     forwardOptions.nbatch = dijOptions.nbatch;
-    forwardOptions.charge = dijOptions.charge;
-    forwardOptions.sourceGeometry = dijOptions.sourceGeometry;
-    forwardOptions.sourceGaussianWidth = dijOptions.sourceGaussianWidth;
 
     /* Dose in Gy for the weights given. Setting this to 0 asks for the mean
      deposited energy instead, the way omc_dosxyz's 'iout' does. */
@@ -716,6 +737,11 @@ void parseInput(int nrhs, const mxArray *prhs[]) {
     if (verbose_flag > 0 && omcMode == OMC_MODE_FORWARD_BEAMLET)
         mexPrintf("ompMC mode '%s': %d histories over all beamlets together, "
                   "not per beamlet.\n",
+                  modeNames[omcMode], forwardOptions.nhist);
+
+    if (verbose_flag > 0 && omcMode == OMC_MODE_FORWARD_PHSP)
+        mexPrintf("ompMC mode '%s': %d histories from the phase space, one "
+                  "particle each.\n",
                   modeNames[omcMode], forwardOptions.nhist);
 
     /* nInput is the index the last block wrote, so the count is one more */
@@ -861,7 +887,19 @@ static const double *getSourceArray(const char *name) {
     return mxGetPr(field);
 }
 
+static void initPhaseSpace(void);
+static void initCollimator(void);
+
 static void initSource(void) {
+
+    /* A phase space brings its own particles, so none of the beamlet
+     apertures below are asked for -- nor could they be, since a caller
+     running one has no beamlets to describe. */
+    if (omcMode == OMC_MODE_FORWARD_PHSP) {
+        initPhaseSpace();
+        initCollimator();
+        return;
+    }
 
     mxArray *field = mxGetField(mcSrc, 0, "nBixels");
     if (field == NULL) {
@@ -931,7 +969,265 @@ static void initSource(void) {
         bixelWeights = mxGetPr(weights);
     }
 
+    if (modeIsForward(omcMode)) {
+        initCollimator();
+    }
+
     return;
+}
+
+/******************************************************************************/
+/* The phase space source, mcSrc.phaseSpace.
+
+ The whole file goes into memory, so it costs about its own size on disk --
+ gigabytes for one of the published data sets. */
+
+static struct OmcPhsp phspFile;
+static struct OmcPhspSampler phspSampler;
+
+/* Fetch a field of a sub-struct of mcSrc, checking it is a real double array
+ of the size wanted. Returns NULL when the field is absent and not required;
+ @p nelements of 0 accepts any size. */
+static const double *getStructArray(const mxArray *spec, const char *structName,
+                                    const char *name, int required,
+                                    int nelements) {
+
+    mxArray *field = mxGetField(spec, 0, name);
+
+    if (field == NULL) {
+        if (!required) {
+            return NULL;
+        }
+        mexErrMsgIdAndTxt("matRad:omc_matrad:missingField",
+            "Required field '%s' is missing from the mcSrc.%s struct.",
+            name, structName);
+    }
+    if (!mxIsDouble(field) || mxIsComplex(field) || mxIsSparse(field)) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidField",
+            "Field 'mcSrc.%s.%s' must be a real double array.",
+            structName, name);
+    }
+    if (nelements > 0 &&
+        (int) mxGetNumberOfElements(field) != nelements) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidField",
+            "Field 'mcSrc.%s.%s' has %d entries, expected %d.",
+            structName, name, (int) mxGetNumberOfElements(field), nelements);
+    }
+
+    return mxGetPr(field);
+}
+
+/* The same for a single number, with a default for when it is absent. */
+static double getStructScalar(const mxArray *spec, const char *structName,
+                              const char *name, int required,
+                              double fallback) {
+
+    const double *value = getStructArray(spec, structName, name, required, 0);
+
+    if (value == NULL) {
+        return fallback;
+    }
+
+    mxArray *field = mxGetField(spec, 0, name);
+    if (mxGetNumberOfElements(field) != 1) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidField",
+            "Field 'mcSrc.%s.%s' must be a single number.", structName, name);
+    }
+
+    return value[0];
+}
+
+static void initPhaseSpace(void) {
+
+    mxArray *spec = mxGetField(mcSrc, 0, "phaseSpace");
+
+    if (spec == NULL || !mxIsStruct(spec)) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:missingField",
+            "Mode '%s' needs a 'mcSrc.phaseSpace' struct saying which file to "
+            "read.", modeNames[OMC_MODE_FORWARD_PHSP]);
+    }
+
+    mxArray *file = mxGetField(spec, 0, "file");
+    if (file == NULL || !mxIsChar(file)) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidField",
+            "Field 'mcSrc.phaseSpace.file' must be the name of an IAEA phase "
+            "space dataset, with or without its extension.");
+    }
+
+    /* Kept no longer than this function needs it. MATLAB reclaims what
+     mxArrayToString() allocated when the MEX call ends, however it ends, so
+     a static holding it would be left pointing at freed memory by any error
+     between here and the mxFree() below -- and the next call's cleanup would
+     free it a second time. */
+    char *phspPath = mxArrayToString(file);
+
+    memset(&phspSampler, 0, sizeof(phspSampler));
+    phspSampler.order = OMC_PHSP_REPLAY;
+
+    mxArray *order = mxGetField(spec, 0, "order");
+    if (order != NULL) {
+        if (!mxIsChar(order)) {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidField",
+                "Field 'mcSrc.phaseSpace.order' must be a string.");
+        }
+
+        char *name = mxArrayToString(order);
+        int known = name != NULL && (strcmp(name, "replay") == 0 ||
+                                     strcmp(name, "random") == 0);
+
+        if (known) {
+            phspSampler.order = strcmp(name, "random") == 0 ? OMC_PHSP_RANDOM
+                                                            : OMC_PHSP_REPLAY;
+        }
+        mxFree(name);
+
+        if (!known) {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidField",
+                "Field 'mcSrc.phaseSpace.order' must be 'replay' or "
+                "'random'.");
+        }
+    }
+
+    double first = getStructScalar(spec, "phaseSpace", "first", 0, 0.0);
+    if (first < 0.0) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidField",
+            "Field 'mcSrc.phaseSpace.first' is %g, it cannot be negative.",
+            first);
+    }
+    phspSampler.first = (unsigned long long) first;
+
+    /* Where the phase space sits in the phantom's world. MATLAB stores a
+     matrix down its columns and the core reads the nine values across its
+     rows, so this transposes as it copies -- a rotation handed over the
+     other way round would turn the beam the wrong way and say nothing. */
+    omcPhspTransformIdentity(&phspSampler.transform);
+
+    const double *rotation = getStructArray(spec, "phaseSpace", "rotation",
+                                            0, 9);
+    if (rotation != NULL) {
+        for (int row = 0; row < 3; row++) {
+            for (int col = 0; col < 3; col++) {
+                phspSampler.transform.rotation[3*row + col] =
+                    rotation[row + 3*col];
+            }
+        }
+    }
+
+    const double *translation = getStructArray(spec, "phaseSpace",
+                                               "translation", 0, 3);
+    if (translation != NULL) {
+        for (int i = 0; i < 3; i++) {
+            phspSampler.transform.translation[i] = translation[i];
+        }
+    }
+
+    if (verbose_flag > 0)
+        mexPrintf("Reading phase space '%s'...\n", phspPath);
+
+    omcPhspFromFile(&phspFile, phspPath);
+    phspSampler.phsp = &phspFile;
+
+    mxFree(phspPath);
+
+    return;
+}
+
+/******************************************************************************/
+/* The collimator, mcSrc.collimator: optional, and available to both forward
+ modes. With beamlets the collimation is normally already in the weights, so
+ this is for what the weights cannot say -- a block cutting across them, or a
+ leaf that transmits -- and for cutting a field out of a phase space, which
+ has no weights to put it in. */
+
+static struct OmcApertureMask collimatorMask;
+static struct OmcBeamModifier collimatorModifier;
+static double *collimatorCells = NULL;
+static int collimatorGiven = 0;
+
+static void initCollimator(void) {
+
+    collimatorGiven = 0;
+
+    mxArray *spec = mxGetField(mcSrc, 0, "collimator");
+
+    if (spec == NULL) {
+        return;             /* an open beam, which is the normal case */
+    }
+    if (!mxIsStruct(spec)) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidField",
+            "Field 'mcSrc.collimator' must be a struct.");
+    }
+
+    mxArray *values = mxGetField(spec, 0, "transmission");
+    if (values == NULL || !mxIsDouble(values) || mxIsComplex(values) ||
+        mxIsSparse(values) || mxGetNumberOfDimensions(values) != 2 ||
+        mxGetNumberOfElements(values) == 0) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:invalidField",
+            "Field 'mcSrc.collimator.transmission' must be a non-empty real "
+            "double matrix, one value per cell, with x down the rows.");
+    }
+
+    memset(&collimatorMask, 0, sizeof(collimatorMask));
+
+    /* MATLAB stores a matrix down its columns, which is the x runs fastest
+     layout the mask asks for, so the values copy across unchanged. */
+    collimatorMask.nx = (int) mxGetM(values);
+    collimatorMask.ny = (int) mxGetN(values);
+
+    size_t ncells = (size_t) collimatorMask.nx*(size_t) collimatorMask.ny;
+    collimatorCells = (double*) malloc(ncells*sizeof(double));
+    if (collimatorCells == NULL) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:outOfMemory",
+            "Could not allocate %d collimator cells.", (int) ncells);
+    }
+    memcpy(collimatorCells, mxGetPr(values), ncells*sizeof(double));
+    collimatorMask.transmission = collimatorCells;
+
+    collimatorMask.z = getStructScalar(spec, "collimator", "z", 1, 0.0);
+    collimatorMask.x0 = getStructScalar(spec, "collimator", "x0", 1, 0.0);
+    collimatorMask.y0 = getStructScalar(spec, "collimator", "y0", 1, 0.0);
+    collimatorMask.dx = getStructScalar(spec, "collimator", "dx", 1, 0.0);
+    collimatorMask.dy = getStructScalar(spec, "collimator", "dy", 1, 0.0);
+    collimatorMask.outside = getStructScalar(spec, "collimator", "outside",
+                                             0, 0.0);
+
+    omcApertureMaskAsModifier(&collimatorMask, &collimatorModifier);
+
+    /* Weight by default. Roulette lets a partly transmitting cell through at
+     full weight with that probability instead, which is cheaper behind thick
+     leaves and noisier behind nearly open ones. */
+    mxArray *roulette = mxGetField(spec, 0, "roulette");
+    if (roulette != NULL) {
+        if (mxIsLogicalScalar(roulette)) {
+            collimatorModifier.apply = mxIsLogicalScalarTrue(roulette)
+                ? OMC_MODIFIER_ROULETTE : OMC_MODIFIER_WEIGHT;
+        }
+        else if (mxIsDouble(roulette) &&
+                 mxGetNumberOfElements(roulette) == 1) {
+            collimatorModifier.apply = mxGetScalar(roulette) != 0.0
+                ? OMC_MODIFIER_ROULETTE : OMC_MODIFIER_WEIGHT;
+        }
+        else {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidField",
+                "Field 'mcSrc.collimator.roulette' must be true or false.");
+        }
+    }
+
+    collimatorGiven = 1;
+
+    if (verbose_flag > 0)
+        mexPrintf("Collimator: %d x %d cells at z = %g cm, %s.\n",
+                  collimatorMask.nx, collimatorMask.ny, collimatorMask.z,
+                  collimatorModifier.apply == OMC_MODIFIER_ROULETTE
+                      ? "played as roulette" : "applied to the weight");
+
+    return;
+}
+
+/*! @return the collimator to run with, or NULL for an open beam. */
+static const struct OmcBeamModifier *collimator(void) {
+
+    return collimatorGiven ? &collimatorModifier : NULL;
 }
 
 static void cleanSource(void) {
@@ -939,6 +1235,13 @@ static void cleanSource(void) {
     /* Everything else is shared with MATLAB and freed there */
     free(beamIndex);
     beamIndex = NULL;
+
+    free(collimatorCells);
+    collimatorCells = NULL;
+    collimatorGiven = 0;
+
+    omcPhspFree(&phspFile);
+    phspSampler.phsp = NULL;
 
     return;
 }
@@ -1119,6 +1422,34 @@ static void closeProgress(void) {
 }
 
 /******************************************************************************/
+/* What became of the histories, as a struct for the third output argument.
+ The Dij mode has no equivalent -- a beamlet that started nothing is a column
+ of zeros, which says so already -- but for a forward run it is the only way
+ to tell a beam that missed from a beam that was absorbed, and for a phase
+ space it is the first thing worth looking at: one is recorded wherever the
+ original simulation scored it, not aimed at this phantom. */
+
+static mxArray *makeForwardSummary(const struct OmcForwardSummary *summary) {
+
+    const char *fields[] = {"nHistories", "nStarted", "nBlocked",
+                            "energyFraction"};
+
+    mxArray *out = mxCreateStructMatrix(1, 1,
+        (int)(sizeof(fields)/sizeof(fields[0])), fields);
+
+    mxSetField(out, 0, "nHistories",
+               mxCreateDoubleScalar((double) summary->nhist));
+    mxSetField(out, 0, "nStarted",
+               mxCreateDoubleScalar((double) summary->started));
+    mxSetField(out, 0, "nBlocked",
+               mxCreateDoubleScalar((double) summary->blocked));
+    mxSetField(out, 0, "energyFraction",
+               mxCreateDoubleScalar(summary->energyFraction));
+
+    return out;
+}
+
+/******************************************************************************/
 /* mode 'forward_beamlet': every beamlet at once, weighted by mcSrc.bixelWeights,
  into one dense dose cube.
 
@@ -1163,9 +1494,23 @@ static void runForward(int nlhs, mxArray *plhs[], double tbegin,
 
     struct OmcForwardSummary summary;
 
-    int finished = omcCalcForward(&forwardOptions, &beamletSource,
-                                  bixelWeights, spectrum, dose, uncertainty,
-                                  &callbacks, &summary);
+    /* The engine takes any source; these are weighted beamlets. What the
+     particles are, which the options used to carry, belongs to the source. */
+    struct OmcBeamletHistories histories;
+    histories.sampler.source = &beamletSource;
+    histories.sampler.spectrum = spectrum;
+    histories.sampler.charge = dijOptions.charge;
+    histories.sampler.geometry = dijOptions.sourceGeometry;
+    histories.sampler.gaussianWidth = dijOptions.sourceGaussianWidth;
+    histories.weights = bixelWeights;
+
+    struct OmcSource source;
+    omcBeamletHistoriesAsSource(&histories, &source);
+
+    /* Usually no collimator: with beamlets it is already in the weights the
+     caller handed over, and mcSrc.collimator is for what they cannot say. */
+    int finished = omcCalcForward(&forwardOptions, &source, collimator(), dose,
+                                  uncertainty, &callbacks, &summary);
 
     if (verbose_flag > 0)
         mexPrintf("Simulation finished!\nFinalizing output...\n");
@@ -1181,9 +1526,99 @@ static void runForward(int nlhs, mxArray *plhs[], double tbegin,
             "available.");
     }
 
+    if (nlhs >= 3) {
+        plhs[2] = makeForwardSummary(&summary);
+    }
+
     if (verbose_flag >= 3) {
+        /* How the histories were shared out belongs to the beamlet source,
+         so it is asked of it rather than found in the engine's summary. */
+        struct OmcBeamletStats stats;
+        omcBeamletHistoriesStats(&histories, &stats);
+
         mexPrintf("Ran %d histories over %d of %d weighted beamlets.\n",
-                  summary.nhist, summary.nsampled, summary.nweighted);
+                  summary.nhist, stats.nsampled, stats.nweighted);
+        mexPrintf("Deposited %.2f%% of the incident energy.\n",
+                  100.0*summary.energyFraction);
+    }
+
+    return;
+}
+
+/******************************************************************************/
+/* mode 'forward_phsp': the particles of an IAEA phase space file into the
+ same dense dose cube.
+
+ There is no spectrum here and no aperture: the file carries the energy,
+ position and direction of every particle it holds, which is the point of
+ using one. What it does not carry is a field, since the published phase
+ spaces are recorded above the jaws on purpose, so mcSrc.collimator is how
+ one gets cut out. */
+
+static void runForwardPhsp(int nlhs, mxArray *plhs[], double tbegin) {
+
+    mwSize dims[3];
+    dims[0] = (mwSize) geometry.isize;
+    dims[1] = (mwSize) geometry.jsize;
+    dims[2] = (mwSize) geometry.ksize;
+
+    plhs[0] = mxCreateNumericArray(3, dims, mxDOUBLE_CLASS, mxREAL);
+    double *dose = mxGetPr(plhs[0]);
+
+    double *uncertainty = NULL;
+
+    if (nlhs >= 2) {
+        plhs[1] = mxCreateNumericArray(3, dims, mxDOUBLE_CLASS, mxREAL);
+        uncertainty = mxGetPr(plhs[1]);
+    }
+
+    if (verbose_flag > 0)
+        mexPrintf("done!\n");
+
+    if (verbose_flag > 2)
+        mexPrintf("Execution time up to this point : %8.2f seconds\n",
+                  (omc_get_time() - tbegin));
+
+    if (verbose_flag > 0)
+        mexPrintf("Running ompMC simulation...\n");
+
+    struct OmcForwardCallbacks callbacks;
+    callbacks.progress = reportProgress;
+    callbacks.user = NULL;
+
+    struct OmcForwardSummary summary;
+
+    struct OmcSource source;
+    omcPhspSamplerAsSource(&phspSampler, &source);
+
+    int finished = omcCalcForward(&forwardOptions, &source, collimator(), dose,
+                                  uncertainty, &callbacks, &summary);
+
+    if (verbose_flag > 0)
+        mexPrintf("Simulation finished!\nFinalizing output...\n");
+
+    closeProgress();
+
+    if (!finished) {
+        mexErrMsgIdAndTxt("matRad:omc_matrad:aborted",
+            "The forward calculation was stopped before any result was "
+            "available.");
+    }
+
+    if (nlhs >= 3) {
+        plhs[2] = makeForwardSummary(&summary);
+    }
+
+    /* A phase space is recorded wherever the original simulation scored it,
+     not aimed at this phantom, so a run in which almost nothing started is a
+     transform that is wrong rather than a run that went badly, and these
+     numbers are what tell the two apart. */
+    if (verbose_flag > 0) {
+        mexPrintf("Ran %d histories: %llu put a particle in the phantom",
+                  summary.nhist, summary.started);
+        if (summary.blocked > 0)
+            mexPrintf(", %llu were stopped by the collimator", summary.blocked);
+        mexPrintf(".\n");
         mexPrintf("Deposited %.2f%% of the incident energy.\n",
                   100.0*summary.energyFraction);
     }
@@ -1196,6 +1631,16 @@ static void runForward(int nlhs, mxArray *plhs[], double tbegin,
 
 static void runDij(int nlhs, mxArray *plhs[], int gridsize, double tbegin,
                    struct OmcSpectrum *spectrum) {
+
+        /* The third output is the forward modes' summary of what became of
+         the histories. There is no Dij equivalent: a beamlet that started
+         nothing comes back as a column of zeros, which says so already. */
+        if (nlhs > 2) {
+            mexErrMsgIdAndTxt("matRad:omc_matrad:invalidNumOutputs",
+                "Mode '%s' returns the dose matrix and its variance. The "
+                "third output, a summary of the histories, is only returned "
+                "by the forward modes.", modeNames[OMC_MODE_DIJ]);
+        }
 
         /* Create output matrix */
         struct SparseDij dij;
@@ -1341,7 +1786,7 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     if (nrhs != 5) {
         mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:invalidNumInputs","Two or three input arguments required.");
     }
-    if(nlhs > 2){
+    if(nlhs > 3){
         mexErrMsgIdAndTxt( "matRad:matRad_ompInterface:invalidNumOutputs","Too many output arguments.");
     }
 
@@ -1378,18 +1823,27 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     initMediaData();
 
     /* Initialize the source: first the energy spectrum, either passed in
-     directly or read from file, then the beamlet apertures */
+     directly or read from file, then the beamlet apertures.
+
+     A phase space needs neither. It carries the energy of every particle it
+     holds, which is most of the reason for using one, so reading a spectrum
+     for it would be work whose result nothing looks at -- and would make a
+     caller supply one. */
     struct OmcSpectrum spectrum;
-    if (omcConfig.spectrumEnergy != NULL) {
-        omcSpectrumFromHistogram(&spectrum, omcConfig.spectrumEnergy,
-            omcConfig.spectrumFluence, omcConfig.spectrumNbins,
-            omcConfig.spectrumEnMin, omcConfig.spectrumMode);
-    }
-    else if (omcConfig.useMonoEnergy) {
-        omcSpectrumMonoenergetic(&spectrum, omcConfig.monoEnergy);
-    }
-    else {
-        omcSpectrumFromFile(&spectrum, omcConfig.spectrumFile);
+    int haveSpectrum = omcMode != OMC_MODE_FORWARD_PHSP;
+
+    if (haveSpectrum) {
+        if (omcConfig.spectrumEnergy != NULL) {
+            omcSpectrumFromHistogram(&spectrum, omcConfig.spectrumEnergy,
+                omcConfig.spectrumFluence, omcConfig.spectrumNbins,
+                omcConfig.spectrumEnMin, omcConfig.spectrumMode);
+        }
+        else if (omcConfig.useMonoEnergy) {
+            omcSpectrumMonoenergetic(&spectrum, omcConfig.monoEnergy);
+        }
+        else {
+            omcSpectrumFromFile(&spectrum, omcConfig.spectrumFile);
+        }
     }
     initSource();
 
@@ -1401,7 +1855,10 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
 
     int gridsize = geometry.isize*geometry.jsize*geometry.ksize;
 
-    if (omcMode == OMC_MODE_FORWARD_BEAMLET) {
+    if (omcMode == OMC_MODE_FORWARD_PHSP) {
+        runForwardPhsp(nlhs, plhs, tbegin);
+    }
+    else if (omcMode == OMC_MODE_FORWARD_BEAMLET) {
         runForward(nlhs, plhs, tbegin, &spectrum);
     }
     else {
@@ -1417,7 +1874,9 @@ void mexFunction (int nlhs, mxArray *plhs[],    // output of the function
     cleanMscat();
     cleanSpin();
     cleanRegions();
-    omcSpectrumFree(&spectrum);
+    if (haveSpectrum) {
+        omcSpectrumFree(&spectrum);
+    }
     cleanSource();
 
     /* Get total execution time */

@@ -21,218 +21,118 @@
 
 #include "omc_engine_forward.h"
 
+#include "omc_collimator.h"
 #include "omc_geom.h"
 #include "omc_host.h"
 #include "omc_random.h"
 #include "omc_score.h"
-#include "omc_spectrum.h"
+#include "omc_source.h"
 #include "omc_utilities.h"
 #include "ompmc.h"
 
-#include <math.h>
 #include <stdlib.h>
 
 /******************************************************************************/
-/* Handing the histories out to the beamlets.
+/* Running the batches.
 
- Every batch runs the same experiment: beamlet i contributes the same count[i]
- histories to each of them, so the batches stay the independent replicas the
- variance estimate assumes. The counts are shared out by walking the cumulative
- weight, which needs no sort, is deterministic, and leaves each count within
- one history of the exact share.
+ Whatever the particles come from, this is the same: how many batches there
+ are, which random stream each history gets, when a batch is accumulated and
+ when the caller is asked whether to carry on. The random stream is indexed by
+ a history number that has to be unique over the whole run for the answer not
+ to depend on how OpenMP handed the histories out, so it is worth having in
+ one place rather than once per kind of source. */
 
- A beamlet whose share rounds to zero is dropped rather than given a history it
- has not earned. What that costs is bounded -- its weight is below one
- nperbatch-th of the total -- and it is reported rather than hidden.
+/*! @return 1 if the progress callback stopped the run. */
+static int runBatches(struct OmcSource *source,
+                      const struct OmcBeamModifier *modifier,
+                      int nbatch, int nperbatch,
+                      const struct OmcForwardCallbacks *callbacks,
+                      unsigned long long *started,
+                      unsigned long long *blocked) {
 
- The rounding that is left over rides on the particle weight instead of on the
- counts: beamlet i wants weight[i] of the fluence and got count[i] of the
- nperbatch histories, so each of its particles carries
+    unsigned long long nstarted = 0;
+    unsigned long long nblocked = 0;
+    int aborted = 0;
 
-     wt[i] = (weight[i]/count[i]) / (W/nperbatch)
+    for (int ibatch = 0; ibatch < nbatch; ibatch++) {
+        int ihist;
+        /* int rather than a wider type because MSVC implements OpenMP 2.0,
+         whose reductions are fussier, and a batch cannot start more
+         histories than the nperbatch it runs. */
+        int batchStarted = 0;
+        int batchBlocked = 0;
 
- which is 1 up to the rounding, and exactly 1 when the share came out whole.
- Keeping it near 1 rather than folding the whole fluence into it leaves the
- transport working with the weights it has always seen; the physical scale
- goes on the batch instead, in the accumEndep() call below. */
+        #pragma omp parallel for schedule(dynamic) \
+            reduction(+:batchStarted) reduction(+:batchBlocked)
+        for (ihist = 0; ihist < nperbatch; ihist++) {
+            /* Point the RNG at this history's stream; the index is unique
+             across batches, so results do not depend on the scheduling */
+            uint64_t global = (uint64_t)ibatch*(uint64_t)nperbatch
+                              + (uint64_t)ihist;
 
-struct Allocation {
-    int *count;                 // histories per beamlet per batch
-    int *offset;                // prefix sum, nbeamlets + 1 entries
-    double *weight;             // statistical weight of each beamlet's particles
+            setRandomHistory(global);
 
-    int nweighted;              // beamlets asked for with a weight above zero
-    int nsampled;               // of those, the ones that got any histories
-    double totalWeight;
-    double sampledWeight;
-};
+            /* Initialize particle history. A history that starts nothing is
+             a history all the same -- it happened, it just had nothing in
+             it -- so it counts towards the fluence and only skips the
+             shower. */
+            struct OmcSourceParticle particle;
 
-static void freeAllocation(struct Allocation *a) {
+            if (source->sample(source, global, ihist, &particle)) {
 
-    free(a->count);
-    free(a->offset);
-    free(a->weight);
+                /* What the collimator does with it, asked before the particle
+                 is carried anywhere: one that is stopped is stopped, and need
+                 not be carried first. */
+                if (!omcBeamModifierApply(modifier, &particle)) {
+                    batchBlocked++;
+                }
+                else if (omcSourcePlace(&particle)) {
+                    /* Only what got into the phantom counts as energy put in,
+                     so that the fraction of it that ends up deposited means
+                     what it says. */
+                    scoreSource(particle.energy*particle.weight);
 
-    a->count = NULL;
-    a->offset = NULL;
-    a->weight = NULL;
+                    batchStarted++;
 
-    return;
-}
-
-static void buildAllocation(struct Allocation *a, int nbeamlets,
-                            const double *weights, int nperbatch) {
-
-    a->count = (int*) malloc((size_t)nbeamlets*sizeof(int));
-    a->offset = (int*) malloc(((size_t)nbeamlets + 1)*sizeof(int));
-    a->weight = (double*) malloc((size_t)nbeamlets*sizeof(double));
-
-    if (!a->count || !a->offset || !a->weight) {
-        freeAllocation(a);
-        omcFail("ompMC:forward:outOfMemory",
-            "Could not allocate the history distribution for %d beamlets.",
-            nbeamlets);
-    }
-
-    /* Total weight, and the heaviest beamlet, which absorbs the rounding of
-     the cumulative sum at the end */
-    double total = 0.0;
-    int heaviest = 0;
-
-    for (int i = 0; i < nbeamlets; i++) {
-        if (!isfinite(weights[i]) || weights[i] < 0.0) {
-            freeAllocation(a);
-            omcFail("ompMC:forward:invalidWeight",
-                "Beamlet weight %d is %g; weights must be finite and zero "
-                "or positive.",
-                i + 1, weights[i]);
-        }
-        if (weights[i] > weights[heaviest]) {
-            heaviest = i;
-        }
-        total += weights[i];
-    }
-
-    /* Individually finite values can still overflow when summed. That would
-     make every cumulative/total allocation ratio invalid. */
-    if (!isfinite(total)) {
-        freeAllocation(a);
-        omcFail("ompMC:forward:invalidWeight",
-            "The beamlet weights sum to a non-finite value; reduce their "
-            "scale.");
-    }
-
-    if (!(total > 0.0)) {
-        freeAllocation(a);
-        omcFail("ompMC:forward:noWeight",
-            "Every beamlet weight is zero, so there is nothing to calculate.");
-    }
-
-    double cumulative = 0.0;
-    int handedOut = 0;
-
-    a->nweighted = 0;
-    a->nsampled = 0;
-    a->totalWeight = total;
-    a->sampledWeight = 0.0;
-
-    a->offset[0] = 0;
-
-    for (int i = 0; i < nbeamlets; i++) {
-        cumulative += weights[i];
-
-        int upto = (int) floor((double)nperbatch*(cumulative/total) + 0.5);
-        if (upto > nperbatch) {
-            upto = nperbatch;
-        }
-        if (upto < handedOut) {
-            upto = handedOut;
+                    /* Start electromagnetic shower simulation */
+                    shower();
+                }
+            }
         }
 
-        a->count[i] = upto - handedOut;
-        handedOut = upto;
+        nstarted += (unsigned long long)batchStarted;
+        nblocked += (unsigned long long)batchBlocked;
 
-        a->offset[i+1] = handedOut;
+        /* Accumulate results of current batch for statistical analysis. */
+        accumEndep(source->batchScale);
 
-        if (weights[i] > 0.0) {
-            a->nweighted++;
+        if (callbacks && callbacks->progress &&
+            !callbacks->progress((double)(ibatch+1)/(double)nbatch,
+                                 callbacks->user)) {
+            aborted = 1;
+            break;
         }
     }
 
-    /* The cumulative sum ends at total, so the last beamlet with a weight
-     should have taken the count up to nperbatch exactly. Rounding can leave
-     it a history short or over; put the difference on the heaviest beamlet,
-     which is the one least disturbed by it -- and never on a beamlet the
-     caller asked for zero of. */
-    if (handedOut != nperbatch) {
-        int fix = nperbatch - handedOut;
-
-        if (a->count[heaviest] + fix < 0) {
-            fix = -a->count[heaviest];
-        }
-
-        a->count[heaviest] += fix;
-        for (int i = heaviest + 1; i <= nbeamlets; i++) {
-            a->offset[i] += fix;
-        }
+    if (started != NULL) {
+        *started = nstarted;
+    }
+    if (blocked != NULL) {
+        *blocked = nblocked;
     }
 
-    for (int i = 0; i < nbeamlets; i++) {
-        if (a->count[i] > 0) {
-            a->weight[i] = (weights[i]/(double)a->count[i])
-                           *((double)nperbatch/total);
-            a->nsampled++;
-            a->sampledWeight += weights[i];
-        }
-        else {
-            a->weight[i] = 0.0;
-        }
-    }
-
-    return;
-}
-
-/* The beamlet history h of a batch belongs to: the largest i with
- offset[i] <= h. Beamlets that got no histories have offset[i] == offset[i+1]
- and so can never be the largest, which is what keeps them out. */
-static int findBeamlet(const int *offset, int nbeamlets, int h) {
-
-    int lo = 0;
-    int hi = nbeamlets;         // the answer is in [lo, hi)
-
-    while (hi - lo > 1) {
-        int mid = lo + (hi - lo)/2;
-
-        if (offset[mid] <= h) {
-            lo = mid;
-        }
-        else {
-            hi = mid;
-        }
-    }
-
-    return lo;
+    return aborted;
 }
 
 /******************************************************************************/
 
 int omcCalcForward(const struct OmcForwardOptions *opt,
-                   const struct OmcBeamletSource *src,
-                   const double *weights,
-                   const struct OmcSpectrum *spec,
+                   struct OmcSource *source,
+                   const struct OmcBeamModifier *modifier,
                    double *dose, double *uncertainty,
                    const struct OmcForwardCallbacks *callbacks,
                    struct OmcForwardSummary *summary) {
 
-    if (opt->sourceGeometry != OMC_SOURCE_POINT &&
-        opt->sourceGeometry != OMC_SOURCE_GAUSSIAN) {
-        omcFail("ompMC:forward:invalidSourceGeometry",
-            "Source geometry %d is not defined.", (int)opt->sourceGeometry);
-    }
-    if (src->nbeamlets < 1) {
-        omcFail("ompMC:forward:noBeamlets",
-            "There are no beamlets to calculate.");
-    }
     if (opt->nbatch < 2) {
         /* The batch variance divides by nbatch - 1 */
         omcFail("ompMC:forward:tooFewBatches",
@@ -240,15 +140,25 @@ int omcCalcForward(const struct OmcForwardOptions *opt,
             "uncertainty estimate.", opt->nbatch);
     }
 
-    struct OmcBeamletSampler sampler;
-    sampler.source = src;
-    sampler.spectrum = spec;
-    sampler.charge = opt->charge;
-    sampler.geometry = opt->sourceGeometry;
-    sampler.gaussianWidth = opt->sourceGaussianWidth;
+    if (source->sample == NULL) {
+        omcFail("ompMC:forward:noSource",
+            "The source has no way of making a particle.");
+    }
 
-    int nhist = opt->nhist;
+    /* Everything that could be wrong with the source is settled here, on the
+     master thread, rather than from inside the parallel region where a
+     failure would call the host from a place it cannot expect. */
+    if (source->check != NULL) {
+        source->check(source);
+    }
+    if (modifier != NULL && modifier->check != NULL) {
+        modifier->check(modifier);
+    }
+
+    /* A run too short for one history per batch is stretched rather than
+     refused, and what is left over after the division is dropped. */
     int nbatch = opt->nbatch;
+    int nhist = opt->nhist;
 
     if (nhist/nbatch == 0) {
         nhist = nbatch;
@@ -257,31 +167,19 @@ int omcCalcForward(const struct OmcForwardOptions *opt,
     int nperbatch = nhist/nbatch;
     nhist = nperbatch*nbatch;
 
-    struct Allocation alloc;
-    alloc.count = NULL;
-    alloc.offset = NULL;
-    alloc.weight = NULL;
+    /* What one history is worth is the source's to say. */
+    source->batchScale = 1.0;
+    source->incidentFluence = 1.0;
 
-    buildAllocation(&alloc, src->nbeamlets, weights, nperbatch);
+    if (source->prepare != NULL) {
+        source->prepare(source, nperbatch);
+    }
 
     int gridsize = geometry.isize*geometry.jsize*geometry.ksize;
 
     omcLog(OMC_LOG_DETAIL, "Total number of particle histories: %d", nhist);
     omcLog(OMC_LOG_DETAIL, "Number of statistical batches: %d", nbatch);
     omcLog(OMC_LOG_DETAIL, "Histories per batch: %d", nperbatch);
-    omcLog(OMC_LOG_DETAIL, "Beamlets with weight: %d of %d, %d of them sampled",
-           alloc.nweighted, src->nbeamlets, alloc.nsampled);
-
-    double dropped = alloc.totalWeight - alloc.sampledWeight;
-
-    if (dropped > 1.0E-3*alloc.totalWeight) {
-        omcLog(OMC_LOG_WARNING,
-            "%d of %d weighted beamlets are too weak to be given a history "
-            "each batch, which leaves out %.2f%% of the fluence. Raise the "
-            "number of histories or lower the number of batches.",
-            alloc.nweighted - alloc.nsampled, alloc.nweighted,
-            100.0*dropped/alloc.totalWeight);
-    }
 
     /* Preparation of scoring struct */
     initScore(gridsize);
@@ -295,47 +193,31 @@ int omcCalcForward(const struct OmcForwardOptions *opt,
       initStack();
     }
 
-    int aborted = 0;
+    unsigned long long started = 0;
+    unsigned long long blocked = 0;
+    int aborted = runBatches(source, modifier, nbatch, nperbatch, callbacks,
+                             &started, &blocked);
 
-    for (int ibatch = 0; ibatch < nbatch; ibatch++) {
-        int ihist;
+    if (!aborted && blocked > 0) {
+        omcLog(OMC_LOG_DETAIL, "%llu of %d histories were stopped by the "
+               "collimator.", blocked, nhist);
+    }
 
-        #pragma omp parallel for schedule(dynamic)
-        for (ihist = 0; ihist < nperbatch; ihist++) {
-            /* Point the RNG at this history's stream; the index is unique
-             across batches, so results do not depend on the scheduling */
-            setRandomHistory((uint64_t)ibatch*(uint64_t)nperbatch
-                             + (uint64_t)ihist);
-
-            int ibeamlet = findBeamlet(alloc.offset, src->nbeamlets, ihist);
-
-            /* Initialize particle history */
-            omcBeamletSample(&sampler, ibeamlet, alloc.weight[ibeamlet]);
-
-            /* Start electromagnetic shower simulation */
-            shower();
-        }
-
-        /* Accumulate results of current batch for statistical analysis. The
-         particle weights above sum the batch to the fluence of nperbatch
-         histories rather than to the fluence the caller asked for, so the
-         ratio between the two goes on here -- once per batch, rather than on
-         every particle. */
-        accumEndep(alloc.totalWeight/(double)nperbatch);
-
-        if (callbacks && callbacks->progress &&
-            !callbacks->progress((double)(ibatch+1)/(double)nbatch,
-                                 callbacks->user)) {
-            aborted = 1;
-            break;
-        }
+    if (!aborted && started == 0) {
+        omcLog(OMC_LOG_WARNING, "Not one history put a particle in the "
+               "phantom. Check where the source sits relative to it%s.",
+               blocked > 0 ? ", and whether the collimator is open at all"
+                           : "");
+    }
+    else if (!aborted && started < (unsigned long long)nhist) {
+        omcLog(OMC_LOG_DETAIL, "%llu of %d histories put a particle in the "
+               "phantom.", started, nhist);
     }
 
     /* The fraction of the incident energy that stayed in the phantom, while
      the scoring arrays still hold energies rather than doses. Both sides are
-     weighted -- omcBeamletSample() puts the particle weight through to
-     scoreSource() as well -- so the batch scale above is all that separates
-     them. */
+     weighted -- the particle weight goes through to scoreSource() as well --
+     so the batch scale above is all that separates them. */
     if (summary && !aborted) {
         double etot = 0.0;
         for (int irl = 1; irl < gridsize + 1; irl++) {
@@ -344,19 +226,16 @@ int omcCalcForward(const struct OmcForwardOptions *opt,
 
         summary->nhist = nhist;
         summary->nperbatch = nperbatch;
-        summary->nweighted = alloc.nweighted;
-        summary->nsampled = alloc.nsampled;
-        summary->totalWeight = alloc.totalWeight;
-        summary->sampledWeight = alloc.sampledWeight;
+        summary->started = started;
+        summary->blocked = blocked;
         summary->energyFraction = score.ensrc > 0.0
-            ? etot/(score.ensrc*alloc.totalWeight/(double)nperbatch)
+            ? etot/(score.ensrc*source->batchScale)
             : 0.0;
     }
 
-    /* The fluence is already in the accumulators, so there is nothing left to
-     divide the energy by here. */
     if (!aborted) {
-        omcScoreToCube(nbatch, 1.0, opt->outputDose, dose, uncertainty);
+        omcScoreToCube(nbatch, source->incidentFluence, opt->outputDose, dose,
+                       uncertainty);
     }
 
     cleanScore();
@@ -368,7 +247,9 @@ int omcCalcForward(const struct OmcForwardOptions *opt,
       cleanStack();
     }
 
-    freeAllocation(&alloc);
+    if (source->release != NULL) {
+        source->release(source);
+    }
 
     return !aborted;
 }
