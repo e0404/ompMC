@@ -21,6 +21,7 @@
 
 #include "omc_geom.h"
 
+#include "omc_geom_cyl.h"
 #include "omc_host.h"
 #include "omc_utilities.h"
 #include "ompmc.h"
@@ -51,10 +52,33 @@ void omcGeomDetectSpacing(void) {
     geometry.dyi = omcUniformSpacingInv(geometry.ybounds, geometry.jsize);
     geometry.dzi = omcUniformSpacingInv(geometry.zbounds, geometry.ksize);
 
+    /* Every loader of a voxel grid ends up here, which is what makes this the
+     one place the mode can be set without a host having to remember. A
+     resident host running a cylinder and then a cube would otherwise carry
+     the cylinder over into the cube's transport. */
+    geometry.mode = OMC_GEOM_CARTESIAN;
+
     return;
 }
 
+/* The three functions below are the geometry side of the contract ompmc.h
+ declares, and each begins by asking which shape it is answering for.
+
+ A predictable branch rather than a pointer through a table on purpose: these
+ are called once per electron step, and the whole reason this project turns on
+ link time optimization (see CMakeLists.txt) is so that they inline into the
+ stepping loop. A direct call inlines; an indirect one through a function
+ pointer does not, and would cost the rectilinear geometry -- which is every
+ existing user code -- to buy the cylinder something it does not need. The
+ mode cannot change during a run, so the branch predictor gets it right every
+ time after the first. */
+
 void howfar(int *idisc, int *irnew, double *ustep) {
+
+    if (geometry.mode == OMC_GEOM_CYLINDRICAL) {
+        omcCylHowfar(idisc, irnew, ustep);
+        return;
+    }
 
     int np = stack.np;
     int irl = stack.p[np].ir;
@@ -184,6 +208,10 @@ void howfar(int *idisc, int *irnew, double *ustep) {
 
 int regionIndex(double x, double y, double z) {
 
+    if (geometry.mode == OMC_GEOM_CYLINDRICAL) {
+        return omcCylRegionIndex(x, y, z);
+    }
+
     /* Region containing the point, 0 if outside the phantom. Points exactly
      on the outer boundaries count as inside, consistent with the clamping
      of omcFindVoxelIndex(). */
@@ -204,6 +232,10 @@ int regionIndex(double x, double y, double z) {
 }
 
 double hownear(void) {
+
+    if (geometry.mode == OMC_GEOM_CYLINDRICAL) {
+        return omcCylHownear();
+    }
 
     int np = stack.np;
     int irl = stack.p[np].ir;

@@ -157,6 +157,7 @@ add_library(ompmc_core STATIC
     src/omc_score.c
     src/omc_host.c
     src/omc_geom.c
+    src/omc_geom_cyl.c
     src/omc_spectrum.c
     src/omc_phsp.c
     src/omc_collimator.c
@@ -698,6 +699,21 @@ if(OMPMC_BUILD_TESTS)
     endif()
 
     add_test(NAME unit COMMAND test_ompmc)
+
+    # Reads nothing but the geometry and the stack, so unlike the engine tests
+    # below it needs no PEGS data and no particular working directory.
+    add_executable(test_omc_geom_cyl tests/test_omc_geom_cyl.c)
+    target_link_libraries(test_omc_geom_cyl
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_geom_cyl)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_geom_cyl PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME geom_cyl COMMAND test_omc_geom_cyl)
 
     # Writes most of the phase space files it reads, next to itself, but the
     # small committed one it also reads stays in the source tree.
