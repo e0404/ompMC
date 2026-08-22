@@ -1,0 +1,45 @@
+# Small omc_dosrz run used as a build smoke test. All paths are relative to
+# the repository root, so run it from there:
+#
+#   ./build/bin/omc_dosrz -i ucodes/omc_dosrz/smoke_test -o smoke_rz
+#
+# The result lands in output/smoke_rz.rzdose. The history count is kept low
+# on purpose; the numbers are not meant to be statistically meaningful.
+
+# start source definition
+source type = pencil
+mono energy = 6.0
+charge = 0
+# stop source definition
+
+# start MC control
+ncase  = 20000
+nbatch = 2
+rng seeds = 97 33
+# stop MC control
+
+# start geometry
+medium = H2O521ICRU
+medium density = 1.0
+cylinder radius = 5.0
+radial bins = 10
+cylinder depth = 10.0
+depth bins = 20
+# stop geometry
+
+# start MC transport
+global ecut = 0.521
+global pcut = 0.010
+pegs file = ./pegs4/521icru.pegs4dat
+pgs4form file = ./pegs4/pgs4form.dat
+# stop MC transport
+
+# start VRT
+nsplit = 1
+esave = 2.0
+# stop VRT
+
+# start ompMC environment
+data folder = ./data/
+output folder = ./output/
+# stop ompMC environment

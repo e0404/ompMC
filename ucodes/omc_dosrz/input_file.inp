@@ -1,0 +1,88 @@
+# Example input file for omc_dosrz, the r-z dose user code. Paths here are
+# relative to this folder, so run it from ucodes/omc_dosrz:
+#
+#   ../../build/bin/omc_dosrz -i input_file -o pencil_6MV
+#
+# The '.inp' extension is added for you. Every key below that omc_dosxyz also
+# has means exactly what it means there.
+
+# start source definition
+
+# 'pencil' : a parallel beam of no width on the axis, which is what a dose
+#            kernel is defined for. Takes no 'ssd'.
+# 'point'  : a point source on the axis at 'ssd', illuminating a disc of
+#            'field radius' on the front face. Uniform fluence on that face,
+#            not an isotropic point source.
+# 'phsp'   : an IAEA phase space file, placed by 'phsp rotation' and
+#            'phsp translation'.
+source type = pencil
+
+# The energies. A spectrum file if there is one, otherwise 'mono energy'.
+spectrum file = ../../spectra/mohan6.spectrum
+# mono energy = 6.0
+
+# 0 : photons, -1 : electrons, +1 : positrons. Not read for a phase space,
+# which carries its own particle types.
+charge = 0
+
+# For 'source type = point' only. 'field radius' may be left out, and then
+# the whole front face is illuminated.
+# ssd = 100.0
+# field radius = 4.0
+
+# For 'source type = phsp' only.
+# phsp file = ../../phsp/some_beam
+# phsp order = replay
+# phsp first = 0
+# phsp rotation = 1 0 0  0 1 0  0 0 1
+# phsp translation = 0 0 0
+
+# stop source definition
+
+# start MC control
+ncase  = 500000
+nbatch = 10
+rng seeds = 97 33
+# stop MC control
+
+# start geometry
+
+# The cylinder is one homogeneous medium about the beam axis, its front face
+# at z = 0 and depth running along +z.
+medium = H2O700ICRU
+
+# Leave 'medium density' out to use whatever the PEGS data says the medium
+# weighs.
+medium density = 1.0
+
+# Uniform rings from the axis out, and uniform slabs down the depth.
+cylinder radius = 5.0
+radial bins = 20
+cylinder depth = 20.0
+depth bins = 40
+
+# Instead of the four keys above, either axis may be given its boundaries in
+# full -- ascending, and the radial list starting at 0. Useful for fine bins
+# on the axis and coarse ones outside, where the dose has fallen away. An
+# input value holds about twenty five of them.
+# radial bin edges = 0 0.05 0.1 0.2 0.4 0.8 1.6 3.2 5.0
+# depth bin edges = 0 0.1 0.2 0.5 1 2 5 10 20
+
+# stop geometry
+
+# start MC transport
+global ecut = 0.700
+global pcut = 0.010
+pegs file = ../../pegs4/700icru.pegs4dat
+pgs4form file = ../../pegs4/pgs4form.dat
+# stop MC transport
+
+# start VRT
+nsplit = 1
+esave = 2.0
+# stop VRT
+
+# start ompMC environment
+data folder = ../../data/
+output folder = ../../output/
+# stop ompMC environment

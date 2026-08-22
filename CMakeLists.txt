@@ -37,6 +37,7 @@ include(CheckIPOSupported)
 ################################################################################
 
 option(OMPMC_BUILD_DOSXYZ "Build the omc_dosxyz command line user code" ON)
+option(OMPMC_BUILD_DOSRZ "Build the omc_dosrz command line user code" ON)
 option(OMPMC_WITH_OPENMP "Build with OpenMP multi threading support" ON)
 option(OMPMC_NATIVE_TUNING
     "Tune the generated code for the building machine (-mtune=native)" OFF)
@@ -346,6 +347,22 @@ if(OMPMC_BUILD_DOSXYZ)
         message(STATUS "No system getopt_long(), using the bundled replacement")
         target_sources(omc_dosxyz PRIVATE src/compat/getopt.c)
         target_include_directories(omc_dosxyz PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/compat")
+    endif()
+endif()
+
+################################################################################
+# omc_dosrz - command line user code for r-z dose in a cylinder
+################################################################################
+
+if(OMPMC_BUILD_DOSRZ)
+    add_executable(omc_dosrz ucodes/omc_dosrz/omc_dosrz.c)
+    target_link_libraries(omc_dosrz PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(omc_dosrz)
+
+    if(NOT OMPMC_HAVE_GETOPT_LONG)
+        target_sources(omc_dosrz PRIVATE src/compat/getopt.c)
+        target_include_directories(omc_dosrz PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/src/compat")
     endif()
 endif()
@@ -858,6 +875,13 @@ if(OMPMC_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     endif()
 
+    # The same for the r-z user code, and for the same reason.
+    if(OMPMC_BUILD_DOSRZ)
+        add_test(NAME dosrz_smoke
+            COMMAND omc_dosrz -i ucodes/omc_dosrz/smoke_test -o smoke_rz
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    endif()
+
     # Drives the Octave .mex through the same test_omc_matrad_mex.m the MATLAB
     # build uses: loading the file, a real dose calculation, the progress
     # callback and releasing the file afterwards. Octave exits nonzero when
@@ -901,6 +925,10 @@ if(OMPMC_BUILD_DOSXYZ)
     install(TARGETS omc_dosxyz RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 endif()
 
+if(OMPMC_BUILD_DOSRZ)
+    install(TARGETS omc_dosrz RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
+
 if(OMPMC_MEX_ENABLED)
     install(TARGETS omc_matrad
         LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}"
@@ -926,6 +954,7 @@ message(STATUS "  openlibm         : ${OMPMC_WITH_OPENLIBM}")
 message(STATUS "  Tests            : ${OMPMC_BUILD_TESTS}")
 message(STATUS "  Coverage         : ${OMPMC_COVERAGE}")
 message(STATUS "  omc_dosxyz       : ${OMPMC_BUILD_DOSXYZ}")
+message(STATUS "  omc_dosrz        : ${OMPMC_BUILD_DOSRZ}")
 message(STATUS "  omc_matrad (mex) : ${OMPMC_MEX_ENABLED}")
 if(OMPMC_MEX_ENABLED AND OMPMC_OPENMP_ENABLED)
     message(STATUS "    OpenMP runtime : ${OMPMC_MEX_OPENMP_SOURCE}")
