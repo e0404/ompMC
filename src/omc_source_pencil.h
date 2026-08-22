@@ -52,9 +52,11 @@
      pencil.divergenceSigma = 0.01;   // rad, a beam that is not quite parallel
 
  Both are measured on the front face of the phantom, which is the plane a
- pencil beam is specified on, and both default to 0 -- the delta they widen
- from. A zero draws no random numbers at all, so a beam that asks for neither
- gives exactly the result it gave before they existed.
+ pencil beam is specified on -- and, for #OMC_PENCIL_PARALLEL, the plane its
+ particles start on, a beam with no source point having nowhere upstream to
+ be. Both default to 0, the delta they widen from, and a zero draws no random
+ numbers at all, so a beam that asks for neither gives exactly the result it
+ gave before they existed.
 
  They are drawn independently of each other, which makes this a blurred pencil
  rather than a beam with emittance: where a particle starts says nothing about

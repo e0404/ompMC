@@ -564,9 +564,11 @@ class PencilBeamSource:
         meaningful with an `ssd`; left out, the whole face is illuminated.
     spot_sigma : float, optional
         Standard deviation of the starting position, in cm, spread as a round
-        two-dimensional Gaussian across the beam. For a parallel pencil this
-        is the width where the beam meets the front face; for a point source
-        it is the size of the focal spot. Left out, the beam has no width.
+        two-dimensional Gaussian across the beam. A parallel pencil is defined
+        on the front face and starts its particles there, so this is the width
+        of the beam where it enters; a point source starts its particles on
+        its focal spot, so this is the size of that. Left out, the beam has no
+        width.
     divergence_sigma : float, optional
         Standard deviation of the direction, in **radians**, spread as a round
         two-dimensional Gaussian about the nominal one. Left out, the beam

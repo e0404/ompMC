@@ -56,14 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this is a blurred pencil and not a beam with emittance — where a particle
   starts says nothing about where it is going, and a waist anywhere other than
   the phantom surface is not modelled. The position means what it should for
-  each beam rather than the same thing for both: for a parallel pencil the
-  spot is the width where the beam *meets the front face*, back projected to
-  wherever the particle has to start to arrive there, so that the arbitrary
-  distance it is emitted from cannot widen a diverging beam; for a point
-  source it is the size of the focal spot, which is a real place. And a zero
-  draws no random numbers at all, exactly as a monoenergetic spectrum does
-  not, so a beam that asks for neither spread gives bit for bit the result it
-  gave before either existed.
+  each beam rather than the same thing for both: a parallel pencil is defined
+  on the front face and starts its particles there, having no source point to
+  be upstream of, so the spot is the width of the beam where it enters; a
+  point source starts its particles on its focal spot, an SSD away, so the
+  spot is the size of that. And a zero draws no random numbers at all, exactly
+  as a monoenergetic spectrum does not, so a beam that asks for neither spread
+  gives bit for bit the result it gave before either existed.
 - `omc_dosrz`, the command line user code, named after DOSRZnrc for the same
   reason it exists. The cylinder is described by a few keys in the input file
   rather than read from a phantom file — there is no file format for a

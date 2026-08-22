@@ -29,14 +29,6 @@
 #include <math.h>
 #include <stddef.h>
 
-/*! How far upstream of the front face a parallel pencil starts.
-
- Anywhere upstream would do: the particle flies through region 0, which holds
- no medium, so the distance costs nothing and changes nothing. What matters is
- that it is upstream at all rather than on the face -- see the warning in
- omc_source.h about a particle that starts where it should have arrived. */
-#define PENCIL_STANDOFF 1.0
-
 /******************************************************************************/
 
 static double fieldRadiusOf(const struct OmcPencilSource *pencil) {
@@ -196,13 +188,6 @@ static int pencilSample(const struct OmcSource *self, uint64_t ihist,
     double zface = geometry.zbounds[0];
     int parallel = pencil->kind == OMC_PENCIL_PARALLEL;
 
-    /* How far upstream of the front face the particle is emitted. For the
-     point source that is the SSD, a real distance; for a parallel pencil it
-     is arbitrary -- far enough that the particle arrives rather than starting
-     inside, see omc_source.h -- which is why the two are treated differently
-     below. */
-    double standoff = parallel ? PENCIL_STANDOFF : pencil->ssd;
-
     /* Where the nominal beam meets the front face. */
     double aimX = 0.0;
     double aimY = 0.0;
@@ -270,21 +255,22 @@ static int pencilSample(const struct OmcSource *self, uint64_t ihist,
                       pencil->divergenceSigma*angle[1]);
     }
 
-    particle->z = zface - standoff;
+    particle->x = spotX;
+    particle->y = spotY;
 
-    if (parallel) {
-        /* Emitted from wherever it has to start to cross the face at the
-         spot. Without this the particle would drift sideways over the
-         standoff, and an arbitrary internal distance would quietly widen
-         every diverging beam. */
-        particle->x = spotX - standoff*(particle->u/particle->w);
-        particle->y = spotY - standoff*(particle->v/particle->w);
-    }
-    else {
-        /* The focal spot is a real place; the particle starts on it. */
-        particle->x = spotX;
-        particle->y = spotY;
-    }
+    /* A parallel pencil is DEFINED on the front face, so that is where its
+     particles start -- there is no upstream position for a beam that has no
+     source point. omc_source.h warns against handing omcSourcePlace() a
+     particle already sitting on the surface unless that is genuinely where
+     the source put it, and for a beam specified on that plane it is: what
+     the warning is really about is starting inside the phantom, at depth,
+     which skips the build up a particle should have travelled through.
+     Entering exactly on the face is what every other source ends up doing
+     too, once omcSourcePlace() has carried it there.
+
+     The point source does have somewhere to be, an SSD upstream, and starts
+     on its focal spot. */
+    particle->z = parallel ? zface : zface - pencil->ssd;
 
     return 1;
 }

@@ -231,7 +231,7 @@ static struct OmcPencilSource pencilSsd(double ssd, double fieldRadius) {
 * The tests
 *******************************************************************************/
 
-static void test_a_parallel_pencil_starts_on_the_axis_above_the_face(void) {
+static void test_a_parallel_pencil_starts_on_the_axis_at_the_face(void) {
 
     setUpCylinder();
 
@@ -249,10 +249,10 @@ static void test_a_parallel_pencil_starts_on_the_axis_above_the_face(void) {
     CHECK_CLOSE(particle.x, 0.0, 1e-15);
     CHECK_CLOSE(particle.y, 0.0, 1e-15);
 
-    /* Upstream of the front face, not on it: a particle handed to
-     omcSourcePlace() already sitting on the surface would skip the build up
-     region it should have travelled through. */
-    CHECK(particle.z < geometry.zbounds[0]);
+    /* On the front face, which is where a beam with no source point is
+     defined: it has nowhere upstream to be. Not INSIDE the phantom, which is
+     what would skip the build up region. */
+    CHECK_CLOSE(particle.z, geometry.zbounds[0], 1e-15);
 
     /* Straight down the axis */
     CHECK_CLOSE(particle.u, 0.0, 1e-15);
@@ -506,13 +506,12 @@ static void test_a_divergence_sigma_spreads_the_direction(void) {
     }
 }
 
-/* The beam is specified on the front face of the cylinder, and a parallel
- pencil is emitted from an arbitrary distance upstream of it so that it
- arrives rather than starting inside. A diverging particle drifts sideways
- over that distance, so unless the starting point is back projected the beam
- would be blurred by however far upstream the source happens to sit -- an
- internal constant, invisible from outside, quietly widening the answer. */
-static void test_the_standoff_does_not_widen_the_beam(void) {
+/* Divergence must tilt the beam without moving it. A parallel pencil starts
+ on the front face, so there is no distance over which a diverging particle
+ could drift sideways -- but that is a property of where it starts, and this
+ is what would catch it being emitted from somewhere upstream again without
+ the position being corrected for the tilt. */
+static void test_divergence_does_not_displace_the_beam(void) {
 
     setUpCylinder();
 
@@ -872,13 +871,13 @@ int main(void) {
 
     printf("test_omc_source_pencil\n");
 
-    RUN(test_a_parallel_pencil_starts_on_the_axis_above_the_face);
+    RUN(test_a_parallel_pencil_starts_on_the_axis_at_the_face);
     RUN(test_the_charge_is_the_one_it_was_given);
     RUN(test_an_ssd_source_fills_the_field_it_was_given);
     RUN(test_a_field_radius_of_zero_means_the_whole_face);
     RUN(test_a_spot_sigma_widens_the_beam_where_it_enters);
     RUN(test_a_divergence_sigma_spreads_the_direction);
-    RUN(test_the_standoff_does_not_widen_the_beam);
+    RUN(test_divergence_does_not_displace_the_beam);
     RUN(test_spot_and_divergence_compose);
     RUN(test_zero_sigma_is_the_delta_beam_exactly);
     RUN(test_sampling_depends_only_on_the_history);
