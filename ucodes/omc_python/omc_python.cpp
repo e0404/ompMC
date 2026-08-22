@@ -66,9 +66,12 @@ extern "C" {
 #include "omc_engine_cube.h"
 #include "omc_engine_dij.h"
 #include "omc_engine_forward.h"
+#include "omc_engine_radial.h"
 #include "omc_geom.h"
+#include "omc_geom_cyl.h"
 #include "omc_host.h"
 #include "omc_phsp.h"
+#include "omc_source_pencil.h"
 #include "omc_source_phsp.h"
 #include "omc_spectrum.h"
 #include "omc_utilities.h"
@@ -359,6 +362,88 @@ static void installGeometry(const GeometryInput *geo) {
 
     omcGeomDetectSpacing();
 }
+
+/* The cylinder (omc_geom_cyl.h). Unlike the voxel phantom, whose cubes come
+ from the caller and are borrowed, this one is mostly synthesized here: a
+ cylinder is a handful of numbers and one medium, and the per-region arrays
+ the core wants are all the same value. They are held by value so that the
+ storage belongs to the caller's frame, which the longjmp() out of omcFail()
+ does not unwind. */
+struct CylinderInput {
+    std::vector<double> rBounds;
+    std::vector<double> zBounds;
+    std::vector<int32_t> material;
+    std::vector<double> densities;
+    char name[60];
+    int nr;
+    int nz;
+};
+
+static CylinderInput parseCylinder(const Vector &rBounds, const Vector &zBounds,
+                                   const std::string &material, double density) {
+
+    CylinderInput cyl{};
+
+    if (material.empty() || material.size() >= sizeof(cyl.name)) {
+        throw std::invalid_argument("the material name must be between 1 and " +
+            std::to_string(sizeof(cyl.name) - 1) + " characters");
+    }
+    std::strcpy(cyl.name, material.c_str());
+
+    if (rBounds.shape(0) < 2 || zBounds.shape(0) < 2) {
+        throw std::invalid_argument("the cylinder needs at least one ring and "
+            "one depth slab, i.e. two boundaries along each axis");
+    }
+
+    cyl.nr = (int) rBounds.shape(0) - 1;
+    cyl.nz = (int) zBounds.shape(0) - 1;
+
+    cyl.rBounds.assign(rBounds.data(), rBounds.data() + rBounds.shape(0));
+    cyl.zBounds.assign(zBounds.data(), zBounds.data() + zBounds.shape(0));
+
+    /* EGS counts media from 1. A density of 0 means "whatever the PEGS data
+     says this medium weighs", which is initRegions()' own convention. */
+    const size_t nregions = (size_t) cyl.nr*(size_t) cyl.nz;
+    cyl.material.assign(nregions, 1);
+    cyl.densities.assign(nregions, density);
+
+    return cyl;
+}
+
+/* Copy the parsed cylinder into the core's globals. No Python here.
+
+ omcGeomCylInit() is what leaves struct Geom::mode saying cylindrical, just
+ as omcGeomDetectSpacing() leaves it saying rectilinear for the cube entry
+ points -- which is what lets one process run both, in either order. */
+static void installCylinder(CylinderInput *cyl) {
+
+    media.nmed = 1;
+    std::strcpy(media.med_names[0], cyl->name);
+
+    geometry.isize = cyl->nr;
+    geometry.ksize = cyl->nz;
+
+    geometry.rbounds = cyl->rBounds.data();
+    geometry.zbounds = cyl->zBounds.data();
+
+    /* Unused in this mode, and cleared rather than left pointing at whatever
+     cube a previous run in this process installed. */
+    geometry.xbounds = nullptr;
+    geometry.ybounds = nullptr;
+
+    geometry.med_indices = cyl->material.data();
+    geometry.med_densities = cyl->densities.data();
+
+    omcGeomCylInit();
+}
+
+/* One of the beams in omc_source_pencil.h. */
+struct PencilInput {
+    int kind;                   // 0 parallel pencil, 1 point at an SSD
+    double ssd;
+    double fieldRadius;
+    int charge;
+};
 
 static void applyInputItems(const nb::dict &items) {
 
@@ -789,6 +874,98 @@ static void runForwardPhsp(void *arg) {
 }
 
 /******************************************************************************/
+/* Radial */
+
+struct RadialRun {
+    const struct OmcRadialOptions *options;
+    CylinderInput *cylinder;
+
+    /* Exactly one of these two is set; which one is what decides where the
+     particles come from. */
+    const PencilInput *pencil;
+    const PhspInput *phsp;
+
+    const SpectrumInput *spectrum;      // pencil only
+    CollimatorInput *collimator;
+    struct OmcForwardCallbacks *callbacks;
+    double *dose;
+    double *uncertainty;
+    struct OmcForwardSummary *summary;
+
+    /* Zeroed by the caller and freed by the caller, for the same reason as in
+     PhspRun: the longjmp() out of omcFail() does not come back through
+     here. */
+    struct OmcPhsp *file;
+
+    int completed;
+};
+
+static void runRadial(void *arg) {
+
+    RadialRun *run = (RadialRun *) arg;
+
+    /* The file first, before anything that would have to be given back; see
+     runForwardPhsp() for why. */
+    if (run->phsp != nullptr) {
+        omcPhspFromFile(run->file, run->phsp->path.c_str());
+    }
+
+    installCylinder(run->cylinder);
+    initMediaData();
+    initRegions();
+    initVrt();
+    physicsIsUp();
+
+    struct OmcSource source;
+    struct OmcSpectrum spectrum;
+    struct OmcPencilSource pencil;
+    struct OmcPhspSampler sampler;
+
+    std::memset(&spectrum, 0, sizeof(spectrum));
+
+    if (run->phsp != nullptr) {
+        std::memset(&sampler, 0, sizeof(sampler));
+        sampler.phsp = run->file;
+        sampler.order = run->phsp->order == 1 ? OMC_PHSP_RANDOM
+                                              : OMC_PHSP_REPLAY;
+        sampler.first = run->phsp->first;
+        std::memcpy(sampler.transform.rotation, run->phsp->rotation,
+                    sizeof(sampler.transform.rotation));
+        std::memcpy(sampler.transform.translation, run->phsp->translation,
+                    sizeof(sampler.transform.translation));
+
+        omcPhspSamplerAsSource(&sampler, &source);
+    }
+    else {
+        buildSpectrum(&spectrum, run->spectrum);
+
+        std::memset(&pencil, 0, sizeof(pencil));
+        pencil.kind = run->pencil->kind == 1 ? OMC_PENCIL_SSD
+                                             : OMC_PENCIL_PARALLEL;
+        pencil.spectrum = &spectrum;
+        pencil.charge = run->pencil->charge;
+        pencil.ssd = run->pencil->ssd;
+        pencil.fieldRadius = run->pencil->fieldRadius;
+
+        omcPencilSourceAsSource(&pencil, &source);
+    }
+
+    struct OmcBeamModifier modifier;
+    const struct OmcBeamModifier *use = useCollimator(run->collimator,
+                                                      &modifier);
+
+    run->completed = omcCalcRadial(run->options, &source, use, run->dose,
+                                   run->uncertainty, run->callbacks,
+                                   run->summary);
+
+    if (run->phsp == nullptr) {
+        omcSpectrumFree(&spectrum);
+    }
+
+    cleanupPhysics();
+}
+
+/******************************************************************************/
 
 NB_MODULE(_ompmc, m) {
 
@@ -1124,4 +1301,118 @@ NB_MODULE(_ompmc, m) {
     "materials"_a, "phsp"_a, "options"_a, "input_items"_a,
     "collimator"_a.none(), "progress"_a.none(), "verbosity"_a,
     "Dose in every voxel from the particles of an IAEA phase space file.");
+
+    m.def("calc_radial",
+        [](Vector r_bounds, Vector z_bounds, std::string material,
+           double density, nb::dict source, nb::dict options,
+           nb::dict input_items, nb::object spectrum, nb::object collimator,
+           nb::object progress, int verbosity) {
+
+        /* --- everything in this block runs with the GIL held --- */
+
+        CylinderInput cylinder = parseCylinder(r_bounds, z_bounds, material,
+                                               density);
+
+        /* A phase space names a file; a beam does not. That is the whole
+         difference between the two from here. */
+        const bool fromPhsp = source.contains("path");
+
+        PhspInput phspInput;
+        PencilInput pencilInput{};
+        std::string spectrumPath;
+        SpectrumInput spectrumInput{};
+
+        if (fromPhsp) {
+            phspInput.path = nb::cast<std::string>(source["path"]);
+            phspInput.order = nb::cast<int>(source["order"]);
+            phspInput.first = nb::cast<uint64_t>(source["first"]);
+
+            auto rotation = nb::cast<std::vector<double>>(source["rotation"]);
+            auto translation =
+                nb::cast<std::vector<double>>(source["translation"]);
+
+            if (rotation.size() != 9 || translation.size() != 3) {
+                throw std::invalid_argument("the phase space transform needs a "
+                    "nine element rotation and a three element translation");
+            }
+            std::memcpy(phspInput.rotation, rotation.data(),
+                        sizeof(phspInput.rotation));
+            std::memcpy(phspInput.translation, translation.data(),
+                        sizeof(phspInput.translation));
+        }
+        else {
+            pencilInput.kind = nb::cast<int>(source["kind"]);
+            pencilInput.ssd = nb::cast<double>(source["ssd"]);
+            pencilInput.fieldRadius = nb::cast<double>(source["field_radius"]);
+            pencilInput.charge = nb::cast<int>(options["charge"]);
+
+            if (spectrum.is_none()) {
+                throw std::invalid_argument("a pencil or point source needs a "
+                    "spectrum to draw energies from");
+            }
+            spectrumInput = parseSpectrum(nb::cast<nb::dict>(spectrum),
+                                          spectrumPath);
+        }
+
+        struct OmcRadialOptions opt;
+        opt.nhist = nb::cast<int>(options["n_histories"]);
+        opt.nbatch = nb::cast<int>(options["n_batches"]);
+        opt.outputDose = nb::cast<bool>(options["output_dose"]) ? 1 : 0;
+
+        installHost();
+        verbose_flag = verbosity;
+        applyInputItems(input_items);
+
+        const size_t nregions = (size_t) cylinder.nr*(size_t) cylinder.nz;
+        std::vector<double> dose(nregions, 0.0);
+        std::vector<double> uncertainty(nregions, 0.0);
+
+        ForwardContext ctx;
+        ctx.progress.callable = progress.is_none() ? nullptr : progress.ptr();
+        ctx.progress.cancelled = false;
+
+        struct OmcForwardCallbacks callbacks;
+        callbacks.progress = forwardProgress;
+        callbacks.user = &ctx;
+
+        CollimatorInput collimatorInput;
+        parseCollimator(collimator, collimatorInput);
+
+        struct OmcPhsp file;
+        std::memset(&file, 0, sizeof(file));
+
+        struct OmcForwardSummary summary{};
+        RadialRun run{&opt, &cylinder,
+                      fromPhsp ? nullptr : &pencilInput,
+                      fromPhsp ? &phspInput : nullptr,
+                      fromPhsp ? nullptr : &spectrumInput,
+                      &collimatorInput, &callbacks,
+                      dose.data(), uncertainty.data(), &summary, &file, 0};
+
+        bool ok;
+        {
+            /* --- no Python beyond this point, except in the trampoline --- */
+            nb::gil_scoped_release nogil;
+            ok = runGuarded(&runRadial, &run);
+
+            omcPhspFree(&file);
+        }
+
+        if (!ok) {
+            throw std::runtime_error(failId + ": " + failMessage);
+        }
+        if (ctx.progress.cancelled) {
+            throw nb::python_error();       // re-raises what the callback left
+        }
+
+        return nb::make_tuple(adopt(std::move(dose)),
+                              adopt(std::move(uncertainty)),
+                              run.completed != 0,
+                              summary.nhist, summary.started, summary.blocked,
+                              summary.energyFraction);
+    },
+    "r_bounds"_a, "z_bounds"_a, "material"_a, "density"_a, "source"_a,
+    "options"_a, "input_items"_a, "spectrum"_a.none(), "collimator"_a.none(),
+    "progress"_a.none(), "verbosity"_a,
+    "Dose in a cylinder, by radial ring and depth slab.");
 }

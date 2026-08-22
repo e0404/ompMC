@@ -1,6 +1,6 @@
 """ompMC - OpenMP parallel Monte Carlo photon and electron transport.
 
-Four calculations are available, sharing the same phantom and physics:
+Five calculations are available, sharing the same physics:
 
 ``calc_dij``
     One sparse column of dose per beamlet, the dose influence matrix a
@@ -13,8 +13,13 @@ Four calculations are available, sharing the same phantom and physics:
     from a spectrum through an aperture.
 ``calc_cube``
     Dose everywhere in the phantom from a single collimated beam.
+``calc_radial``
+    Dose in a cylinder, binned into rings and depth slabs rather than voxels
+    -- what a pencil beam distribution wants, since the dose around a narrow
+    beam is exactly what a rectilinear grid is worst at. Takes a
+    ``CylinderGeometry`` rather than a ``Geometry``.
 
-All take the phantom as numpy arrays::
+The first four take the phantom as numpy arrays::
 
     import numpy as np, ompmc
 
@@ -46,9 +51,11 @@ from . import _ompmc
 
 __all__ = [
     "Geometry",
+    "CylinderGeometry",
     "Spectrum",
     "BeamletSource",
     "CollimatedSource",
+    "PencilBeamSource",
     "PhaseSpaceSource",
     "ApertureMask",
     "Physics",
@@ -57,6 +64,7 @@ __all__ = [
     "calc_forward",
     "calc_forward_phsp",
     "calc_cube",
+    "calc_radial",
     "data_path",
     "__version__",
 ]
@@ -225,6 +233,91 @@ class Geometry:
     def n_voxels(self) -> int:
         """Total number of voxels, ``nx * ny * nz``."""
         return int(self.density.size)
+
+
+@dataclass
+class CylinderGeometry:
+    """A homogeneous cylinder, binned into rings and depth slabs.
+
+    The phantom :func:`calc_radial` transports in. It sits about the z axis
+    with its front face at ``z_bounds[0]`` and depth running along +z, which
+    is the direction the beams in :class:`PencilBeamSource` travel.
+
+    Rings rather than voxels because of what a narrow beam does to a
+    rectilinear grid: dose falls by orders of magnitude over the first few
+    millimetres off the axis, so following it needs voxels far finer than the
+    rest of the phantom will ever need. A ring is the natural bin for it, and
+    -- being the transport's own region rather than a sum over voxels
+    afterwards -- comes with an uncertainty the batch statistics can actually
+    speak for.
+
+    Parameters
+    ----------
+    r_bounds : array_like
+        Ring boundaries in cm, ascending, starting at 0. There is no hollow
+        middle: the innermost ring reaches the axis.
+    z_bounds : array_like
+        Depth slab boundaries in cm, ascending.
+    material : str
+        Name of the PEGS medium the cylinder is made of, e.g.
+        ``"H2O700ICRU"``.
+    density : float, optional
+        Mass density in g/cm^3. Left out, the medium's own PEGS density is
+        used.
+
+    Raises
+    ------
+    ValueError
+        If either boundary list does not ascend, if `r_bounds` does not start
+        at the axis, or if `density` is not positive.
+
+    Examples
+    --------
+    Fine rings on the beam and coarse ones out where the dose has gone::
+
+        geometry = ompmc.CylinderGeometry(
+            r_bounds=[0, 0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 5.0],
+            z_bounds=np.linspace(0.0, 20.0, 41),
+            material="H2O700ICRU",
+            density=1.0,
+        )
+    """
+
+    r_bounds: np.ndarray
+    z_bounds: np.ndarray
+    material: str
+    density: float | None = None
+
+    def __post_init__(self) -> None:
+        self.r_bounds = _as_bounds(self.r_bounds, "r_bounds")
+        self.z_bounds = _as_bounds(self.z_bounds, "z_bounds")
+
+        # Region 0 already means "outside the phantom", so there is nothing
+        # left for a hole in the middle to be.
+        if self.r_bounds[0] != 0.0:
+            raise ValueError(
+                f"r_bounds must start at the axis, r = 0, not "
+                f"{self.r_bounds[0]!r}: a cylinder with a hole in it is not "
+                f"something ompMC can transport")
+
+        if not isinstance(self.material, str) or not self.material:
+            raise ValueError("material must be a non-empty PEGS medium name")
+
+        if self.density is not None:
+            self.density = float(self.density)
+            if not self.density > 0.0:
+                raise ValueError(
+                    f"density must be positive, got {self.density!r}")
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        """Rings and depth slabs, as ``(n_rings, n_slabs)``."""
+        return (self.r_bounds.size - 1, self.z_bounds.size - 1)
+
+    @property
+    def n_regions(self) -> int:
+        """Number of scoring regions, i.e. rings times slabs."""
+        return (self.r_bounds.size - 1)*(self.z_bounds.size - 1)
 
 
 @dataclass
@@ -443,6 +536,80 @@ class CollimatedSource:
             raise ValueError(f"ssd is {self.ssd} cm, it must be positive")
         if self.x_max < self.x_min or self.y_max < self.y_min:
             raise ValueError("the collimator opening has negative width")
+
+
+@dataclass
+class PencilBeamSource:
+    """A beam down the axis of a :class:`CylinderGeometry`.
+
+    Two beams, distinguished by whether an `ssd` is given. Without one it is a
+    parallel pencil of no width, every particle entering at r = 0 travelling
+    along +z, which is what a dose kernel is defined for. With one it is a
+    point source that far upstream of the front face, illuminating a disc on
+    it -- what a real machine looks like.
+
+    Parameters
+    ----------
+    ssd : float, optional
+        Distance from the point source to the front face, in cm. Left out,
+        the beam is a parallel pencil instead.
+    field_radius : float, optional
+        Radius of the disc illuminated on the front face, in cm. Only
+        meaningful with an `ssd`; left out, the whole face is illuminated.
+
+    Raises
+    ------
+    ValueError
+        If `ssd` is not positive, if `field_radius` is not positive, or if a
+        `field_radius` is given without an `ssd`.
+
+    Warnings
+    --------
+    The point source spreads its particles evenly over the disc it
+    illuminates -- uniform fluence on the entrance plane, the same convention
+    :class:`CollimatedSource` follows. That is not an isotropic point source,
+    whose fluence would fall off with the inverse square across the field, and
+    the difference shows at short SSD.
+
+    Examples
+    --------
+    The kernel case, and a 4 cm field at 100 cm::
+
+        pencil = ompmc.PencilBeamSource()
+        machine = ompmc.PencilBeamSource(ssd=100.0, field_radius=4.0)
+    """
+
+    ssd: float | None = None
+    field_radius: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.ssd is not None:
+            self.ssd = float(self.ssd)
+            if not self.ssd > 0.0:
+                raise ValueError(f"ssd must be positive, got {self.ssd!r}")
+
+        if self.field_radius is not None:
+            if self.ssd is None:
+                raise ValueError(
+                    "field_radius only means something for a point source; "
+                    "give an ssd as well, or leave both out for a parallel "
+                    "pencil beam")
+
+            self.field_radius = float(self.field_radius)
+            if not self.field_radius > 0.0:
+                raise ValueError(
+                    f"field_radius must be positive, got "
+                    f"{self.field_radius!r}")
+
+    @property
+    def _payload(self) -> dict:
+        return {
+            "kind": 1 if self.ssd is not None else 0,
+            "ssd": float(self.ssd) if self.ssd is not None else 0.0,
+            # 0 is how the core spells "the whole front face"
+            "field_radius": (float(self.field_radius)
+                             if self.field_radius is not None else 0.0),
+        }
 
 
 @dataclass
@@ -1298,3 +1465,144 @@ def calc_cube(
     shape = geometry.shape
     return (dose.reshape(shape, order="F"),
             uncertainty.reshape(shape, order="F"))
+
+
+def calc_radial(
+    geometry: CylinderGeometry,
+    source: PencilBeamSource | PhaseSpaceSource,
+    spectrum: Spectrum | None = None,
+    physics: Physics | None = None,
+    *,
+    n_histories: int = 10_000,
+    n_batches: int = 10,
+    charge: int = 0,
+    output_dose: bool = True,
+    collimator: ApertureMask | None = None,
+    progress: Callable[[float], bool | None] | None = None,
+    verbosity: int = 0,
+):
+    """Calculate the dose in a cylinder, by radial ring and depth slab.
+
+    The r-z counterpart of :func:`calc_forward`, and what a pencil beam dose
+    distribution wants: the rings are the transport's own regions, so each one
+    gets its uncertainty from the batch statistics directly rather than from
+    summing correlated voxels afterwards.
+
+    Any source will do. :class:`PencilBeamSource` gives the two beams that
+    shine down the axis; :class:`PhaseSpaceSource` replays a file, moved into
+    the phantom's coordinate system by its own transform.
+
+    Parameters
+    ----------
+    geometry : CylinderGeometry
+        The cylinder, its rings and its depth slabs.
+    source : PencilBeamSource or PhaseSpaceSource
+        Where the particles come from.
+    spectrum : Spectrum, optional
+        Energies for a :class:`PencilBeamSource`, defaulting to
+        :meth:`Spectrum.default`. Must not be given with a
+        :class:`PhaseSpaceSource`, which carries its own energies.
+    physics : Physics, optional
+        Transport parameters and data file locations. Defaults to
+        ``Physics()``.
+    n_histories : int, optional
+        Histories simulated. A history whose particle misses the phantom, or
+        which the collimator stops, still counts as one.
+    n_batches : int, optional
+        Statistical batches, at least 2, needed for the uncertainty estimate.
+    charge : int, optional
+        0 for photons, -1 for electrons, +1 for positrons. Ignored for a
+        phase space, which carries its own particle types.
+    output_dose : bool, optional
+        If true, dose per incident history in Gy. If false, the mean
+        deposited energy.
+    collimator : ApertureMask, optional
+        Something in the beam's way.
+    progress : callable, optional
+        Called with the fraction finished, in ``[0, 1]``, once per batch.
+        Returning ``False`` stops the calculation.
+    verbosity : int, optional
+        Log level passed to the engine.
+
+    Returns
+    -------
+    dose : numpy.ndarray
+        Shaped ``(n_rings, n_slabs)``, in Gy per incident history.
+    uncertainty : numpy.ndarray
+        Shaped ``(n_rings, n_slabs)``, the relative uncertainty of `dose`, and
+        0.9999999 where nothing was deposited.
+    summary : RunSummary
+        What became of the histories.
+
+    Raises
+    ------
+    ValueError
+        If `n_batches`, `n_histories` or `charge` are out of range, or if a
+        `spectrum` is given together with a :class:`PhaseSpaceSource`.
+    RuntimeError
+        If the geometry or the source is one the engine cannot run.
+    KeyboardInterrupt
+        If `progress` returned false, or Ctrl-C was pressed, before any result
+        was available.
+
+    Notes
+    -----
+    The result is the dose one incident particle delivers, not the dose per
+    unit fluence :func:`calc_cube` reports -- there is no field for a pencil
+    beam to have a fluence over.
+
+    Examples
+    --------
+    The depth dose on the axis of a 6 MV photon pencil in water::
+
+        geometry = ompmc.CylinderGeometry(
+            r_bounds=np.linspace(0.0, 5.0, 21),
+            z_bounds=np.linspace(0.0, 20.0, 41),
+            material="H2O700ICRU", density=1.0)
+
+        dose, unc, summary = ompmc.calc_radial(
+            geometry, ompmc.PencilBeamSource(), n_histories=1_000_000)
+
+        depth_dose_on_axis = dose[0, :]
+    """
+    from_phsp = isinstance(source, PhaseSpaceSource)
+
+    _check_run(n_histories, n_batches, 0 if from_phsp else charge)
+
+    if from_phsp and spectrum is not None:
+        raise ValueError(
+            "a phase space carries the energy of every particle it holds, so "
+            "it takes no spectrum")
+
+    if not from_phsp:
+        spectrum = spectrum or Spectrum.default()
+
+    physics = physics or Physics()
+
+    options = {
+        "n_histories": int(n_histories),
+        "n_batches": int(n_batches),
+        "charge": int(charge),
+        "output_dose": bool(output_dose),
+    }
+
+    (dose, uncertainty, completed, nhist, started, blocked,
+     fraction) = _ompmc.calc_radial(
+        geometry.r_bounds, geometry.z_bounds, geometry.material,
+        # 0 is how the core spells "whatever the PEGS data says it weighs"
+        float(geometry.density) if geometry.density is not None else 0.0,
+        source._payload, options, physics.input_items(),
+        None if from_phsp else spectrum._payload,
+        collimator._payload if collimator is not None else None,
+        progress, int(verbosity),
+    )
+
+    if not completed:
+        raise KeyboardInterrupt(
+            "the calculation was stopped before any result was available")
+
+    shape = geometry.shape
+    return (dose.reshape(shape, order="F"),
+            uncertainty.reshape(shape, order="F"),
+            RunSummary(int(nhist), int(started), int(blocked),
+                       float(fraction)))
