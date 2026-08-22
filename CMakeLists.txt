@@ -163,6 +163,7 @@ add_library(ompmc_core STATIC
     src/omc_collimator.c
     src/omc_source.c
     src/omc_source_beamlet.c
+    src/omc_source_pencil.c
     src/omc_source_phsp.c
     src/omc_engine_dij.c
     src/omc_engine_cube.c
@@ -714,6 +715,20 @@ if(OMPMC_BUILD_TESTS)
     endif()
 
     add_test(NAME geom_cyl COMMAND test_omc_geom_cyl)
+
+    # Samples particles but transports none, so it too runs anywhere.
+    add_executable(test_omc_source_pencil tests/test_omc_source_pencil.c)
+    target_link_libraries(test_omc_source_pencil
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_source_pencil)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_source_pencil PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME pencil_source COMMAND test_omc_source_pencil)
 
     # Writes most of the phase space files it reads, next to itself, but the
     # small committed one it also reads stays in the source tree.
