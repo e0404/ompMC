@@ -60,6 +60,44 @@ why.
   deliberate scope limit, not an oversight — don't ask for silent best-effort
   handling of the untested path.
 
+- **`howfar()`, `hownear()` and `regionIndex()` branch on a global,
+  `struct Geom::mode`, on every call** rather than dispatching through a
+  function pointer set once at initialization. On the face of it a table of
+  pointers is the tidier answer, and it is the wrong one here: these are
+  called once per electron step, and link time optimization — which
+  `CMakeLists.txt` turns on largely for their sake — can inline a direct call
+  and cannot inline an indirect one. A pointer table would therefore tax the
+  rectilinear geometry, which is every existing user code, to buy the cylinder
+  something it does not need. The mode cannot change during a run, so the
+  branch predicts perfectly after the first call.
+
+- **The cylindrical geometry has no struct of its own.** It borrows
+  `struct Geom`, carrying rings in `isize` and depth slabs in `ksize` with
+  `jsize` pinned to 1, so that the region numbering `1 + ir + iz*nr` is
+  literally the rectilinear `1 + ix + iy*isize + iz*isize*jsize` with the y
+  index held at zero. That is what lets `initRegions()`, `struct Score`,
+  `ausgab()` and the region memo in `omc_utilities.h` serve a cylinder without
+  a line of change or a second code path. Giving it its own struct would mean
+  a second version of each of those. `omcGeomCylInit()` sets `jsize` itself
+  rather than asking the host for it, because no host should have to know
+  about the rectilinear grid it is borrowed from.
+
+- **`omcGeomDetectSpacing()` sets `geometry.mode = OMC_GEOM_CARTESIAN` as a
+  side effect**, which looks unrelated to detecting spacing. It is where the
+  reset belongs: every loader of a voxel grid already calls it, so no host can
+  forget, and a resident host (a MEX file, a Python module) that ran a
+  cylinder and then a cube would otherwise transport the cube through the
+  cylinder. The Python test suite runs both orders in one process for exactly
+  this reason.
+
+- **The radial scorer reports relative sigma with the `0.9999999` sentinel,
+  like the cube engine and unlike the Dij engine.** That is the same
+  deliberate split noted above, and `omcScoreToRadial()` is a near-copy of
+  `omcScoreToCube()` on purpose: everything but the mass of a region — an
+  annulus rather than a box — has to stay identical, so that a reader
+  comparing an r-z result against a cube one never has to wonder which
+  convention is in play.
+
 - **The collimator's transmission mask attenuates by weight by default and
   draws no random numbers**, keeping a collimated run comparable
   history-by-history with the open-field run. `OMC_MODIFIER_ROULETTE` is an
