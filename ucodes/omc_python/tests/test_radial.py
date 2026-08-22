@@ -99,6 +99,26 @@ class TestPencilBeamSourceValidation:
         with pytest.raises(ValueError, match="field_radius"):
             ompmc.PencilBeamSource(ssd=100.0, field_radius=-2.0)
 
+    def test_a_bare_source_has_no_spread(self):
+        payload = ompmc.PencilBeamSource()._payload
+        assert payload["spot_sigma"] == 0.0
+        assert payload["divergence_sigma"] == 0.0
+
+    def test_carries_the_spreads_through(self):
+        payload = ompmc.PencilBeamSource(
+            spot_sigma=0.15, divergence_sigma=0.01)._payload
+        assert payload["spot_sigma"] == 0.15
+        assert payload["divergence_sigma"] == 0.01
+        assert payload["kind"] == 0        # still a parallel pencil
+
+    @pytest.mark.parametrize("name", ["spot_sigma", "divergence_sigma"])
+    def test_rejects_a_spread_that_is_not_positive(self, name):
+        with pytest.raises(ValueError, match=name):
+            ompmc.PencilBeamSource(**{name: -0.1})
+
+        with pytest.raises(ValueError, match=name):
+            ompmc.PencilBeamSource(**{name: 0.0})
+
 
 class TestCalcRadialValidation:
 
@@ -190,6 +210,45 @@ class TestCalcRadial:
         # relative uncertainty of exactly 1, which is a number the statistics
         # arrived at rather than a stand-in for not having any.
         assert np.all(uncertainty[dose > 0.0] > 0.0)
+
+    def test_a_gaussian_spot_broadens_the_dose(self, water_cylinder,
+                                               water_physics):
+        def entrance_profile(source):
+            dose, _unc, _summary = ompmc.calc_radial(
+                water_cylinder, source, ompmc.Spectrum.monoenergetic(6.0),
+                water_physics, n_histories=20_000, n_batches=4,
+                output_dose=False)      # energy, so ring volumes drop out
+            entrance = dose[:, 0]
+            return entrance[0]/entrance.sum()
+
+        delta = entrance_profile(ompmc.PencilBeamSource())
+        widened = entrance_profile(ompmc.PencilBeamSource(spot_sigma=1.5))
+
+        # A delta pencil puts nearly everything in the innermost ring; a
+        # centimetre and a half of spot spreads it over most of them.
+        assert delta > 0.8
+        assert widened < 0.3
+
+    def test_a_spot_that_overruns_the_cylinder_loses_histories(
+            self, water_cylinder, water_physics):
+        # Those histories happened and still count towards the fluence, so
+        # the summary is where they show rather than going quietly missing.
+        _dose, _unc, summary = ompmc.calc_radial(
+            water_cylinder, ompmc.PencilBeamSource(spot_sigma=4.0),
+            ompmc.Spectrum.monoenergetic(6.0), water_physics,
+            n_histories=4000, n_batches=4)
+
+        assert summary.n_histories == 4000
+        assert summary.n_started < 4000
+
+    def test_a_divergent_beam_runs(self, water_cylinder, water_physics):
+        dose, _unc, summary = ompmc.calc_radial(
+            water_cylinder, ompmc.PencilBeamSource(divergence_sigma=0.05),
+            ompmc.Spectrum.monoenergetic(6.0), water_physics,
+            n_histories=4000, n_batches=4)
+
+        assert summary.n_started == 4000
+        assert dose.sum() > 0.0
 
     def test_an_ssd_source_runs_too(self, water_cylinder, water_physics):
         dose, _unc, summary = ompmc.calc_radial(

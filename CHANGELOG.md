@@ -43,6 +43,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`omc_source_phsp`) drives the radial engine too, with no changes of its
   own — carrying a particle into the phantom is `omcSourcePlace()`'s job, and
   it now knows about cylinders.
+
+  Either delta a real beam does not have can be widened into a Gaussian,
+  independently of the other: `spotSigma` gives the beam a width and
+  `divergenceSigma` an angular spread (`spot sigma` and `divergence sigma` in
+  an input file, `spot_sigma=` and `divergence_sigma=` in Python). Both are
+  round two-dimensional Gaussians, which matters because the rings have no
+  azimuthal binning and an asymmetric source would be averaged away silently
+  rather than showing up in the result.
+
+  Three things about them are worth knowing. They are drawn independently, so
+  this is a blurred pencil and not a beam with emittance — where a particle
+  starts says nothing about where it is going, and a waist anywhere other than
+  the phantom surface is not modelled. The position means what it should for
+  each beam rather than the same thing for both: for a parallel pencil the
+  spot is the width where the beam *meets the front face*, back projected to
+  wherever the particle has to start to arrive there, so that the arbitrary
+  distance it is emitted from cannot widen a diverging beam; for a point
+  source it is the size of the focal spot, which is a real place. And a zero
+  draws no random numbers at all, exactly as a monoenergetic spectrum does
+  not, so a beam that asks for neither spread gives bit for bit the result it
+  gave before either existed.
 - `omc_dosrz`, the command line user code, named after DOSRZnrc for the same
   reason it exists. The cylinder is described by a few keys in the input file
   rather than read from a phantom file — there is no file format for a

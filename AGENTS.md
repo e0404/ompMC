@@ -39,6 +39,23 @@ why.
   that history from the RNG stream and silently changes the computed dose.
   This has happened once already during the Python-interface work.
 
+- **The pencil source's Gaussian spreads draw no random numbers when their
+  sigma is zero**, for exactly the reason `omcSpectrumSample()` above draws
+  none for a monoenergetic source: the stream is indexed per history, so
+  drawing a Box-Muller pair and multiplying it by zero would shift every later
+  draw in that history and silently change the dose of every beam that never
+  asked for a spread. `tests/test_omc_source_pencil.c` pins the draw count of
+  each combination; if you add a third blur, add its count there too.
+
+- **A measured dose profile is wider than the `spotSigma` that produced it,
+  and that is not a bug.** Deposition is the incident fluence convolved with
+  however far the radiation carries the energy, and convolution adds second
+  moments: `sigma_dep^2 = sigma_src^2 + K`. K is large at low photon energies
+  — about 8.8 cm² for 100 keV in water, the diffuse scattered-photon halo —
+  so a 1 cm spot can deposit like a 3 cm one. Verified by fitting sigma_dep^2
+  against sigma_src^2 over a range of widths: the slope is 1, which is what
+  says the source width itself is right. Don't "correct" the source for it.
+
 - **Electron range rejection and electron Russian roulette
   (`vrt.esave`/`e_rr`/`f_rr`) are off by default**, not because they're
   unvalidated but because they were measured unbiased-but-inefficient at

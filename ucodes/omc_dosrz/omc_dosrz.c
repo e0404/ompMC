@@ -363,6 +363,15 @@ static void initBeam(void) {
         pencil.kind = OMC_PENCIL_PARALLEL;
     }
 
+    /* Either delta the beam does not really have can be widened. Left out,
+     both stay 0, which is the delta itself and draws no random numbers. */
+    if (getInputValue(buffer, "spot sigma") == 1) {
+        pencil.spotSigma = atof(buffer);
+    }
+    if (getInputValue(buffer, "divergence sigma") == 1) {
+        pencil.divergenceSigma = atof(buffer);
+    }
+
     omcPencilSourceAsSource(&pencil, &source);
 
     if (pencil.kind == OMC_PENCIL_PARALLEL) {
@@ -375,6 +384,11 @@ static void initBeam(void) {
                pencil.fieldRadius > 0.0 ? pencil.fieldRadius
                                         : geometry.rbounds[geometry.isize],
                pencil.charge);
+    }
+
+    if (pencil.spotSigma > 0.0 || pencil.divergenceSigma > 0.0) {
+        printf("\t spot sigma (cm) = %f, divergence sigma (rad) = %f\n",
+               pencil.spotSigma, pencil.divergenceSigma);
     }
 
     return;

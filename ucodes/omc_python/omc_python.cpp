@@ -442,6 +442,8 @@ struct PencilInput {
     int kind;                   // 0 parallel pencil, 1 point at an SSD
     double ssd;
     double fieldRadius;
+    double spotSigma;
+    double divergenceSigma;
     int charge;
 };
 
@@ -946,6 +948,8 @@ static void runRadial(void *arg) {
         pencil.charge = run->pencil->charge;
         pencil.ssd = run->pencil->ssd;
         pencil.fieldRadius = run->pencil->fieldRadius;
+        pencil.spotSigma = run->pencil->spotSigma;
+        pencil.divergenceSigma = run->pencil->divergenceSigma;
 
         omcPencilSourceAsSource(&pencil, &source);
     }
@@ -1344,6 +1348,9 @@ NB_MODULE(_ompmc, m) {
             pencilInput.kind = nb::cast<int>(source["kind"]);
             pencilInput.ssd = nb::cast<double>(source["ssd"]);
             pencilInput.fieldRadius = nb::cast<double>(source["field_radius"]);
+            pencilInput.spotSigma = nb::cast<double>(source["spot_sigma"]);
+            pencilInput.divergenceSigma =
+                nb::cast<double>(source["divergence_sigma"]);
             pencilInput.charge = nb::cast<int>(options["charge"]);
 
             if (spectrum.is_none()) {

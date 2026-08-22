@@ -49,6 +49,59 @@ static double fieldRadiusOf(const struct OmcPencilSource *pencil) {
                                      : geometry.rbounds[geometry.isize];
 }
 
+/*! Turn a direction by the projected angles @p a and @p b, about two
+ perpendicular directions of its own.
+
+ The turned direction is `d + a*e1 + b*e2` brought back to unit length, so a
+ and b are the tangents of the angle onto the two planes through d -- the
+ angles themselves, to the accuracy a pencil beam's divergence cares about.
+ Written this way rather than as a spherical rotation because it cannot
+ degenerate: it stays a unit vector for any a and b, with no pole to avoid. */
+static void turnDirection(double *u, double *v, double *w,
+                          double a, double b) {
+
+    double du = *u, dv = *v, dw = *w;
+
+    /* Any unit vector perpendicular to d. Crossing d with whichever axis it
+     leans on least keeps the cross product well away from zero. */
+    double tx = 0.0, ty = 0.0, tz = 0.0;
+    double au = fabs(du), av = fabs(dv), aw = fabs(dw);
+
+    if (au <= av && au <= aw) {
+        tx = 1.0;
+    }
+    else if (av <= aw) {
+        ty = 1.0;
+    }
+    else {
+        tz = 1.0;
+    }
+
+    double e1u = dv*tz - dw*ty;
+    double e1v = dw*tx - du*tz;
+    double e1w = du*ty - dv*tx;
+
+    double norm = 1.0/sqrt(e1u*e1u + e1v*e1v + e1w*e1w);
+    e1u *= norm;
+    e1v *= norm;
+    e1w *= norm;
+
+    /* e2 = d x e1, already unit since both are and they are perpendicular */
+    double e2u = dv*e1w - dw*e1v;
+    double e2v = dw*e1u - du*e1w;
+    double e2w = du*e1v - dv*e1u;
+
+    double nu = du + a*e1u + b*e2u;
+    double nv = dv + a*e1v + b*e2v;
+    double nw = dw + a*e1w + b*e2w;
+
+    norm = 1.0/sqrt(nu*nu + nv*nv + nw*nw);
+
+    *u = nu*norm;
+    *v = nv*norm;
+    *w = nw*norm;
+}
+
 /******************************************************************************/
 /* The source interface */
 
@@ -82,6 +135,19 @@ static void pencilCheck(const struct OmcSource *self) {
             "A pencil beam aims down the axis of a cylinder, and the phantom "
             "is a rectilinear voxel grid. Set the geometry up with "
             "omcGeomCylInit().");
+    }
+
+    /* Zero is not refused: it is the delta each of these widens from. */
+    if (pencil->spotSigma < 0.0) {
+        omcFail("ompMC:pencil:badSpotSigma",
+            "The beam has a spot width of %g cm. Give a positive one, or 0 "
+            "for a beam of no width.", pencil->spotSigma);
+    }
+
+    if (pencil->divergenceSigma < 0.0) {
+        omcFail("ompMC:pencil:badDivergenceSigma",
+            "The beam has a divergence of %g rad. Give a positive one, or 0 "
+            "for a beam that does not diverge.", pencil->divergenceSigma);
     }
 
     if (pencil->kind == OMC_PENCIL_SSD) {
@@ -128,46 +194,97 @@ static int pencilSample(const struct OmcSource *self, uint64_t ihist,
     particle->weight = 1.0;
 
     double zface = geometry.zbounds[0];
+    int parallel = pencil->kind == OMC_PENCIL_PARALLEL;
 
-    if (pencil->kind == OMC_PENCIL_PARALLEL) {
-        /* No width and no divergence, and no random numbers to give it any */
-        particle->x = 0.0;
-        particle->y = 0.0;
-        particle->z = zface - PENCIL_STANDOFF;
+    /* How far upstream of the front face the particle is emitted. For the
+     point source that is the SSD, a real distance; for a parallel pencil it
+     is arbitrary -- far enough that the particle arrives rather than starting
+     inside, see omc_source.h -- which is why the two are treated differently
+     below. */
+    double standoff = parallel ? PENCIL_STANDOFF : pencil->ssd;
 
+    /* Where the nominal beam meets the front face. */
+    double aimX = 0.0;
+    double aimY = 0.0;
+
+    if (!parallel) {
+        /* Aimed at a disc on the face. Exactly two draws, in this order,
+         whatever the field is: the count is part of the source's contract,
+         since the random stream is indexed per history. */
+        double rnno1 = setRandom();
+        double rnno2 = setRandom();
+
+        /* sqrt() rather than the random number itself: the area of the disc
+         grows as r^2, so a uniform radius would crowd the particles onto the
+         axis. */
+        double radius = fieldRadiusOf(pencil)*sqrt(rnno1);
+        double phi = 2.0*M_PI*rnno2;
+
+        aimX = radius*cos(phi);
+        aimY = radius*sin(phi);
+    }
+
+    /* A finite width, spread round the axis. What it displaces differs
+     between the two beams, because what the position MEANS differs: a
+     parallel pencil is specified where it meets the phantom, a point source
+     by where the source is. So this is the width of the beam on the front
+     face in the first case, and the size of the focal spot in the second. */
+    double spotX = 0.0;
+    double spotY = 0.0;
+
+    if (pencil->spotSigma > 0.0) {
+        double offset[2];
+        boxMuller(offset);
+
+        spotX = pencil->spotSigma*offset[0];
+        spotY = pencil->spotSigma*offset[1];
+    }
+
+    /* The nominal direction. The transport takes it as a unit vector and
+     never renormalizes it. */
+    if (parallel) {
         particle->u = 0.0;
         particle->v = 0.0;
         particle->w = 1.0;
+    }
+    else {
+        /* From wherever on the focal spot this history starts, to the point
+         on the disc it is aimed at. */
+        double dx = aimX - spotX;
+        double dy = aimY - spotY;
+        double dz = pencil->ssd;
+        double norm = 1.0/sqrt(dx*dx + dy*dy + dz*dz);
 
-        return 1;
+        particle->u = dx*norm;
+        particle->v = dy*norm;
+        particle->w = dz*norm;
     }
 
-    /* A point on the axis, aimed at a disc on the front face. Exactly two
-     draws, in this order, whatever the field is: the count is part of the
-     source's contract, since the random stream is indexed per history. */
-    double rnno1 = setRandom();
-    double rnno2 = setRandom();
+    /* A finite divergence, about whatever direction the beam already had. */
+    if (pencil->divergenceSigma > 0.0) {
+        double angle[2];
+        boxMuller(angle);
 
-    /* sqrt() rather than the random number itself: the area of the disc grows
-     as r^2, so a uniform radius would crowd the particles onto the axis. */
-    double radius = fieldRadiusOf(pencil)*sqrt(rnno1);
-    double phi = 2.0*M_PI*rnno2;
+        turnDirection(&particle->u, &particle->v, &particle->w,
+                      pencil->divergenceSigma*angle[0],
+                      pencil->divergenceSigma*angle[1]);
+    }
 
-    particle->x = 0.0;
-    particle->y = 0.0;
-    particle->z = zface - pencil->ssd;
+    particle->z = zface - standoff;
 
-    /* From the source point to where it meets the face, normalized. The
-     transport takes the direction as a unit vector and never renormalizes
-     it. */
-    double dx = radius*cos(phi);
-    double dy = radius*sin(phi);
-    double dz = pencil->ssd;
-    double norm = 1.0/sqrt(dx*dx + dy*dy + dz*dz);
-
-    particle->u = dx*norm;
-    particle->v = dy*norm;
-    particle->w = dz*norm;
+    if (parallel) {
+        /* Emitted from wherever it has to start to cross the face at the
+         spot. Without this the particle would drift sideways over the
+         standoff, and an arbitrary internal distance would quietly widen
+         every diverging beam. */
+        particle->x = spotX - standoff*(particle->u/particle->w);
+        particle->y = spotY - standoff*(particle->v/particle->w);
+    }
+    else {
+        /* The focal spot is a real place; the particle starts on it. */
+        particle->x = spotX;
+        particle->y = spotY;
+    }
 
     return 1;
 }

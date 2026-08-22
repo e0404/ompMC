@@ -30,6 +30,14 @@ charge = 0
 # ssd = 100.0
 # field radius = 4.0
 
+# A real beam is neither a point nor perfectly parallel. Either delta can be
+# widened into a Gaussian, independently of the other; left out, both are 0,
+# which is the delta itself. 'spot sigma' is the width of the beam where it
+# meets the front face (for a point source, the size of the focal spot);
+# 'divergence sigma' is the spread of its direction, in radians.
+# spot sigma = 0.15
+# divergence sigma = 0.01
+
 # For 'source type = phsp' only.
 # phsp file = ../../phsp/some_beam
 # phsp order = replay

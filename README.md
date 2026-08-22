@@ -160,6 +160,11 @@ source is one of three:
 source type = pencil
 mono energy = 6.0
 charge = 0
+# Optional: widen either delta into a Gaussian. 'spot sigma' (cm) is the beam
+# width where it meets the front face, 'divergence sigma' (rad) its angular
+# spread. Left out, both are 0 -- the delta itself, drawing no random numbers.
+# spot sigma = 0.15
+# divergence sigma = 0.01
 # stop source definition
 
 # start geometry
@@ -442,6 +447,10 @@ depth_dose_on_axis = dose[0, :]
   `(n_rings, n_slabs)`. It takes a `PencilBeamSource` — parallel, or a point source with
   `ssd=` — or a `PhaseSpaceSource`. Its dose is per incident history rather than per unit
   fluence; there is no field for a pencil beam to have a fluence over.
+- `PencilBeamSource(spot_sigma=..., divergence_sigma=...)` widens the beam from a delta into
+  a Gaussian in position, in angle, or both — drawn independently, so it is a blurred pencil
+  rather than a beam with emittance. Either left out draws no random numbers, so a plain
+  pencil is unaffected by their existence.
 - `ompmc.ApertureMask` is something in the beam's way, applied by back projection so it composes
   with either source. `roulette=True` spends a partly transmitting cell as a survival probability
   at full weight rather than as a weight multiplier — cheaper behind thick leaves, noisier, and

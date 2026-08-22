@@ -548,6 +548,12 @@ class PencilBeamSource:
     point source that far upstream of the front face, illuminating a disc on
     it -- what a real machine looks like.
 
+    Either delta a real beam does not have can be widened into a Gaussian,
+    independently of the other: `spot_sigma` gives it a width, and
+    `divergence_sigma` gives it an angular spread. Both default to a delta,
+    and a delta draws no random numbers, so a beam that asks for neither is
+    exactly the beam it would have been without them.
+
     Parameters
     ----------
     ssd : float, optional
@@ -556,12 +562,21 @@ class PencilBeamSource:
     field_radius : float, optional
         Radius of the disc illuminated on the front face, in cm. Only
         meaningful with an `ssd`; left out, the whole face is illuminated.
+    spot_sigma : float, optional
+        Standard deviation of the starting position, in cm, spread as a round
+        two-dimensional Gaussian across the beam. For a parallel pencil this
+        is the width where the beam meets the front face; for a point source
+        it is the size of the focal spot. Left out, the beam has no width.
+    divergence_sigma : float, optional
+        Standard deviation of the direction, in **radians**, spread as a round
+        two-dimensional Gaussian about the nominal one. Left out, the beam
+        does not diverge.
 
     Raises
     ------
     ValueError
-        If `ssd` is not positive, if `field_radius` is not positive, or if a
-        `field_radius` is given without an `ssd`.
+        If `ssd`, `field_radius`, `spot_sigma` or `divergence_sigma` is not
+        positive, or if a `field_radius` is given without an `ssd`.
 
     Warnings
     --------
@@ -571,16 +586,31 @@ class PencilBeamSource:
     whose fluence would fall off with the inverse square across the field, and
     the difference shows at short SSD.
 
+    Notes
+    -----
+    The position and the direction are drawn independently, which makes this a
+    blurred pencil rather than a beam with emittance: where a particle starts
+    says nothing about where it is going. A beam whose waist sits somewhere
+    other than the phantom surface is not what this models.
+
+    A spot wide enough to reach past the edge of the cylinder will put some
+    particles outside it, and a parallel one that starts outside never enters.
+    Those histories still count towards the fluence the result is divided by;
+    :class:`RunSummary` reports how many of them there were.
+
     Examples
     --------
-    The kernel case, and a 4 cm field at 100 cm::
+    The kernel case, a 4 cm field at 100 cm, and a beam of finite emittance::
 
         pencil = ompmc.PencilBeamSource()
         machine = ompmc.PencilBeamSource(ssd=100.0, field_radius=4.0)
+        real = ompmc.PencilBeamSource(spot_sigma=0.15, divergence_sigma=0.01)
     """
 
     ssd: float | None = None
     field_radius: float | None = None
+    spot_sigma: float | None = None
+    divergence_sigma: float | None = None
 
     def __post_init__(self) -> None:
         if self.ssd is not None:
@@ -601,6 +631,16 @@ class PencilBeamSource:
                     f"field_radius must be positive, got "
                     f"{self.field_radius!r}")
 
+        for name in ("spot_sigma", "divergence_sigma"):
+            value = getattr(self, name)
+            if value is not None:
+                value = float(value)
+                if not value > 0.0:
+                    raise ValueError(
+                        f"{name} must be positive, got {value!r}; leave it "
+                        f"out for a beam with no spread at all")
+                setattr(self, name, value)
+
     @property
     def _payload(self) -> dict:
         return {
@@ -609,6 +649,12 @@ class PencilBeamSource:
             # 0 is how the core spells "the whole front face"
             "field_radius": (float(self.field_radius)
                              if self.field_radius is not None else 0.0),
+            # and how it spells "no spread", which draws no random numbers
+            "spot_sigma": (float(self.spot_sigma)
+                           if self.spot_sigma is not None else 0.0),
+            "divergence_sigma": (float(self.divergence_sigma)
+                                 if self.divergence_sigma is not None
+                                 else 0.0),
         }
 
 

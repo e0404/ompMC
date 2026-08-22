@@ -502,6 +502,127 @@ static void test_an_ssd_source_spreads_the_beam(void) {
     tearDownWaterCylinder();
 }
 
+/* Widening the source has to widen the dose. The entrance slab is where it
+ shows cleanest: down there the beam has not yet been broadened by scatter, so
+ nearly all of what a delta pencil deposits is in the innermost ring. */
+static void test_a_gaussian_spot_broadens_the_dose(void) {
+
+    setUpWaterCylinder();
+
+    struct OmcSpectrum spectrum;
+    omcSpectrumMonoenergetic(&spectrum, 6.0);
+
+    double onAxisFraction[2];
+
+    for (int widened = 0; widened < 2; widened++) {
+
+        struct OmcPencilSource pencil;
+        memset(&pencil, 0, sizeof(pencil));
+        pencil.kind = OMC_PENCIL_PARALLEL;
+        pencil.spectrum = &spectrum;
+        pencil.charge = 0;
+        pencil.spotSigma = widened ? 1.5 : 0.0;
+
+        struct OmcSource source;
+        omcPencilSourceAsSource(&pencil, &source);
+
+        struct OmcRadialOptions opt = optionsFor(20000);
+        opt.outputDose = 0;             /* energy, so ring volumes drop out */
+        struct OmcForwardSummary summary;
+
+        double *dose = malloc(NREG*sizeof(double));
+
+        CHECK(omcCalcRadial(&opt, &source, NULL, dose, NULL, NULL,
+                            &summary) == 1);
+
+        if (!widened) {
+            CHECK(summary.started == 20000);
+        }
+        else {
+            /* A spot wide enough to matter spills over the edge of the
+             cylinder, and a particle that starts beyond the barrel
+             travelling parallel to it never enters. Those histories happened
+             and still count towards the fluence the result is divided by --
+             they are beam that missed, not beam that was never there. A
+             Gaussian of 1.5 cm against a radius of 5 loses about 0.4%. */
+            CHECK(summary.started < 20000);
+            CHECK(summary.started > 19000);
+        }
+
+        double onAxis = 0.0, total = 0.0;
+        for (int ir = 0; ir < NRAD; ir++) {
+            total += at(dose, ir, 0);
+            if (ir == 0) {
+                onAxis += at(dose, ir, 0);
+            }
+        }
+
+        CHECK(total > 0.0);
+        onAxisFraction[widened] = onAxis/total;
+
+        free(dose);
+    }
+
+    /* A delta pencil puts nearly everything in the first ring; a centimetre
+     and a half of spot spreads it over most of them. */
+    CHECK(onAxisFraction[0] > 0.8);
+    CHECK(onAxisFraction[1] < 0.3);
+
+    omcSpectrumFree(&spectrum);
+    tearDownWaterCylinder();
+}
+
+/* Divergence widens the beam too, but with depth rather than at the surface:
+ the particles all enter on the axis and fan out from there. */
+static void test_a_divergent_beam_widens_with_depth(void) {
+
+    setUpWaterCylinder();
+
+    struct OmcSpectrum spectrum;
+    omcSpectrumMonoenergetic(&spectrum, 6.0);
+
+    struct OmcPencilSource pencil;
+    memset(&pencil, 0, sizeof(pencil));
+    pencil.kind = OMC_PENCIL_PARALLEL;
+    pencil.spectrum = &spectrum;
+    pencil.charge = 0;
+    pencil.divergenceSigma = 0.2;       /* wide, so it shows over 10 cm */
+
+    struct OmcSource source;
+    omcPencilSourceAsSource(&pencil, &source);
+
+    struct OmcRadialOptions opt = optionsFor(40000);
+    opt.outputDose = 0;
+    struct OmcForwardSummary summary;
+
+    double *dose = malloc(NREG*sizeof(double));
+
+    CHECK(omcCalcRadial(&opt, &source, NULL, dose, NULL, NULL, &summary) == 1);
+
+    /* The fraction still on the axis, at the front of the cylinder and at
+     the back of it */
+    double frac[2];
+    int slabs[2] = {0, NZR - 1};
+
+    for (int end = 0; end < 2; end++) {
+        double onAxis = 0.0, total = 0.0;
+        for (int ir = 0; ir < NRAD; ir++) {
+            total += at(dose, ir, slabs[end]);
+            if (ir == 0) {
+                onAxis += at(dose, ir, slabs[end]);
+            }
+        }
+        CHECK(total > 0.0);
+        frac[end] = onAxis/total;
+    }
+
+    CHECK(frac[1] < frac[0]);
+
+    free(dose);
+    omcSpectrumFree(&spectrum);
+    tearDownWaterCylinder();
+}
+
 /*******************************************************************************
 * A phase space built in memory, the same way test_omc_forward_phsp.c does it
 *******************************************************************************/
@@ -775,6 +896,8 @@ int main(void) {
     RUN(test_dose_falls_off_away_from_the_axis);
     RUN(test_an_electron_pencil_stops_near_its_range);
     RUN(test_an_ssd_source_spreads_the_beam);
+    RUN(test_a_gaussian_spot_broadens_the_dose);
+    RUN(test_a_divergent_beam_widens_with_depth);
     RUN(test_a_phase_space_drives_the_radial_engine);
     RUN(test_regions_nothing_reached_carry_the_sentinel);
     RUN(test_a_rerun_gives_the_same_answer);

@@ -187,6 +187,32 @@ static struct OmcPencilSource pencilParallel(void) {
     return pencil;
 }
 
+/* A parallel pencil blurred in position, in angle, or in both. */
+static struct OmcPencilSource pencilGaussian(double spot, double divergence) {
+
+    struct OmcPencilSource pencil;
+    memset(&pencil, 0, sizeof(pencil));
+
+    pencil.kind = OMC_PENCIL_PARALLEL;
+    pencil.spectrum = &mono;
+    pencil.charge = 0;
+    pencil.spotSigma = spot;
+    pencil.divergenceSigma = divergence;
+
+    return pencil;
+}
+
+/* Where a particle crosses the front face of the cylinder, which is the plane
+ the beam is actually specified on. */
+static void atEntrance(const struct OmcSourceParticle *particle,
+                       double *x, double *y) {
+
+    double t = (geometry.zbounds[0] - particle->z)/particle->w;
+
+    *x = particle->x + t*particle->u;
+    *y = particle->y + t*particle->v;
+}
+
 static struct OmcPencilSource pencilSsd(double ssd, double fieldRadius) {
 
     struct OmcPencilSource pencil;
@@ -350,6 +376,249 @@ static void test_a_field_radius_of_zero_means_the_whole_face(void) {
     CHECK(rmax > 0.97*radius);
 }
 
+/*******************************************************************************
+* The Gaussian blurs
+*
+* A real pencil beam is neither a point nor perfectly parallel. Either delta
+* can be widened into a Gaussian, and the two are independent: a spot size
+* without divergence, a divergence without spot size, or both.
+*******************************************************************************/
+
+/* Sample a lot of histories and report the moments of whatever the callback
+ pulls out of each particle. */
+static void moments(const struct OmcSource *source,
+                    void (*pick)(const struct OmcSourceParticle *,
+                                 double *, double *),
+                    int n, double *meanA, double *meanB,
+                    double *sdA, double *sdB, double *covAB) {
+
+    double sa = 0.0, sb = 0.0, saa = 0.0, sbb = 0.0, sab = 0.0;
+
+    for (int i = 0; i < n; i++) {
+        struct OmcSourceParticle particle;
+        memset(&particle, 0, sizeof(particle));
+
+        setRandomHistory((uint64_t)i);
+        source->sample(source, (uint64_t)i, i, &particle);
+
+        double a, b;
+        pick(&particle, &a, &b);
+
+        sa += a;  sb += b;
+        saa += a*a;  sbb += b*b;  sab += a*b;
+    }
+
+    double na = (double)n;
+
+    *meanA = sa/na;
+    *meanB = sb/na;
+    *sdA = sqrt(saa/na - (*meanA)*(*meanA));
+    *sdB = sqrt(sbb/na - (*meanB)*(*meanB));
+    *covAB = sab/na - (*meanA)*(*meanB);
+}
+
+static void pickEntrance(const struct OmcSourceParticle *particle,
+                         double *x, double *y) {
+    atEntrance(particle, x, y);
+}
+
+/* The projected angles. The direction is built as (a, b, 1) normalized, so
+ u/w and v/w recover exactly what was sampled. */
+static void pickAngles(const struct OmcSourceParticle *particle,
+                       double *a, double *b) {
+    *a = particle->u/particle->w;
+    *b = particle->v/particle->w;
+}
+
+#define NSAMPLES 40000
+
+static void test_a_spot_sigma_widens_the_beam_where_it_enters(void) {
+
+    setUpCylinder();
+
+    double sigma = 0.3;
+    struct OmcPencilSource pencil = pencilGaussian(sigma, 0.0);
+    struct OmcSource source;
+    omcPencilSourceAsSource(&pencil, &source);
+
+    double mx, my, sx, sy, cov;
+    moments(&source, pickEntrance, NSAMPLES, &mx, &my, &sx, &sy, &cov);
+
+    /* Centred on the axis */
+    CHECK(fabs(mx) < 0.06*sigma);
+    CHECK(fabs(my) < 0.06*sigma);
+
+    /* As wide as it was asked to be */
+    CHECK_CLOSE(sx, sigma, 0.05*sigma);
+    CHECK_CLOSE(sy, sigma, 0.05*sigma);
+
+    /* Round, not elliptical or tilted. This matters more here than it would
+     in a voxel phantom: the rings have no azimuthal binning, so a source
+     that was wider in x than in y would be averaged away silently rather
+     than showing up in the result. */
+    CHECK(fabs(cov) < 0.06*sigma*sigma);
+
+    /* Still parallel: the spot is a position blur and nothing else */
+    for (uint64_t ihist = 0; ihist < 32; ihist++) {
+        struct OmcSourceParticle particle;
+        memset(&particle, 0, sizeof(particle));
+
+        setRandomHistory(ihist);
+        source.sample(&source, ihist, 0, &particle);
+
+        CHECK_CLOSE(particle.u, 0.0, 1e-15);
+        CHECK_CLOSE(particle.v, 0.0, 1e-15);
+        CHECK_CLOSE(particle.w, 1.0, 1e-15);
+    }
+}
+
+static void test_a_divergence_sigma_spreads_the_direction(void) {
+
+    setUpCylinder();
+
+    double sigma = 0.02;
+    struct OmcPencilSource pencil = pencilGaussian(0.0, sigma);
+    struct OmcSource source;
+    omcPencilSourceAsSource(&pencil, &source);
+
+    double ma, mb, sa, sb, cov;
+    moments(&source, pickAngles, NSAMPLES, &ma, &mb, &sa, &sb, &cov);
+
+    CHECK(fabs(ma) < 0.06*sigma);
+    CHECK(fabs(mb) < 0.06*sigma);
+    CHECK_CLOSE(sa, sigma, 0.05*sigma);
+    CHECK_CLOSE(sb, sigma, 0.05*sigma);
+    CHECK(fabs(cov) < 0.06*sigma*sigma);
+
+    /* Every direction is still a unit vector, which the transport takes as
+     given and never renormalizes */
+    for (uint64_t ihist = 0; ihist < 64; ihist++) {
+        struct OmcSourceParticle particle;
+        memset(&particle, 0, sizeof(particle));
+
+        setRandomHistory(ihist);
+        source.sample(&source, ihist, 0, &particle);
+
+        double norm = sqrt(particle.u*particle.u + particle.v*particle.v +
+                           particle.w*particle.w);
+        CHECK_CLOSE(norm, 1.0, 1e-12);
+        CHECK(particle.w > 0.0);
+    }
+}
+
+/* The beam is specified on the front face of the cylinder, and a parallel
+ pencil is emitted from an arbitrary distance upstream of it so that it
+ arrives rather than starting inside. A diverging particle drifts sideways
+ over that distance, so unless the starting point is back projected the beam
+ would be blurred by however far upstream the source happens to sit -- an
+ internal constant, invisible from outside, quietly widening the answer. */
+static void test_the_standoff_does_not_widen_the_beam(void) {
+
+    setUpCylinder();
+
+    struct OmcPencilSource pencil = pencilGaussian(0.0, 0.05);
+    struct OmcSource source;
+    omcPencilSourceAsSource(&pencil, &source);
+
+    for (uint64_t ihist = 0; ihist < 500; ihist++) {
+        struct OmcSourceParticle particle;
+        memset(&particle, 0, sizeof(particle));
+
+        setRandomHistory(ihist);
+        source.sample(&source, ihist, 0, &particle);
+
+        /* No spot size, so every particle has to cross the front face
+         exactly on the axis however much it diverges */
+        double x, y;
+        atEntrance(&particle, &x, &y);
+
+        CHECK_CLOSE(x, 0.0, 1e-12);
+        CHECK_CLOSE(y, 0.0, 1e-12);
+    }
+}
+
+/* Both at once, still independent of each other. */
+static void test_spot_and_divergence_compose(void) {
+
+    setUpCylinder();
+
+    double spot = 0.2, divergence = 0.03;
+    struct OmcPencilSource pencil = pencilGaussian(spot, divergence);
+    struct OmcSource source;
+    omcPencilSourceAsSource(&pencil, &source);
+
+    double mx, my, sx, sy, cov;
+    moments(&source, pickEntrance, NSAMPLES, &mx, &my, &sx, &sy, &cov);
+
+    /* The spot alone decides the width at the face; the divergence adds
+     nothing there, only downstream. */
+    CHECK_CLOSE(sx, spot, 0.05*spot);
+    CHECK_CLOSE(sy, spot, 0.05*spot);
+
+    double ma, mb, sa, sb, covAngle;
+    moments(&source, pickAngles, NSAMPLES, &ma, &mb, &sa, &sb, &covAngle);
+
+    CHECK_CLOSE(sa, divergence, 0.05*divergence);
+    CHECK_CLOSE(sb, divergence, 0.05*divergence);
+
+    /* And they are drawn independently, so position and angle are
+     uncorrelated -- this is a blurred pencil, not a beam with emittance. */
+    double sxa = 0.0;
+    for (int i = 0; i < NSAMPLES; i++) {
+        struct OmcSourceParticle particle;
+        memset(&particle, 0, sizeof(particle));
+
+        setRandomHistory((uint64_t)i);
+        source.sample(&source, (uint64_t)i, i, &particle);
+
+        double x, y, a, b;
+        atEntrance(&particle, &x, &y);
+        pickAngles(&particle, &a, &b);
+
+        sxa += x*a;
+    }
+    CHECK(fabs(sxa/NSAMPLES) < 0.06*spot*divergence);
+}
+
+/* A sigma of zero has to be the delta beam exactly -- same particle, and the
+ same number of random draws -- so that adding these knobs changes no result
+ that never asked for them. */
+static void test_zero_sigma_is_the_delta_beam_exactly(void) {
+
+    setUpCylinder();
+
+    struct OmcPencilSource plain = pencilParallel();
+    struct OmcPencilSource zeroed = pencilGaussian(0.0, 0.0);
+
+    struct OmcSource a, b;
+    omcPencilSourceAsSource(&plain, &a);
+    omcPencilSourceAsSource(&zeroed, &b);
+
+    for (uint64_t ihist = 0; ihist < 32; ihist++) {
+        struct OmcSourceParticle first, again;
+        memset(&first, 0, sizeof(first));
+        memset(&again, 0, sizeof(again));
+
+        setRandomHistory(ihist);
+        a.sample(&a, ihist, 0, &first);
+
+        setRandomHistory(ihist);
+        b.sample(&b, ihist, 0, &again);
+
+        CHECK(memcmp(&first, &again, sizeof(first)) == 0);
+    }
+
+    /* And neither of them touched the generator */
+    setRandomHistory(5);
+    double straightAway = setRandom();
+
+    struct OmcSourceParticle particle;
+    setRandomHistory(5);
+    memset(&particle, 0, sizeof(particle));
+    b.sample(&b, 5, 0, &particle);
+    CHECK(setRandom() == straightAway);
+}
+
 /* What a source draws must depend on the history index and nothing else, or
  the answer starts depending on how OpenMP handed the histories out. */
 static void test_sampling_depends_only_on_the_history(void) {
@@ -424,6 +693,60 @@ static void test_the_draw_count_is_what_it_says(void) {
 
         CHECK(afterSampling == third);
     }
+
+    /* Each Gaussian blur is one Box-Muller pair, and only when it is asked
+     for. The counts below are the source's contract, not an accident of how
+     it happens to be written today. */
+    struct {
+        struct OmcPencilSource pencil;
+        int draws;
+    } cases[] = {
+        { pencilGaussian(0.0, 0.0), 0 },
+        { pencilGaussian(0.5, 0.0), 2 },
+        { pencilGaussian(0.0, 0.01), 2 },
+        { pencilGaussian(0.5, 0.01), 4 },
+    };
+
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+
+        struct OmcSource source;
+        omcPencilSourceAsSource(&cases[i].pencil, &source);
+
+        setRandomHistory(23);
+        for (int d = 0; d < cases[i].draws; d++) {
+            setRandom();
+        }
+        double expected = setRandom();
+
+        setRandomHistory(23);
+        memset(&particle, 0, sizeof(particle));
+        source.sample(&source, 23, 0, &particle);
+        double afterSampling = setRandom();
+
+        CHECK(afterSampling == expected);
+    }
+
+    /* And they stack on top of the SSD source's own two */
+    {
+        struct OmcPencilSource pencil = pencilSsd(90.0, 1.0);
+        pencil.spotSigma = 0.1;
+        pencil.divergenceSigma = 0.01;
+
+        struct OmcSource source;
+        omcPencilSourceAsSource(&pencil, &source);
+
+        setRandomHistory(23);
+        for (int d = 0; d < 6; d++) {
+            setRandom();
+        }
+        double expected = setRandom();
+
+        setRandomHistory(23);
+        memset(&particle, 0, sizeof(particle));
+        source.sample(&source, 23, 0, &particle);
+
+        CHECK(setRandom() == expected);
+    }
 }
 
 static void test_prepare_reports_the_dose_per_history(void) {
@@ -488,6 +811,20 @@ static void test_check_refuses_what_it_cannot_sample(void) {
         EXPECT_FAIL("ompMC:pencil:badKind", source.check(&source));
     }
 
+    /* A negative width is a typo, not a beam. Zero is not: it is the delta
+     the blur widens from. */
+    {
+        struct OmcPencilSource pencil = pencilGaussian(-0.1, 0.0);
+        omcPencilSourceAsSource(&pencil, &source);
+        EXPECT_FAIL("ompMC:pencil:badSpotSigma", source.check(&source));
+    }
+
+    {
+        struct OmcPencilSource pencil = pencilGaussian(0.0, -0.01);
+        omcPencilSourceAsSource(&pencil, &source);
+        EXPECT_FAIL("ompMC:pencil:badDivergenceSigma", source.check(&source));
+    }
+
     /* It aims down the axis of a cylinder, and there is no axis in a
      rectilinear phantom for it to aim down. */
     {
@@ -539,6 +876,11 @@ int main(void) {
     RUN(test_the_charge_is_the_one_it_was_given);
     RUN(test_an_ssd_source_fills_the_field_it_was_given);
     RUN(test_a_field_radius_of_zero_means_the_whole_face);
+    RUN(test_a_spot_sigma_widens_the_beam_where_it_enters);
+    RUN(test_a_divergence_sigma_spreads_the_direction);
+    RUN(test_the_standoff_does_not_widen_the_beam);
+    RUN(test_spot_and_divergence_compose);
+    RUN(test_zero_sigma_is_the_delta_beam_exactly);
     RUN(test_sampling_depends_only_on_the_history);
     RUN(test_the_draw_count_is_what_it_says);
     RUN(test_prepare_reports_the_dose_per_history);

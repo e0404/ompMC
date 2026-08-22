@@ -45,6 +45,22 @@
  omc_dosxyz's collimated source reports. There is no field for a pencil beam
  to have a fluence over.
 
+ The kind above picks the NOMINAL beam. Either of the two deltas a real beam
+ does not have can then be widened into a Gaussian, independently:
+
+     pencil.spotSigma = 0.15;         // cm, a beam of finite width
+     pencil.divergenceSigma = 0.01;   // rad, a beam that is not quite parallel
+
+ Both are measured on the front face of the phantom, which is the plane a
+ pencil beam is specified on, and both default to 0 -- the delta they widen
+ from. A zero draws no random numbers at all, so a beam that asks for neither
+ gives exactly the result it gave before they existed.
+
+ They are drawn independently of each other, which makes this a blurred pencil
+ rather than a beam with emittance: where a particle starts says nothing about
+ where it is going. A beam whose width and divergence are correlated -- a
+ waist somewhere other than the phantom surface -- is not what this models.
+
  @warning The SSD source spreads its particles evenly over the disc it
  illuminates -- uniform FLUENCE on the entrance plane, which is the convention
  omc_dosxyz's rectangular source follows too. That is not the same thing as an
@@ -87,6 +103,24 @@ struct OmcPencilSource {
     /*! #OMC_PENCIL_SSD only: radius of the disc illuminated on the front
      face, in cm. 0 means the whole face, i.e. the cylinder's own radius. */
     double fieldRadius;
+
+    /*! Standard deviation of the starting position, in cm, spread as a round
+     two dimensional Gaussian across the beam. 0 is a beam of no width.
+
+     For a parallel pencil this is the width where the beam meets the front
+     face; for a point source it is the size of the focal spot. Costs one
+     Box-Muller pair, i.e. two random numbers, and none at all when 0. */
+    double spotSigma;
+
+    /*! Standard deviation of the direction, in radians, spread as a round two
+     dimensional Gaussian about the nominal one. 0 is a beam that does not
+     diverge at all.
+
+     It is the PROJECTED angles that are Gaussian -- the tangents of the angle
+     onto two perpendicular planes through the beam -- which for the small
+     divergences a pencil beam has is the angle itself. Costs one Box-Muller
+     pair, i.e. two random numbers, and none at all when 0. */
+    double divergenceSigma;
 };
 
 /*! Present the beam to an engine as a source.
