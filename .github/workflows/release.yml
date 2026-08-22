@@ -16,7 +16,8 @@ name: release
 #
 # Package layout:
 #
-#   ompmc-<version>-<platform>.zip            omc_dosxyz + the MATLAB MEX file
+#   ompmc-<version>-<platform>.zip            omc_dosxyz, omc_dosrz and the
+#                                             MATLAB MEX file
 #   ompmc-<version>-octave8-<platform>.zip    Octave MEX file, Octave 8.x ABI
 #   ompmc-<version>-octave10-<platform>.zip   Octave MEX file, Octave >=10 ABI
 #
@@ -41,9 +42,9 @@ name: release
 #     llvm-mingw) -- the toolchains are not equivalent (see BUILDING.md's
 #     performance note and the OpenMP section), so all three ship rather than
 #     picking one.
-#   - linux-x64 and linux-arm64. linux-arm64 ships omc_dosxyz only: MathWorks
-#     publishes no Linux ARM MATLAB, and build.yml does not build Octave
-#     there either.
+#   - linux-x64 and linux-arm64. linux-arm64 ships the command line binaries
+#     only: MathWorks publishes no Linux ARM MATLAB, and build.yml does not
+#     build Octave there either.
 #   - macos-x64 and macos-arm64, MATLAB MEX only.
 #   - Octave packages only for the platforms build.yml actually builds Octave
 #     on today: Windows (8 and 10) and linux-x64 (8, via apt). There is no
@@ -222,8 +223,10 @@ jobs:
 
           if [ "${{ matrix.kind }}" = "full" ]; then
             cp dl/omc_dosxyz/* "$pkg/bin/" 2>/dev/null || true
+            cp dl/omc_dosrz/* "$pkg/bin/" 2>/dev/null || true
             cp dl/omc_matrad_matlab/* "$pkg/bin/" 2>/dev/null || true
             chmod +x "$pkg/bin/omc_dosxyz" 2>/dev/null || true
+            chmod +x "$pkg/bin/omc_dosrz" 2>/dev/null || true
 
             case "$name" in
               windows-x64-msvc)
@@ -236,13 +239,13 @@ jobs:
                 prereq="Requires the GNU OpenMP runtime (libgomp1), normally already installed alongside GCC. Debian/Ubuntu: apt install libgomp1."
                 ;;
               macos-x64|macos-arm64)
-                prereq="omc_dosxyz requires the Homebrew libomp runtime: brew install libomp. The MATLAB MEX file needs nothing extra -- see BUILDING.md."
+                prereq="The command line binaries require the Homebrew libomp runtime: brew install libomp. The MATLAB MEX file needs nothing extra -- see BUILDING.md."
                 ;;
             esac
             if [ "$name" = "linux-arm64" ]; then
-              contents="omc_dosxyz only -- MathWorks publishes no Linux ARM64 MATLAB release, so there is no MEX file for this platform."
+              contents="The command line binaries omc_dosxyz and omc_dosrz only -- MathWorks publishes no Linux ARM64 MATLAB release, so there is no MEX file for this platform."
             else
-              contents="omc_dosxyz and the MATLAB MEX file (omc_matrad)."
+              contents="The command line binaries omc_dosxyz and omc_dosrz, and the MATLAB MEX file (omc_matrad)."
             fi
           else
             cp dl/omc_matrad_octave/* "$pkg/bin/"
@@ -271,7 +274,7 @@ jobs:
             printf '  spectra/   example photon spectra (mohan6, var_6MV, 250)\n\n'
             printf '%s\n\n' "$prereq"
             printf 'Keep bin/, data/, pegs4/, phantoms/ and spectra/ next to each other --\n'
-            printf "the MATLAB/Octave interface and omc_dosxyz's example input files both\n"
+            printf "the MATLAB/Octave interface and the user codes' example input files both\n"
             printf 'refer to them by relative path.\n\n'
             printf 'Full documentation, source and license:\n'
             printf 'https://github.com/e0404/ompMC\n'

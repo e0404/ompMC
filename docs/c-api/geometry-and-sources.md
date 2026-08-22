@@ -1,16 +1,26 @@
 # Geometry and sources
 
-The rectilinear voxel phantom every engine transports in, and the two things
-that turn it plus a spectrum into starting particles.
+The two phantom shapes an engine transports in, and the things that turn one
+of them plus a spectrum into starting particles.
 
 ## Voxel phantom
 
 ```{doxygenfile} omc_geom.h
 ```
 
+## Cylindrical (r-z) phantom
+
+```{doxygenfile} omc_geom_cyl.h
+```
+
 ## What every source has in common
 
 ```{doxygenfile} omc_source.h
+```
+
+## Beams down a cylinder's axis
+
+```{doxygenfile} omc_source_pencil.h
 ```
 
 ## Beamlet apertures

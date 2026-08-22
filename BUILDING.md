@@ -6,6 +6,7 @@ in [ucodes/](ucodes/) becomes one target:
 | Target       | Kind                  | Output                                          |
 |--------------|-----------------------|-------------------------------------------------|
 | `omc_dosxyz` | command line binary   | `build/bin/omc_dosxyz[.exe]`                     |
+| `omc_dosrz`  | command line binary   | `build/bin/omc_dosrz[.exe]`                      |
 | `omc_matrad` | MATLAB MEX file       | `build/bin/omc_matrad.mexw64`, `.mexa64`, `.mexmaca64`, … |
 | `_ompmc`     | Python extension      | installed into the `ompmc` package, see [The Python extension](#the-python-extension) |
 
@@ -15,37 +16,57 @@ They all link against the `ompmc_core` static library built from `src/`.
 `howfar()`, `hownear()`, `regionIndex()` for the geometry. All four live in the
 core library now, in [src/omc_score.c](src/omc_score.c) and
 [src/omc_geom.c](src/omc_geom.c), so every user code transports through the same
-rectilinear voxel phantom and only has to *fill* `struct Geom` from whatever it
-reads: an `.egsphant` file, cubes handed over by MATLAB, or arrays from another
-host. Shared code reports through `omcLog()`/`omcFail()`
+phantom and only has to *fill* `struct Geom` from whatever it reads: an
+`.egsphant` file, cubes handed over by MATLAB, or arrays from another host.
+
+There are two phantom shapes. The rectilinear voxel grid is the default; the
+cylindrical r-z geometry in [src/omc_geom_cyl.c](src/omc_geom_cyl.c) adds
+concentric rings stacked in depth, for the pencil-beam dose distributions a
+voxel grid is worst at. Which one is in play is `struct Geom::mode`, and the
+three geometry functions above dispatch on it — a runtime branch rather than
+one geometry or the other being linked in, because one `ompmc_core` has to
+serve a host that does both, sometimes in the same process. It is a branch
+rather than a function pointer so that link time optimization can still inline
+them into the electron stepping loop, which is why the project turns LTO on at
+all. Shared code reports through `omcLog()`/`omcFail()`
 ([src/omc_host.h](src/omc_host.h)) rather than `printf()` or
 `mexErrMsgIdAndTxt()`, and each host installs the sinks that give those meaning;
 both are called on the master thread only, never from inside a parallel region.
 
-The dose calculation itself is a library function too. There are three engines,
-differing only in where the particles start and how the result comes back:
+The dose calculation itself is a library function too. There are four engines,
+differing only in where the particles start, what shape the phantom is and how
+the result comes back:
 
 | Engine | Source | Result |
 | --- | --- | --- |
 | [src/omc_engine_dij.h](src/omc_engine_dij.h) | beamlet apertures at isocentre | one sparse column per beamlet, through a callback |
 | [src/omc_engine_forward.h](src/omc_engine_forward.h) | the same beamlets, weighted | dense dose and uncertainty cubes |
 | [src/omc_engine_cube.h](src/omc_engine_cube.h) | point source behind a collimator | dense dose and uncertainty cubes |
+| [src/omc_engine_radial.h](src/omc_engine_radial.h) | any source, into a cylinder | dense dose and uncertainty by ring and depth slab |
 
-The two halves each engine is built from are shared rather than repeated, which
-is what keeps them from drifting apart:
+The halves each engine is built from are shared rather than repeated, which is
+what keeps them from drifting apart:
 [src/omc_source_beamlet.h](src/omc_source_beamlet.h) starts a history on a
-beamlet aperture, for the Dij and forward engines both, and `omcScoreToCube()`
-in [src/omc_score.h](src/omc_score.h) turns accumulated energy into a dense cube
+beamlet aperture, for the Dij and forward engines both; `omcScoreToCube()` in
+[src/omc_score.h](src/omc_score.h) turns accumulated energy into a dense cube
 for the forward and cube engines both — the air threshold, the empty-voxel
-convention and the batch variance therefore have one definition each.
+convention and the batch variance therefore have one definition each, and
+`omcScoreToRadial()` beside it keeps every one of those conventions, differing
+only in that the mass of a ring is an annulus rather than a box. The history
+loop the forward and radial engines run is likewise one function,
+`omcEngineRunBatches()` in
+[src/omc_engine_batches.h](src/omc_engine_batches.h): which random stream a
+history gets has to be decided in exactly one place, or a run's answer starts
+depending on how OpenMP handed the histories out.
 
-All three take their energies from [src/omc_spectrum.h](src/omc_spectrum.h),
+All four take their energies from [src/omc_spectrum.h](src/omc_spectrum.h),
 which turns a `.spectrum` file, a histogram handed over by the host, or a single
 energy into the same sampling tables.
 
 A user code is then only a translator: `omc_matrad.c` converts `mxArray`s into
 those structs and appends the columns it gets back to a MATLAB sparse matrix,
-`omc_dosxyz.c` reads an input file and writes a `.3ddose`,
+`omc_dosxyz.c` reads an input file and writes a `.3ddose`, `omc_dosrz.c` does
+the same for a cylinder and a `.rzdose`,
 [ucodes/omc_python/omc_python.cpp](ucodes/omc_python/omc_python.cpp) does the same for numpy arrays,
 and nothing about any of those hosts reaches the engines.
 
@@ -118,6 +139,7 @@ whether OpenMP and MATLAB were picked up.
 | Option | Default | Meaning |
 |---|---|---|
 | `OMPMC_BUILD_DOSXYZ` | `ON` | Build the `omc_dosxyz` command line user code |
+| `OMPMC_BUILD_DOSRZ` | `ON` | Build the `omc_dosrz` command line user code |
 | `OMPMC_BUILD_MATRAD_MEX` | `AUTO` | Build the MEX file. `AUTO` skips it when no MATLAB is found, `ON` makes a missing MATLAB a hard error, `OFF` never builds it |
 | `OMPMC_BUILD_MATRAD_OCT` | `AUTO` | Build the same user code as a GNU Octave `.mex`. `AUTO` skips it when no Octave is found, `ON` makes a missing Octave a hard error, `OFF` never builds it. See [GNU Octave](#gnu-octave) |
 | `OMPMC_WITH_OPENMP` | `ON` | Multi threaded execution. Falls back to a serial build with a warning if no OpenMP runtime is available |

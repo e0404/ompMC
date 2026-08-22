@@ -16,8 +16,8 @@ concurrency:
 # The MATLAB test step does start MATLAB, which MathWorks licenses free of
 # charge for public repositories.
 #
-# linux-arm64 builds omc_dosxyz only, since MathWorks publishes no Linux ARM
-# release at all.
+# linux-arm64 builds the command line binaries only, since MathWorks publishes
+# no Linux ARM release at all.
 #
 # The two macOS jobs get their OpenMP runtime into the MEX file differently,
 # because Apple Silicon MATLAB ships bin/maca64/libomp.dylib while Intel MATLAB
@@ -270,6 +270,20 @@ jobs:
           esac
           rm -f output/smoke_test.3ddose
 
+      - name: Check the smoke test's .rzdose output
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The "dosrz_smoke" ctest above already ran omc_dosrz; a valid
+          # .rzdose starts with the ring and slab counts of its cylinder.
+          header="$(head -n 1 output/smoke_rz.rzdose)"
+          echo "rzdose header: $header"
+          case "$header" in
+            *10*20*) ;;
+            *) echo "unexpected .rzdose header"; exit 1 ;;
+          esac
+          rm -f output/smoke_rz.rzdose
+
       # Loads the MEX file into MATLAB and runs a small dose calculation from a
       # captured matRad plan, which the build step alone cannot check. This
       # covers loading, the OpenMP parallel regions, and releasing the MEX file
@@ -295,7 +309,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts/omc_dosxyz artifacts/omc_matrad_matlab artifacts/omc_matrad_octave
+          mkdir -p artifacts/omc_dosxyz artifacts/omc_dosrz \
+                   artifacts/omc_matrad_matlab artifacts/omc_matrad_octave
 
           # Vendors exactly the non-system DLLs a Windows PE binary actually
           # imports, read from its own import table rather than assumed from
@@ -343,6 +358,16 @@ jobs:
             if [ -f "$exe" ]; then
               cp "$exe" artifacts/omc_dosxyz/
               vendor_deps "$exe" artifacts/omc_dosxyz
+              break
+            fi
+          done
+
+          # The r-z user code, in a folder of its own for the same reason:
+          # it is a separate binary and its import table is its own.
+          for exe in build/bin/omc_dosrz.exe build/bin/omc_dosrz; do
+            if [ -f "$exe" ]; then
+              cp "$exe" artifacts/omc_dosrz/
+              vendor_deps "$exe" artifacts/omc_dosrz
               break
             fi
           done
