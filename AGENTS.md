@@ -47,6 +47,16 @@ why.
   asked for a spread. `tests/test_omc_source_pencil.c` pins the draw count of
   each combination; if you add a third blur, add its count there too.
 
+- **A round beam cannot tell you which transverse frame you perturbed it in.**
+  The pencil source's divergence is applied in the phantom's own x-y plane
+  (`tiltDirection()`), not in a basis built perpendicular to the direction:
+  for a beam along +z the obvious construction comes out as (y, -x), which
+  pairs the x position with the y angle. Rotating a round, uncorrelated
+  distribution changes nothing, so that bug passed every spot and divergence
+  test and was only exposed by a `correlation`, which is stated per axis and
+  so makes the frame observable. If you add anything else per-axis to a
+  source, test it with something that is not round.
+
 - **A measured dose profile is wider than the `spotSigma` that produced it,
   and that is not a bug.** Deposition is the incident fluence convolved with
   however far the radiation carries the energy, and convolution adds second

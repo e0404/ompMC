@@ -444,6 +444,7 @@ struct PencilInput {
     double fieldRadius;
     double spotSigma;
     double divergenceSigma;
+    double correlation;
     int charge;
 };
 
@@ -950,6 +951,7 @@ static void runRadial(void *arg) {
         pencil.fieldRadius = run->pencil->fieldRadius;
         pencil.spotSigma = run->pencil->spotSigma;
         pencil.divergenceSigma = run->pencil->divergenceSigma;
+        pencil.correlation = run->pencil->correlation;
 
         omcPencilSourceAsSource(&pencil, &source);
     }
@@ -1351,6 +1353,7 @@ NB_MODULE(_ompmc, m) {
             pencilInput.spotSigma = nb::cast<double>(source["spot_sigma"]);
             pencilInput.divergenceSigma =
                 nb::cast<double>(source["divergence_sigma"]);
+            pencilInput.correlation = nb::cast<double>(source["correlation"]);
             pencilInput.charge = nb::cast<int>(options["charge"]);
 
             if (spectrum.is_none()) {

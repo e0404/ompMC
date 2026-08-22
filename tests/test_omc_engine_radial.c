@@ -623,6 +623,91 @@ static void test_a_divergent_beam_widens_with_depth(void) {
     tearDownWaterCylinder();
 }
 
+/* The claim a correlation actually makes, made about dose rather than about
+ the particles the source hands out: a converging beam is narrowest somewhere
+ INSIDE the phantom, at the depth it was told to focus, and wider again past
+ it. Nothing else the source can do produces that shape -- both a spot and a
+ divergence only ever widen with depth -- so the beam it is measured against
+ is the very same width and divergence with the correlation taken out.
+
+ 1 MeV rather than the 6 MeV the tests above use, because at 6 MeV the
+ secondary electrons carry the energy a couple of centimetres sideways and
+ that blur is comparable to the waist itself. */
+static void test_a_converging_beam_focuses_inside_the_phantom(void) {
+
+    setUpWaterCylinder();
+
+    struct OmcSpectrum spectrum;
+    omcSpectrumMonoenergetic(&spectrum, 1.0);
+
+    /* Down to a millimetre at 5 cm, half way along the cylinder, which the
+     0.5 cm slabs put at slab 10. Converging hard: the waist has to beat the
+     scatter blur to be visible at all. */
+    const double waistDepth = 5.0;
+    const double divergence = 0.4;
+
+    double spotSigma, correlation;
+    omcPencilWaist(0.1, divergence, waistDepth, &spotSigma, &correlation);
+
+    int kmax[2];
+
+    for (int converging = 0; converging < 2; converging++) {
+
+        struct OmcPencilSource pencil;
+        memset(&pencil, 0, sizeof(pencil));
+        pencil.kind = OMC_PENCIL_PARALLEL;
+        pencil.spectrum = &spectrum;
+        pencil.charge = 0;
+        pencil.spotSigma = spotSigma;
+        pencil.divergenceSigma = divergence;
+        pencil.correlation = converging ? correlation : 0.0;
+
+        struct OmcSource source;
+        omcPencilSourceAsSource(&pencil, &source);
+
+        struct OmcRadialOptions opt = optionsFor(40000);
+        opt.outputDose = 0;             /* energy, so ring volumes drop out */
+        struct OmcForwardSummary summary;
+
+        double *dose = malloc(NREG*sizeof(double));
+
+        CHECK(omcCalcRadial(&opt, &source, NULL, dose, NULL, NULL,
+                            &summary) == 1);
+
+        /* How much of each slab's energy is on the axis. Per slab, so that
+         the beam being attenuated on its way down cancels out and what is
+         left is only how wide it is. */
+        double onAxis[NZR];
+        for (int k = 0; k < NZR; k++) {
+            double total = 0.0;
+            for (int ir = 0; ir < NRAD; ir++) {
+                total += at(dose, ir, k);
+            }
+            CHECK(total > 0.0);
+            onAxis[k] = at(dose, 0, k)/total;
+        }
+
+        kmax[converging] = argmax(onAxis, NZR);
+
+        if (converging) {
+            /* Narrower at the waist than at either end -- it converges, and
+             then it comes apart again. */
+            CHECK(onAxis[10] > 2.0*onAxis[0]);
+            CHECK(onAxis[10] > 2.0*onAxis[NZR - 1]);
+        }
+
+        free(dose);
+    }
+
+    /* Uncorrelated, the beam is at its narrowest where it starts. The same
+     beam told to focus is narrowest around where it was told to. */
+    CHECK(kmax[0] <= 1);
+    CHECK(kmax[1] >= 7 && kmax[1] <= 13);
+
+    omcSpectrumFree(&spectrum);
+    tearDownWaterCylinder();
+}
+
 /*******************************************************************************
 * A phase space built in memory, the same way test_omc_forward_phsp.c does it
 *******************************************************************************/
@@ -898,6 +983,7 @@ int main(void) {
     RUN(test_an_ssd_source_spreads_the_beam);
     RUN(test_a_gaussian_spot_broadens_the_dose);
     RUN(test_a_divergent_beam_widens_with_depth);
+    RUN(test_a_converging_beam_focuses_inside_the_phantom);
     RUN(test_a_phase_space_drives_the_radial_engine);
     RUN(test_regions_nothing_reached_carry_the_sentinel);
     RUN(test_a_rerun_gives_the_same_answer);

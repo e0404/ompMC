@@ -58,10 +58,15 @@
  numbers at all, so a beam that asks for neither gives exactly the result it
  gave before they existed.
 
- They are drawn independently of each other, which makes this a blurred pencil
+ Drawn on their own the two are independent, which makes that a blurred pencil
  rather than a beam with emittance: where a particle starts says nothing about
- where it is going. A beam whose width and divergence are correlated -- a
- waist somewhere other than the phantom surface -- is not what this models.
+ where it is going, so the beam only ever widens with depth and its waist is
+ wherever it starts. Relating them is what moves the waist:
+
+     pencil.correlation = -0.6;       // converging onto a waist further in
+
+ or, since beam data is usually quoted as a waist rather than as a
+ correlation, omcPencilWaist() the other way round.
 
  @warning The SSD source spreads its particles evenly over the disc it
  illuminates -- uniform FLUENCE on the entrance plane, which is the convention

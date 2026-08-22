@@ -40,6 +40,7 @@ Material indices count from 1, matching matRad's ``cubeMatIx``; 0 means vacuum.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -554,6 +555,11 @@ class PencilBeamSource:
     and a delta draws no random numbers, so a beam that asks for neither is
     exactly the beam it would have been without them.
 
+    A beam with both can also be given a `correlation` between the two, which
+    is what moves its waist off the front face. :meth:`focused` says the same
+    thing the way beam data usually comes: where the waist is and how narrow
+    it is there.
+
     Parameters
     ----------
     ssd : float, optional
@@ -573,12 +579,20 @@ class PencilBeamSource:
         Standard deviation of the direction, in **radians**, spread as a round
         two-dimensional Gaussian about the nominal one. Left out, the beam
         does not diverge.
+    correlation : float, optional
+        How strongly where a particle starts predicts where it is going, from
+        -1 to 1. Negative converges onto a waist inside the phantom, positive
+        has already passed its waist upstream, and the default of 0 puts the
+        waist on the front face. The same correlation applies in both
+        transverse planes, which is what keeps the beam round.
 
     Raises
     ------
     ValueError
         If `ssd`, `field_radius`, `spot_sigma` or `divergence_sigma` is not
-        positive, or if a `field_radius` is given without an `ssd`.
+        positive, if a `field_radius` is given without an `ssd`, or if a
+        `correlation` is outside [-1, 1] or given without both a `spot_sigma`
+        and a `divergence_sigma` for it to relate.
 
     Warnings
     --------
@@ -588,12 +602,24 @@ class PencilBeamSource:
     whose fluence would fall off with the inverse square across the field, and
     the difference shows at short SSD.
 
+    See Also
+    --------
+    focused : The same beam, described by where its waist is.
+
     Notes
     -----
-    The position and the direction are drawn independently, which makes this a
-    blurred pencil rather than a beam with emittance: where a particle starts
-    says nothing about where it is going. A beam whose waist sits somewhere
-    other than the phantom surface is not what this models.
+    The width at a distance `s` downstream of where the beam is specified is
+
+    .. math::
+
+        \\sigma^2(s) = \\sigma^2 + 2 s \\rho \\sigma \\sigma'
+                       + s^2 \\sigma'^2
+
+    for `spot_sigma` :math:`\\sigma`, `divergence_sigma` :math:`\\sigma'` and
+    `correlation` :math:`\\rho` -- the transport then widens it further, since
+    what a detector at depth sees is that convolved with the scattering
+    kernel. Without a correlation the beam only ever gets wider, which makes
+    it a blurred pencil rather than a beam with emittance.
 
     A spot wide enough to reach past the edge of the cylinder will put some
     particles outside it, and a parallel one that starts outside never enters.
@@ -613,6 +639,7 @@ class PencilBeamSource:
     field_radius: float | None = None
     spot_sigma: float | None = None
     divergence_sigma: float | None = None
+    correlation: float = 0.0
 
     def __post_init__(self) -> None:
         if self.ssd is not None:
@@ -643,6 +670,105 @@ class PencilBeamSource:
                         f"out for a beam with no spread at all")
                 setattr(self, name, value)
 
+        self.correlation = float(self.correlation)
+        if not -1.0 <= self.correlation <= 1.0:
+            raise ValueError(
+                f"correlation must lie between -1 and 1, got "
+                f"{self.correlation!r}")
+
+        # The core ignores a correlation it cannot apply. Refusing it here
+        # instead, because in Python it is far more likely to be a beam that
+        # was meant to have a waist and quietly did not.
+        if self.correlation != 0.0 and (self.spot_sigma is None
+                                        or self.divergence_sigma is None):
+            raise ValueError(
+                "correlation relates where a particle starts to where it is "
+                "going, so it needs both a spot_sigma and a "
+                "divergence_sigma; give both, or leave the correlation out")
+
+    @classmethod
+    def focused(cls, waist_sigma: float, divergence_sigma: float,
+                waist_depth: float, **kwargs) -> "PencilBeamSource":
+        """Build a beam from where it is narrowest.
+
+        The mirror of the constructor: beam data is usually quoted as a waist
+        somewhere and an angular spread, rather than as the width on the
+        phantom surface and a correlation. This converts the one into the
+        other -- the returned beam has exactly `waist_sigma` at
+        `waist_depth`.
+
+        Parameters
+        ----------
+        waist_sigma : float
+            Width at the waist, in cm. Must be positive.
+        divergence_sigma : float
+            Angular spread, in **radians**. Must be positive.
+        waist_depth : float
+            How far past the front face the waist sits, in cm. Positive is
+            inside the phantom, 0 puts it on the face, and negative puts it
+            upstream. Note that this is measured from the surface for both
+            beams, including a point source specified by its `ssd`.
+        **kwargs
+            Passed on to the constructor -- `ssd` and `field_radius`.
+
+        Returns
+        -------
+        PencilBeamSource
+            A beam with the `spot_sigma` and `correlation` that put the waist
+            there.
+
+        Raises
+        ------
+        ValueError
+            If `waist_sigma` or `divergence_sigma` is not positive.
+
+        Examples
+        --------
+        A beam that comes to a 1 mm waist 5 cm into the phantom::
+
+            beam = ompmc.PencilBeamSource.focused(0.1, 0.02, 5.0)
+
+        Notes
+        -----
+        There is no waist a real divergence cannot reach: the correlation
+        this produces always comes out inside [-1, 1].
+        """
+        waist_sigma = float(waist_sigma)
+        divergence_sigma = float(divergence_sigma)
+
+        if not waist_sigma > 0.0:
+            raise ValueError(
+                f"waist_sigma must be positive, got {waist_sigma!r}")
+        if not divergence_sigma > 0.0:
+            raise ValueError(
+                f"divergence_sigma must be positive, got "
+                f"{divergence_sigma!r}")
+
+        # var(s) is smallest at s = -rho sigma / sigma', where it is
+        # sigma^2 (1 - rho^2); solving both for sigma and rho gives this.
+        drift = float(waist_depth)*divergence_sigma
+        spot_sigma = math.hypot(waist_sigma, drift)
+
+        return cls(spot_sigma=spot_sigma,
+                   divergence_sigma=divergence_sigma,
+                   correlation=-drift/spot_sigma, **kwargs)
+
+    @property
+    def waist(self) -> tuple[float, float]:
+        """Where the beam is narrowest, as ``(sigma, depth)`` in cm.
+
+        The inverse of :meth:`focused`, and 0 depth for any beam that was not
+        given a correlation. Depth is measured from the front face, so a
+        negative one is a beam that is already spreading when it arrives.
+        """
+        if not self.spot_sigma or not self.divergence_sigma:
+            return (self.spot_sigma or 0.0, 0.0)
+
+        rho = self.correlation
+
+        return (self.spot_sigma*math.sqrt(1.0 - rho*rho),
+                -rho*self.spot_sigma/self.divergence_sigma)
+
     @property
     def _payload(self) -> dict:
         return {
@@ -657,6 +783,7 @@ class PencilBeamSource:
             "divergence_sigma": (float(self.divergence_sigma)
                                  if self.divergence_sigma is not None
                                  else 0.0),
+            "correlation": float(self.correlation),
         }
 
 

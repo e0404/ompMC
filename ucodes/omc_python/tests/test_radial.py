@@ -119,6 +119,92 @@ class TestPencilBeamSourceValidation:
         with pytest.raises(ValueError, match=name):
             ompmc.PencilBeamSource(**{name: 0.0})
 
+    def test_a_bare_source_is_uncorrelated(self):
+        assert ompmc.PencilBeamSource()._payload["correlation"] == 0.0
+
+    def test_carries_a_correlation_through(self):
+        payload = ompmc.PencilBeamSource(
+            spot_sigma=0.5, divergence_sigma=0.06,
+            correlation=-0.6)._payload
+        assert payload["correlation"] == -0.6
+
+    @pytest.mark.parametrize("rho", [-1.5, 1.5])
+    def test_rejects_a_correlation_outside_the_unit_interval(self, rho):
+        with pytest.raises(ValueError, match="correlation"):
+            ompmc.PencilBeamSource(spot_sigma=0.5, divergence_sigma=0.06,
+                                   correlation=rho)
+
+    @pytest.mark.parametrize("kwargs", [
+        {},                                 # neither width nor divergence
+        {"spot_sigma": 0.5},                # nothing to point
+        {"divergence_sigma": 0.06},         # nothing to point it from
+    ])
+    def test_rejects_a_correlation_with_nothing_to_relate(self, kwargs):
+        # The core would quietly ignore it. Here it is far more likely to be
+        # a beam that was meant to have a waist and silently did not.
+        with pytest.raises(ValueError, match="correlation"):
+            ompmc.PencilBeamSource(correlation=-0.6, **kwargs)
+
+    def test_the_ends_of_the_interval_are_allowed(self):
+        for rho in (-1.0, 1.0):
+            ompmc.PencilBeamSource(spot_sigma=0.5, divergence_sigma=0.06,
+                                   correlation=rho)
+
+
+class TestPencilBeamWaist:
+
+    def test_a_focused_beam_has_its_waist_where_it_was_asked_for(self):
+        beam = ompmc.PencilBeamSource.focused(0.1, 0.02, 5.0)
+
+        sigma, depth = beam.waist
+        assert sigma == pytest.approx(0.1)
+        assert depth == pytest.approx(5.0)
+
+    def test_it_is_wider_at_the_surface_than_at_the_waist(self):
+        beam = ompmc.PencilBeamSource.focused(0.1, 0.02, 5.0)
+
+        # sqrt(0.1^2 + (5*0.02)^2), the drift added in quadrature
+        assert beam.spot_sigma == pytest.approx(np.hypot(0.1, 0.1))
+        assert beam.spot_sigma > beam.waist[0]
+        assert beam.correlation < 0.0        # it converges
+
+    @pytest.mark.parametrize("depth", [-4.0, 0.0, 2.5, 20.0])
+    def test_the_round_trip_holds_wherever_the_waist_is(self, depth):
+        beam = ompmc.PencilBeamSource.focused(0.2, 0.03, depth)
+
+        sigma, back = beam.waist
+        assert sigma == pytest.approx(0.2)
+        assert back == pytest.approx(depth)
+        assert -1.0 <= beam.correlation <= 1.0
+
+    def test_a_waist_on_the_face_is_an_ordinary_uncorrelated_beam(self):
+        beam = ompmc.PencilBeamSource.focused(0.2, 0.03, 0.0)
+
+        assert beam.correlation == 0.0
+        assert beam.spot_sigma == pytest.approx(0.2)
+
+    def test_an_uncorrelated_beam_is_narrowest_where_it_starts(self):
+        beam = ompmc.PencilBeamSource(spot_sigma=0.4, divergence_sigma=0.02)
+        assert beam.waist == (0.4, 0.0)
+
+    def test_a_beam_with_no_spread_has_a_waist_of_none(self):
+        assert ompmc.PencilBeamSource().waist == (0.0, 0.0)
+
+    def test_it_passes_the_rest_of_the_beam_on(self):
+        beam = ompmc.PencilBeamSource.focused(0.1, 0.02, 5.0,
+                                              ssd=100.0, field_radius=4.0)
+        assert beam._payload["kind"] == 1
+        assert beam._payload["ssd"] == 100.0
+        assert beam._payload["field_radius"] == 4.0
+
+    @pytest.mark.parametrize("args", [
+        (0.0, 0.02, 5.0), (-0.1, 0.02, 5.0),        # waist_sigma
+        (0.1, 0.0, 5.0), (0.1, -0.02, 5.0),         # divergence_sigma
+    ])
+    def test_rejects_a_beam_it_cannot_focus(self, args):
+        with pytest.raises(ValueError):
+            ompmc.PencilBeamSource.focused(*args)
+
 
 class TestCalcRadialValidation:
 
@@ -249,6 +335,37 @@ class TestCalcRadial:
 
         assert summary.n_started == 4000
         assert dose.sum() > 0.0
+
+    def test_a_focused_beam_is_narrowest_at_its_waist(self, water_cylinder,
+                                                      water_physics):
+        # The one thing a correlation does that nothing else can: converge.
+        # A spot and a divergence on their own only ever widen with depth, so
+        # the beam this is measured against is the same width and divergence
+        # with the correlation taken out.
+        #
+        # 1 MeV rather than the 6 MeV elsewhere in this file: at 6 MeV the
+        # secondary electrons carry the energy far enough sideways to blur a
+        # waist this narrow away.
+        def narrowest_slab(source):
+            dose, _unc, _summary = ompmc.calc_radial(
+                water_cylinder, source, ompmc.Spectrum.monoenergetic(1.0),
+                water_physics, n_histories=20_000, n_batches=4,
+                output_dose=False)      # energy, so ring volumes drop out
+
+            # How much of each slab is on the axis. Per slab, so the beam
+            # being attenuated on its way down cancels and what is left is
+            # only how wide it is.
+            on_axis = dose[0, :]/dose.sum(axis=0)
+            return int(np.argmax(on_axis))
+
+        # Down to a millimetre 5 cm in, which the half centimetre slabs put
+        # at slab 10. Converging hard, so the waist beats the scatter blur.
+        focused = ompmc.PencilBeamSource.focused(0.1, 0.4, 5.0)
+        blurred = ompmc.PencilBeamSource(
+            spot_sigma=focused.spot_sigma, divergence_sigma=0.4)
+
+        assert narrowest_slab(blurred) <= 1
+        assert 7 <= narrowest_slab(focused) <= 13
 
     def test_an_ssd_source_runs_too(self, water_cylinder, water_physics):
         dose, _unc, summary = ompmc.calc_radial(

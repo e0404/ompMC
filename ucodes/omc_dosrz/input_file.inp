@@ -38,6 +38,20 @@ charge = 0
 # spot sigma = 0.15
 # divergence sigma = 0.01
 
+# With both of those, 'correlation' relates them: how strongly where a
+# particle starts predicts where it is going, from -1 to 1. It is what puts
+# the beam's waist somewhere other than the front face -- negative converges
+# onto a waist inside the phantom, positive has already passed its waist
+# upstream, and 0 (the default) is a waist on the face itself.
+# correlation = -0.6
+
+# Or say the same thing the way beam data is usually quoted: how narrow the
+# beam gets and how far in. This sets 'spot sigma' and 'correlation' between
+# them, so give it instead of those two rather than as well; it needs a
+# 'divergence sigma', and 'waist depth' defaults to 0.
+# waist sigma = 0.1
+# waist depth = 5.0
+
 # For 'source type = phsp' only.
 # phsp file = ../../phsp/some_beam
 # phsp order = replay

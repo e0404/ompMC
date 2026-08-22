@@ -371,6 +371,37 @@ static void initBeam(void) {
     if (getInputValue(buffer, "divergence sigma") == 1) {
         pencil.divergenceSigma = atof(buffer);
     }
+    if (getInputValue(buffer, "correlation") == 1) {
+        pencil.correlation = atof(buffer);
+    }
+
+    /* The same beam said the other way round, which is how beam data is
+     usually quoted: a waist of some size, some depth in. It sets both the
+     width on the face and the correlation, so having it and either of those
+     is a deck that contradicts itself rather than one to reconcile. */
+    if (getInputValue(buffer, "waist sigma") == 1) {
+        double waistSigma = atof(buffer);
+        double waistDepth = 0.0;
+
+        if (pencil.spotSigma > 0.0 || pencil.correlation != 0.0) {
+            printf("'waist sigma' already says what 'spot sigma' and "
+                   "'correlation' say. Give the beam one way or the other.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        if (!(pencil.divergenceSigma > 0.0)) {
+            printf("'waist sigma' needs a 'divergence sigma' as well: a beam "
+                   "that does not diverge has the same width everywhere.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        if (getInputValue(buffer, "waist depth") == 1) {
+            waistDepth = atof(buffer);
+        }
+
+        omcPencilWaist(waistSigma, pencil.divergenceSigma, waistDepth,
+                       &pencil.spotSigma, &pencil.correlation);
+    }
 
     omcPencilSourceAsSource(&pencil, &source);
 
@@ -389,6 +420,17 @@ static void initBeam(void) {
     if (pencil.spotSigma > 0.0 || pencil.divergenceSigma > 0.0) {
         printf("\t spot sigma (cm) = %f, divergence sigma (rad) = %f\n",
                pencil.spotSigma, pencil.divergenceSigma);
+    }
+
+    if (pencil.correlation != 0.0 && pencil.spotSigma > 0.0 &&
+        pencil.divergenceSigma > 0.0) {
+        /* Where that correlation puts the waist, since it is what the deck
+         was after either way and is easier to recognize as wrong. */
+        printf("\t correlation = %f, waist %f cm wide %f cm past the front "
+               "face\n", pencil.correlation,
+               pencil.spotSigma*sqrt(1.0 - pencil.correlation
+                                          *pencil.correlation),
+               -pencil.correlation*pencil.spotSigma/pencil.divergenceSigma);
     }
 
     return;

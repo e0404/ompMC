@@ -52,17 +52,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   azimuthal binning and an asymmetric source would be averaged away silently
   rather than showing up in the result.
 
-  Three things about them are worth knowing. They are drawn independently, so
-  this is a blurred pencil and not a beam with emittance — where a particle
-  starts says nothing about where it is going, and a waist anywhere other than
-  the phantom surface is not modelled. The position means what it should for
-  each beam rather than the same thing for both: a parallel pencil is defined
-  on the front face and starts its particles there, having no source point to
-  be upstream of, so the spot is the width of the beam where it enters; a
-  point source starts its particles on its focal spot, an SSD away, so the
-  spot is the size of that. And a zero draws no random numbers at all, exactly
-  as a monoenergetic spectrum does not, so a beam that asks for neither spread
-  gives bit for bit the result it gave before either existed.
+  Two things about them are worth knowing. The position means what it should
+  for each beam rather than the same thing for both: a parallel pencil is
+  defined on the front face and starts its particles there, having no source
+  point to be upstream of, so the spot is the width of the beam where it
+  enters; a point source starts its particles on its focal spot, an SSD away,
+  so the spot is the size of that. And a zero draws no random numbers at all,
+  exactly as a monoenergetic spectrum does not, so a beam that asks for
+  neither spread gives bit for bit the result it gave before either existed.
+
+  A beam with both can also relate them, with `correlation` (`correlation` in
+  an input file, `correlation=` in Python) — how strongly where a particle
+  starts predicts where it is going, from -1 to 1. It is the difference
+  between a blurred pencil and a beam with emittance: uncorrelated, the width
+
+      var(s) = sigma^2 + 2 s rho sigma sigma' + s^2 sigma'^2
+
+  can only grow with depth, so the beam is at its narrowest where it starts
+  and the waist sits on the phantom surface whether that was intended or not.
+  A negative correlation converges onto a waist inside the phantom instead, a
+  positive one has already passed its waist upstream. The same correlation
+  applies in both transverse planes, which is what keeps the beam round — the
+  rings have no azimuthal binning to record anything else.
+
+  Since beam data is more often quoted as a waist than as a correlation,
+  `omcPencilWaist()` converts: give it how narrow the beam gets, how much it
+  diverges and how far in the waist is, and it returns the width on the face
+  and the correlation that produce it. `PencilBeamSource.focused(waist_sigma,
+  divergence_sigma, waist_depth)` is the Python spelling and
+  `PencilBeamSource.waist` reads it back; an input file says `waist sigma` and
+  `waist depth` instead of `spot sigma` and `correlation`. A correlation of 0
+  leaves the sampled deviates exactly the deviates they were, so a beam
+  without one is still bit for bit the beam it was.
 - `omc_dosrz`, the command line user code, named after DOSRZnrc for the same
   reason it exists. The cylinder is described by a few keys in the input file
   rather than read from a phantom file — there is no file format for a
