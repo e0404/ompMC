@@ -167,7 +167,8 @@ add_library(ompmc_core STATIC
     src/omc_source_phsp.c
     src/omc_engine_dij.c
     src/omc_engine_cube.c
-    src/omc_engine_forward.c)
+    src/omc_engine_forward.c
+    src/omc_engine_radial.c)
 
 target_include_directories(ompmc_core PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -729,6 +730,22 @@ if(OMPMC_BUILD_TESTS)
     endif()
 
     add_test(NAME pencil_source COMMAND test_omc_source_pencil)
+
+    # Transports for real, so it needs the PEGS and cross section data and
+    # runs from the repository root like the other engine tests.
+    add_executable(test_omc_engine_radial tests/test_omc_engine_radial.c)
+    target_link_libraries(test_omc_engine_radial
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_engine_radial)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_engine_radial PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME radial COMMAND test_omc_engine_radial
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
     # Writes most of the phase space files it reads, next to itself, but the
     # small committed one it also reads stays in the source tree.

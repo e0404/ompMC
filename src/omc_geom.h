@@ -113,6 +113,13 @@ extern struct Geom geometry;
  so none of them has to remember. */
 void omcGeomDetectSpacing(void);
 
+/*! Whether the phantom has been filled in far enough for a source to work out
+ where its particles enter it -- which bounds that means depends on the shape,
+ so a source asks this rather than looking for a particular array.
+
+ @return Nonzero if the phantom is set up. */
+int omcGeomIsSetUp(void);
+
 /*! Set up the per region transport parameters from the filled geometry:
  medium index and density scaling per voxel, per medium cut-offs clamped to
  what the PEGS data supports, and the per medium maximum density ratio the

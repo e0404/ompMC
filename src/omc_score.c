@@ -342,3 +342,90 @@ void omcScoreToCube(int nbatch, double incFluence, int outputDose,
 
     return;
 }
+
+/******************************************************************************/
+/* The same for a cylinder. Everything but the mass of a region is identical to
+ omcScoreToCube() above -- the same batch variance, the same air threshold, the
+ same 0.9999999 for a region nothing reached -- because they are the same
+ conventions and a reader comparing an r-z result with a cube one should not
+ have to wonder which of them is being used.
+
+ What differs is that a ring is an annulus rather than a box, so its volume
+ grows with how far out it is: pi*(r_out^2 - r_in^2)*dz rather than dx*dy*dz.
+ That is also why the outer rings of a pencil beam calculation come out quiet
+ despite receiving little -- a small energy spread over a large mass. */
+
+void omcScoreToRadial(int nbatch, double incFluence, int outputDose,
+                      double *dose, double *uncertainty) {
+
+    int irl;
+    int nr = geometry.isize;
+    double endep, endep2, unc_endep;
+
+    double inc_fluence = incFluence;
+    double mass;
+    int iz;
+
+    #pragma omp parallel for private(irl,endep,endep2,unc_endep,mass)
+    for (iz = 0; iz < geometry.ksize; iz++) {
+        for (int ir = 0; ir < nr; ir++) {
+            irl = 1 + ir + iz*nr;
+
+            /* Air is always reported as zero dose. Handled before the Gy
+             conversion so a zero-density region cannot raise divide by zero
+             for a value that would immediately be discarded. */
+            if (geometry.med_densities[irl-1] < 0.044) {
+                dose[irl - 1] = 0.0;
+                if (uncertainty) {
+                    uncertainty[irl - 1] = 0.9999999;
+                }
+                continue;
+            }
+
+            endep = score.accum_endep[irl];
+            endep2 = score.accum_endep2[irl];
+
+            /* Mean deposited energy across batches and its uncertainty */
+            endep /= (double)nbatch;
+            endep2 /= (double)nbatch;
+
+            /* Batch approach uncertainty calculation */
+            if (endep != 0.0) {
+                unc_endep = endep2 - endep*endep;
+                unc_endep /= (double)(nbatch - 1);
+
+                /* Relative uncertainty */
+                unc_endep = sqrt(unc_endep)/endep;
+            }
+            else {
+                endep = 0.0;
+                unc_endep = 0.9999999;
+            }
+
+            if (outputDose) {
+
+                /* The volume of the annulus this region is */
+                double rin = geometry.rbounds[ir];
+                double rout = geometry.rbounds[ir+1];
+
+                mass = M_PI*(rout*rout - rin*rin)*
+                    (geometry.zbounds[iz+1] - geometry.zbounds[iz]);
+
+                /* Transform deposited energy to Gy */
+                mass *= geometry.med_densities[irl-1];
+                endep *= 1.602E-10/(mass*inc_fluence);
+
+            } else {    /* Output mean deposited energy */
+                endep /= inc_fluence;
+            }
+
+            /* Store output quantities */
+            dose[irl - 1] = endep;
+            if (uncertainty) {
+                uncertainty[irl - 1] = unc_endep;
+            }
+        }
+    }
+
+    return;
+}

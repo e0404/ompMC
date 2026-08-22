@@ -61,6 +61,22 @@ void omcGeomDetectSpacing(void) {
     return;
 }
 
+int omcGeomIsSetUp(void) {
+
+    /* Depth is depth whatever the shape is */
+    if (geometry.zbounds == NULL) {
+        return 0;
+    }
+
+    if (geometry.mode == OMC_GEOM_CYLINDRICAL) {
+        /* xbounds and ybounds are unused in that mode, and a host filling in
+         a cylinder is under no obligation to have left anything in them. */
+        return geometry.rbounds != NULL;
+    }
+
+    return geometry.xbounds != NULL && geometry.ybounds != NULL;
+}
+
 /* The three functions below are the geometry side of the contract ompmc.h
  declares, and each begins by asking which shape it is answering for.
 
