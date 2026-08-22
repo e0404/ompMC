@@ -48,7 +48,9 @@ charge = 0
 # Or say the same thing the way beam data is usually quoted: how narrow the
 # beam gets and how far in. This sets 'spot sigma' and 'correlation' between
 # them, so give it instead of those two rather than as well; it needs a
-# 'divergence sigma', and 'waist depth' defaults to 0.
+# 'divergence sigma', and 'waist depth' defaults to 0. For 'source type =
+# pencil' only -- a point source's spot is its focal spot and does not set
+# where its beam is on the face, so it has no waist in this sense.
 # waist sigma = 0.1
 # waist depth = 5.0
 

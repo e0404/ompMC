@@ -706,21 +706,21 @@ class PencilBeamSource:
         waist_depth : float
             How far past the front face the waist sits, in cm. Positive is
             inside the phantom, 0 puts it on the face, and negative puts it
-            upstream. Note that this is measured from the surface for both
-            beams, including a point source specified by its `ssd`.
+            upstream.
         **kwargs
-            Passed on to the constructor -- `ssd` and `field_radius`.
+            Passed on to the constructor. Not `ssd`: see below.
 
         Returns
         -------
         PencilBeamSource
-            A beam with the `spot_sigma` and `correlation` that put the waist
-            there.
+            A parallel pencil with the `spot_sigma` and `correlation` that
+            put the waist there.
 
         Raises
         ------
         ValueError
-            If `waist_sigma` or `divergence_sigma` is not positive.
+            If `waist_sigma` or `divergence_sigma` is not positive, or if an
+            `ssd` is given.
 
         Examples
         --------
@@ -732,6 +732,16 @@ class PencilBeamSource:
         -----
         There is no waist a real divergence cannot reach: the correlation
         this produces always comes out inside [-1, 1].
+
+        This is a parallel-pencil description and refuses an `ssd`, because a
+        point source's spot does not set where its beam is. Each particle
+        leaves the focal spot aimed at a point on the illuminated disc, so it
+        arrives at that point however far across the spot it set off from --
+        the spot cancels over the SSD exactly. What it blurs there is the
+        direction, and the width on the face is the field radius. There is no
+        waist in this sense to place; give `spot_sigma` and `correlation`
+        directly if you want a point source's focal spot correlated with its
+        divergence.
         """
         waist_sigma = float(waist_sigma)
         divergence_sigma = float(divergence_sigma)
@@ -743,6 +753,16 @@ class PencilBeamSource:
             raise ValueError(
                 f"divergence_sigma must be positive, got "
                 f"{divergence_sigma!r}")
+
+        if kwargs.get("ssd") is not None:
+            raise ValueError(
+                "focused() describes a parallel pencil, whose width on the "
+                "front face is what the waist is measured against. A point "
+                "source's spot does not set where its beam is -- every "
+                "particle arrives at the point on the field it was aimed at, "
+                "whatever the spot did to where it started -- so there is no "
+                "waist here to place. Give spot_sigma and correlation "
+                "directly for a point source.")
 
         # var(s) is smallest at s = -rho sigma / sigma', where it is
         # sigma^2 (1 - rho^2); solving both for sigma and rho gives this.
@@ -760,7 +780,20 @@ class PencilBeamSource:
         The inverse of :meth:`focused`, and 0 depth for any beam that was not
         given a correlation. Depth is measured from the front face, so a
         negative one is a beam that is already spreading when it arrives.
+
+        Raises
+        ------
+        ValueError
+            If this is a point source. Its spot is a focal spot rather than a
+            width on the phantom, and does not describe a waist; see
+            :meth:`focused`.
         """
+        if self.ssd is not None:
+            raise ValueError(
+                "a point source has no waist in this sense: its spot is the "
+                "focal spot, and the width of its beam on the front face is "
+                "the field radius rather than anything the spot sets")
+
         if not self.spot_sigma or not self.divergence_sigma:
             return (self.spot_sigma or 0.0, 0.0)
 

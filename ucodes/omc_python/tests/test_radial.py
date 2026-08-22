@@ -190,12 +190,21 @@ class TestPencilBeamWaist:
     def test_a_beam_with_no_spread_has_a_waist_of_none(self):
         assert ompmc.PencilBeamSource().waist == (0.0, 0.0)
 
-    def test_it_passes_the_rest_of_the_beam_on(self):
-        beam = ompmc.PencilBeamSource.focused(0.1, 0.02, 5.0,
-                                              ssd=100.0, field_radius=4.0)
-        assert beam._payload["kind"] == 1
-        assert beam._payload["ssd"] == 100.0
-        assert beam._payload["field_radius"] == 4.0
+    def test_it_refuses_a_point_source(self):
+        # A point source's spot does not set where its beam is: each particle
+        # arrives at the point on the field it was aimed at whatever the spot
+        # did to where it started, so there is no waist here to place. The C
+        # test test_a_focal_spot_does_not_move_a_point_source_on_the_face
+        # pins that.
+        with pytest.raises(ValueError, match="parallel pencil"):
+            ompmc.PencilBeamSource.focused(0.1, 0.02, 5.0, ssd=100.0)
+
+    def test_a_point_source_has_no_waist_to_report_either(self):
+        beam = ompmc.PencilBeamSource(ssd=100.0, spot_sigma=0.1,
+                                      divergence_sigma=0.02,
+                                      correlation=-0.5)
+        with pytest.raises(ValueError, match="focal spot"):
+            beam.waist
 
     @pytest.mark.parametrize("args", [
         (0.0, 0.02, 5.0), (-0.1, 0.02, 5.0),        # waist_sigma

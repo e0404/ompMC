@@ -84,6 +84,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `waist depth` instead of `spot sigma` and `correlation`. A correlation of 0
   leaves the sampled deviates exactly the deviates they were, so a beam
   without one is still bit for bit the beam it was.
+
+  All three spellings of the waist are refused for a point source rather than
+  quietly answered, because its spot is not the width the waist is measured
+  against. A particle leaves the focal spot aimed at a point on the
+  illuminated disc and arrives there whatever the spot did to where it set off
+  — the spot cancels over the SSD exactly — so what sets the width on the face
+  is the field radius, and there is no waist in this sense to place. A focal
+  spot correlated with the divergence is still something that beam can have;
+  it is `spot sigma` and `correlation` directly, and means what it says
+  there.
 - `omc_dosrz`, the command line user code, named after DOSRZnrc for the same
   reason it exists. The cylinder is described by a few keys in the input file
   rather than read from a phantom file — there is no file format for a
@@ -108,6 +118,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source follows as well; it is *not* an isotropic point source, whose fluence
   would fall off with the inverse square across the field, and the two differ
   noticeably at short SSD.
+
+### Changed
+
+- The Python package needs 3.10. nanobind 3.0 dropped 3.9, which itself
+  reached end of life in October 2025; nothing in ompMC's own Python needs
+  anything newer than 3.9, so this is only following the binding library.
+
+### Fixed
+
+- A region whose density is left for the PEGS file to supply is no longer
+  scored as air. Storing 0 there is how a host says it has no density of its
+  own to impose — `initRegions()` reads it as "whatever the PEGS file says
+  this medium weighs" and sets `rhof` to 1 — but both scorers took the
+  sentinel literally, found it below the air threshold, and returned zero dose
+  with the empty-region uncertainty for every such region. A whole phantom of
+  zeros out of a run whose transport had gone perfectly well. Both now resolve
+  the density the transport actually used.
+
+  It is the r-z hosts that make this easy to hit, both of them letting the
+  density be left out, but the fault was in the shared scoring and is fixed
+  there. A stored density that is not the sentinel is used exactly as it is
+  rather than reconstructed, so no phantom that states its densities moves by
+  even an ulp.
 
 ## [0.3.0] - 2026-08-13
 

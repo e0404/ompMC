@@ -51,6 +51,7 @@ int verbose_flag = 0;
 #endif
 
 extern struct Media media;
+extern struct Pegs pegs_data;
 
 /*******************************************************************************
 * Assertion harness
@@ -174,7 +175,8 @@ static void setInput(int i, const char *key, const char *value) {
     snprintf(input_items[i].value, sizeof(input_items[i].value), "%s", value);
 }
 
-static void setUpWaterCylinder(void) {
+/*! @p density in every region, or 0 to leave it to the PEGS file. */
+static void setUpWaterCylinderAt(double density) {
 
     setInput(0, "pegs file", "./pegs4/700icru.pegs4dat");
     setInput(1, "pgs4form file", "./pegs4/pgs4form.dat");
@@ -200,7 +202,7 @@ static void setUpWaterCylinder(void) {
         /* EGS counts media from 1; 0 would be vacuum, and a cylinder of
          vacuum absorbs nothing, which is a confusing way to find this out. */
         medIndices[i] = 1;
-        medDensities[i] = 1.0;
+        medDensities[i] = density;
     }
 
     geometry.med_indices = medIndices;
@@ -217,6 +219,10 @@ static void setUpWaterCylinder(void) {
     initMediaData();
     initRegions();
     initVrt();
+}
+
+static void setUpWaterCylinder(void) {
+    setUpWaterCylinderAt(1.0);
 }
 
 static void tearDownWaterCylinder(void) {
@@ -332,6 +338,102 @@ static void test_a_photon_pencil_builds_up_and_falls_off(void) {
     free(dose);
     free(unc);
     tearDownWaterCylinder();
+}
+
+/* A density of zero does not mean a cylinder of nothing. initRegions() reads
+ it as "whatever the PEGS file says this medium weighs" and sets rhof to 1,
+ which is how a host with no density of its own to impose says so -- and both
+ hosts of this engine let one be left out, so it is the ordinary case and not
+ a corner.
+
+ Read literally it is below the air threshold, and the scorer would call every
+ region of the phantom air: a whole run of zeros and empty-region
+ uncertainties out of transport that went perfectly well.
+
+ Asserted against the same cylinder with that density written out in full.
+ rhof is 1 either way -- rho/rho exactly, in the second case -- so this is the
+ same transport twice and the only question is whether the scorer weighed the
+ rings the same. To the last few digits and not bit for bit, for the reason
+ test_a_rerun_gives_the_same_answer() gives: two runs accumulate their atomics
+ in whatever order the threads arrive, and no two runs of anything here agree
+ more closely than that. */
+static void test_a_density_left_to_pegs_is_not_mistaken_for_air(void) {
+
+    double *fromPegs = malloc(NREG*sizeof(double));
+    double *fromPegsUnc = malloc(NREG*sizeof(double));
+    double *spelledOut = malloc(NREG*sizeof(double));
+    double pegsDensity;
+
+    for (int sentinel = 1; sentinel >= 0; sentinel--) {
+
+        /* The first pass has to be the sentinel one: it is what reports the
+         density the second pass then states explicitly. */
+        setUpWaterCylinderAt(sentinel ? 0.0 : pegsDensity);
+
+        if (sentinel) {
+            pegsDensity = pegs_data.rho[0];
+            CHECK(pegsDensity > 0.044);         /* the premise: not air */
+        }
+
+        struct OmcSpectrum spectrum;
+        omcSpectrumMonoenergetic(&spectrum, 6.0);
+
+        struct OmcPencilSource pencil;
+        memset(&pencil, 0, sizeof(pencil));
+        pencil.kind = OMC_PENCIL_PARALLEL;
+        pencil.spectrum = &spectrum;
+        pencil.charge = 0;
+
+        struct OmcSource source;
+        omcPencilSourceAsSource(&pencil, &source);
+
+        struct OmcRadialOptions opt = optionsFor(20000);
+        struct OmcForwardSummary summary;
+
+        CHECK(omcCalcRadial(&opt, &source,
+                            NULL, sentinel ? fromPegs : spelledOut,
+                            sentinel ? fromPegsUnc : NULL,
+                            NULL, &summary) == 1);
+
+        omcSpectrumFree(&spectrum);
+        tearDownWaterCylinder();
+    }
+
+    /* Real dose, not a phantom reported as empty */
+    double onAxis = 0.0;
+    for (int k = 0; k < NZR; k++) {
+        onAxis += at(fromPegs, 0, k);
+    }
+    CHECK(onAxis > 0.0);
+
+    /* and real uncertainties with it, rather than the empty-region sentinel
+     everywhere -- which is the shape the bug took: dose zeroed and 0.9999999
+     written over the statistics that had been collected. */
+    int empty = 0;
+    for (int i = 0; i < NREG; i++) {
+        if (fromPegsUnc[i] >= 0.9999999) {
+            empty++;
+        }
+    }
+    CHECK(empty < NREG);
+
+    double peak = 0.0;
+    for (int i = 0; i < NREG; i++) {
+        if (fromPegs[i] > peak) {
+            peak = fromPegs[i];
+        }
+    }
+    CHECK(peak > 0.0);
+
+    for (int i = 0; i < NREG; i++) {
+        if (fromPegs[i] > 0.01*peak) {
+            CHECK_CLOSE(fromPegs[i], spelledOut[i], 1e-9*fromPegs[i]);
+        }
+    }
+
+    free(fromPegs);
+    free(fromPegsUnc);
+    free(spelledOut);
 }
 
 /* The whole point of scoring in rings: dose falls away from the axis of a
@@ -978,6 +1080,7 @@ int main(void) {
     printf("test_omc_engine_radial\n");
 
     RUN(test_a_photon_pencil_builds_up_and_falls_off);
+    RUN(test_a_density_left_to_pegs_is_not_mistaken_for_air);
     RUN(test_dose_falls_off_away_from_the_axis);
     RUN(test_an_electron_pencil_stops_near_its_range);
     RUN(test_an_ssd_source_spreads_the_beam);

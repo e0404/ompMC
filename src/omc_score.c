@@ -28,6 +28,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* For the PEGS density a region falls back on; see effectiveDensity() */
+extern struct Pegs pegs_data;
+
 /* Redefine printf() function due to conflicts with mex and OpenMP */
 #ifdef _OPENMP
     #include <omp.h>
@@ -261,6 +264,32 @@ void resetBeamScore(void) {
  1.0 where the caller has already folded the fluence into the weights it
  passed accumEndep() (omc_engine_forward). */
 
+/*! The density the transport actually ran a region at, in g/cm^3.
+
+ Not geometry.med_densities directly, because a zero there does not mean a
+ region of nothing: initRegions() reads it as "whatever density the PEGS file
+ gives this medium" and sets rhof to 1, which is how a host says it has no
+ density of its own to impose. Reading the sentinel literally would call every
+ such region air and report it as empty -- a whole phantom of zeros out of a
+ run whose transport went perfectly well.
+
+ A stored density that is not the sentinel is handed back exactly as it is
+ rather than reconstructed from rhof, so this cannot perturb the dose of any
+ phantom that does state its densities by a division and a multiplication that
+ do not quite round trip. VACUUM really is nothing, and keeps its zero. */
+static double effectiveDensity(int irl) {
+
+    int imed = region.med[irl];
+
+    if (imed == VACUUM) {
+        return 0.0;
+    }
+
+    double stored = geometry.med_densities[irl - 1];
+
+    return stored != 0.0 ? stored : pegs_data.rho[imed];
+}
+
 void omcScoreToCube(int nbatch, double incFluence, int outputDose,
                     double *dose, double *uncertainty) {
 
@@ -279,11 +308,13 @@ void omcScoreToCube(int nbatch, double incFluence, int outputDose,
             for (int ix=0; ix<geometry.isize; ix++) {
                 irl = 1 + ix + iy*imax + iz*ijmax;
 
+                double density = effectiveDensity(irl);
+
                 /* Air is always reported as zero dose. Handle it before the
                  Gy conversion so a zero-density voxel cannot raise divide by
                  zero (or 0*inf invalid-operation) flags for a value that
                  would immediately be discarded. */
-                if (geometry.med_densities[irl-1] < 0.044) {
+                if (density < 0.044) {
                     dose[irl - 1] = 0.0;
                     if (uncertainty) {
                         uncertainty[irl - 1] = 0.9999999;
@@ -324,7 +355,7 @@ void omcScoreToCube(int nbatch, double incFluence, int outputDose,
                         (geometry.zbounds[iz+1] - geometry.zbounds[iz]);
 
                     /* Transform deposited energy to Gy */
-                    mass *= geometry.med_densities[irl-1];
+                    mass *= density;
                     endep *= 1.602E-10/(mass*inc_fluence);
 
                 } else {    /* Output mean deposited energy */
@@ -371,10 +402,12 @@ void omcScoreToRadial(int nbatch, double incFluence, int outputDose,
         for (int ir = 0; ir < nr; ir++) {
             irl = 1 + ir + iz*nr;
 
+            double density = effectiveDensity(irl);
+
             /* Air is always reported as zero dose. Handled before the Gy
              conversion so a zero-density region cannot raise divide by zero
              for a value that would immediately be discarded. */
-            if (geometry.med_densities[irl-1] < 0.044) {
+            if (density < 0.044) {
                 dose[irl - 1] = 0.0;
                 if (uncertainty) {
                     uncertainty[irl - 1] = 0.9999999;
@@ -412,7 +445,7 @@ void omcScoreToRadial(int nbatch, double incFluence, int outputDose,
                     (geometry.zbounds[iz+1] - geometry.zbounds[iz]);
 
                 /* Transform deposited energy to Gy */
-                mass *= geometry.med_densities[irl-1];
+                mass *= density;
                 endep *= 1.602E-10/(mass*inc_fluence);
 
             } else {    /* Output mean deposited energy */

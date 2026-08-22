@@ -389,6 +389,19 @@ static void initBeam(void) {
             exit(EXIT_FAILURE);
         }
 
+        /* The waist is measured against the width of the beam on the front
+         face, and a point source's spot is not that width: every particle
+         arrives at the point on the field it was aimed at whatever the spot
+         did to where it set off, so the spot cancels over the SSD and what
+         sets the width there is 'field radius'. */
+        if (pencil.kind == OMC_PENCIL_SSD) {
+            printf("'waist sigma' describes a parallel pencil. A point "
+                   "source's spot is its focal spot and does not set where "
+                   "its beam is, so there is no waist to place; give 'spot "
+                   "sigma' and 'correlation' directly.\n");
+            exit(EXIT_FAILURE);
+        }
+
         if (!(pencil.divergenceSigma > 0.0)) {
             printf("'waist sigma' needs a 'divergence sigma' as well: a beam "
                    "that does not diverge has the same width everywhere.\n");

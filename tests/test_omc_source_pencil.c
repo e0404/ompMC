@@ -472,6 +472,59 @@ static void test_a_spot_sigma_widens_the_beam_where_it_enters(void) {
     }
 }
 
+/* Why the waist arithmetic is a parallel-pencil thing, pinned as the fact it
+ rests on: a point source's focal spot does not move its beam on the front
+ face at all.
+
+ The particle leaves the spot aimed at a point on the illuminated disc, so it
+ arrives at that point whatever the spot did to where it set off -- start at
+ spot, travel the whole SSD along (aim - spot)/|..| and the spot cancels
+ exactly. What the spot blurs for a point source is the DIRECTION, and only
+ through the direction the width further downstream.
+
+ The aim is drawn before the spot is, so the two beams below see the same aim
+ point for the same history and the entrance positions can be compared one for
+ one rather than as distributions. */
+static void test_a_focal_spot_does_not_move_a_point_source_on_the_face(void) {
+
+    setUpCylinder();
+
+    struct OmcPencilSource sharp = pencilSsd(100.0, 3.0);
+    struct OmcPencilSource blurred = pencilSsd(100.0, 3.0);
+    blurred.spotSigma = 0.8;            /* a huge focal spot, on purpose */
+
+    struct OmcSource a, b;
+    omcPencilSourceAsSource(&sharp, &a);
+    omcPencilSourceAsSource(&blurred, &b);
+
+    for (uint64_t ihist = 0; ihist < 64; ihist++) {
+        struct OmcSourceParticle pa, pb;
+        memset(&pa, 0, sizeof(pa));
+        memset(&pb, 0, sizeof(pb));
+
+        setRandomHistory(ihist);
+        a.sample(&a, ihist, 0, &pa);
+
+        setRandomHistory(ihist);
+        b.sample(&b, ihist, 0, &pb);
+
+        /* They start a long way apart */
+        double startX = fabs(pa.x - pb.x) + fabs(pa.y - pb.y);
+
+        double xa, ya, xb, yb;
+        atEntrance(&pa, &xa, &ya);
+        atEntrance(&pb, &xb, &yb);
+
+        /* and arrive at the same place regardless */
+        CHECK_CLOSE(xa, xb, 1e-12);
+        CHECK_CLOSE(ya, yb, 1e-12);
+
+        if (ihist == 0) {
+            CHECK(startX > 0.0);
+        }
+    }
+}
+
 static void test_a_divergence_sigma_spreads_the_direction(void) {
 
     setUpCylinder();
@@ -1075,6 +1128,7 @@ int main(void) {
     RUN(test_an_ssd_source_fills_the_field_it_was_given);
     RUN(test_a_field_radius_of_zero_means_the_whole_face);
     RUN(test_a_spot_sigma_widens_the_beam_where_it_enters);
+    RUN(test_a_focal_spot_does_not_move_a_point_source_on_the_face);
     RUN(test_a_divergence_sigma_spreads_the_direction);
     RUN(test_divergence_does_not_displace_the_beam);
     RUN(test_spot_and_divergence_compose);

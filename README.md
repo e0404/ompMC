@@ -6,7 +6,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 [![C](https://img.shields.io/badge/C-A8B9CC?logo=c&logoColor=white)](src/)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MATLAB](https://img.shields.io/badge/MATLAB-0076A8?logo=mathworks&logoColor=white)](ucodes/omc_matrad/)
 
 [![Windows](https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white)](.github/workflows/build.yml)
@@ -169,7 +169,8 @@ charge = 0
 # beam's waist somewhere other than the front face: negative converges onto a
 # waist inside the phantom, positive has already passed one upstream. Or say
 # it as a waist directly -- 'waist sigma' (cm) and 'waist depth' (cm, past the
-# face) set 'spot sigma' and 'correlation' between them.
+# face) set 'spot sigma' and 'correlation' between them. Pencil beams only: a
+# point source's spot is a focal spot, and does not set where its beam is.
 # correlation = -0.6
 # waist sigma = 0.1
 # waist depth = 5.0

@@ -399,6 +399,42 @@ static void test_howfar_inward_and_the_chord_that_misses(void) {
     CHECK(irnew == 1 + 4);
 }
 
+/* A chord that touches an inner ring at exactly one point has not entered it.
+ The discriminant is zero rather than negative, which is the case between the
+ chord that misses and the chord that crosses, and it has to be counted with
+ the misses: the ray reaches r = 3, turns, and goes back out without ever
+ having been inside.
+
+ Handing it to the inner ring would not merely mislabel that one point. A
+ tangent has b = 0 where it touches, so the ring it was handed to would find a
+ zero discriminant of its own looking for the way back out, decline that too,
+ and let the particle run on across a ring it was never in -- depositing
+ there. Every number below is exactly representable, so the discriminant is
+ zero in floating point and not merely close to it. */
+static void test_howfar_declines_a_chord_that_only_grazes_the_inner_ring(void) {
+
+    setUpCylinder();
+
+    double ustep;
+    int irnew, idisc;
+
+    /* From (3, -1/2) along +y: r^2 = 9.25 puts it in ring 3, b = -1/2 has it
+     heading inwards, and the line touches r = 3 at (3, 0). */
+    double x = 3.0, y = -0.5;
+
+    CHECK(x*x + y*y - 9.0 == 0.25);         /* c, exactly */
+    CHECK((y*1.0)*(y*1.0) == 0.25);         /* and b*b, so disc is exactly 0 */
+
+    place(x, y, 0.5, 0.0, 1.0, 0.0);
+    step(&ustep, &irnew, &idisc);
+
+    /* Out through r = 4, not in through r = 3. The tangent point is only
+     0.5 away, so a step that stopped there would be unmistakable. */
+    CHECK_CLOSE(ustep, outerRoot(x, y, 0.0, 1.0, 4.0), 1e-12);
+    CHECK(ustep > 3.0);
+    CHECK(irnew == 1 + 4);
+}
+
 /* A ray along the axis crosses no ring boundary at all. The radial quadratic
  degenerates -- a = 0 -- and dividing by it would be an infinity where the
  answer is "never". */
@@ -732,6 +768,7 @@ int main(void) {
     RUN(test_cyl_init_takes_the_azimuthal_index_out_of_play);
     RUN(test_howfar_outward_along_a_diameter);
     RUN(test_howfar_inward_and_the_chord_that_misses);
+    RUN(test_howfar_declines_a_chord_that_only_grazes_the_inner_ring);
     RUN(test_howfar_along_the_axis_crosses_no_ring);
     RUN(test_howfar_oblique_agrees_with_the_quadratic);
     RUN(test_hownear_is_the_smallest_of_four);

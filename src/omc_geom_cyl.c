@@ -307,10 +307,19 @@ void omcCylHowfar(int *idisc, int *irnew, double *ustep) {
 
         disc = b*b - a*cinner;
 
-        /* Negative here is a chord that passes the axis further out than the
-         inner surface: the ray never reaches it, and leaves through the outer
-         surface found above instead. */
-        if (disc >= 0.0) {
+        /* Not positive here is a chord that never gets inside the inner
+         surface: negative passes the axis further out than it, and zero
+         touches it at exactly one point and turns away again. Either way the
+         ray leaves through the outer surface found above instead.
+
+         Zero has to be excluded rather than waved through as "close enough":
+         a tangent has b = 0 at the point it touches, so the inner ring the
+         particle would be handed to finds a zero discriminant of its own on
+         the way back out and no radial boundary at all. It would then carry
+         on across the ring it had never really entered, depositing there.
+         Strictly greater is also what the outward branch above asks, so the
+         two agree on what counts as a crossing. */
+        if (disc > 0.0) {
             dist = entryRoot(b, cinner, disc);
 
             if (dist >= 0.0 && dist < *ustep) {

@@ -150,6 +150,16 @@ struct OmcPencilSource {
 /*! Turn a description of where the beam is narrowest into the
  struct OmcPencilSource fields that produce it.
 
+ This describes a #OMC_PENCIL_PARALLEL beam, whose spot IS the width of the
+ beam on the front face. It is not the arithmetic for #OMC_PENCIL_SSD: that
+ beam's spot is a focal spot an SSD upstream, and it does not set where the
+ beam is. Every particle leaves the spot aimed at a point on the illuminated
+ disc and arrives there whatever the spot did to where it set off -- the spot
+ cancels over the SSD exactly -- so the width on the face is
+ struct OmcPencilSource::fieldRadius and there is no waist in this sense to
+ place. A focal spot correlated with the divergence is still a thing that beam
+ can have; say it with the fields directly.
+
  @param waistSigma Width at the waist, in cm. Must be positive.
  @param divergenceSigma Angular spread, in rad. Must be positive.
  @param waistDepth How far past the front face the waist sits, in cm.
