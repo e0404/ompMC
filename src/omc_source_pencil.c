@@ -41,53 +41,30 @@ static double fieldRadiusOf(const struct OmcPencilSource *pencil) {
                                      : geometry.rbounds[geometry.isize];
 }
 
-/*! Turn a direction by the projected angles @p a and @p b, about two
- perpendicular directions of its own.
+/*! Tilt a direction by the projected angles @p ax and @p ay, measured in the
+ phantom's own transverse plane.
 
- The turned direction is `d + a*e1 + b*e2` brought back to unit length, so a
- and b are the tangents of the angle onto the two planes through d -- the
- angles themselves, to the accuracy a pencil beam's divergence cares about.
- Written this way rather than as a spherical rotation because it cannot
- degenerate: it stays a unit vector for any a and b, with no pole to avoid. */
-static void turnDirection(double *u, double *v, double *w,
-                          double a, double b) {
+ The tilted direction is `d + (ax, ay, 0)` brought back to unit length, so for
+ a beam travelling along +z the tangents of the angle onto the xz and yz
+ planes are exactly ax and ay -- the angles themselves, to the accuracy a
+ pencil beam's divergence cares about, and to first order for a beam merely
+ near +z.
 
-    double du = *u, dv = *v, dw = *w;
+ The lab frame and not a frame built perpendicular to d, which is the obvious
+ alternative and is wrong here: the correlation between where a particle
+ starts and where it is going is stated per transverse AXIS, so the angle has
+ to be perturbed along the same axes the position was. A basis constructed
+ from d alone comes out rotated -- for d = +z it is (y, -x) -- which pairs the
+ x position with the y angle and quietly moves the correlation into the cross
+ term, where it is neither what was asked for nor visible in a round beam. */
+static void tiltDirection(double *u, double *v, double *w,
+                          double ax, double ay) {
 
-    /* Any unit vector perpendicular to d. Crossing d with whichever axis it
-     leans on least keeps the cross product well away from zero. */
-    double tx = 0.0, ty = 0.0, tz = 0.0;
-    double au = fabs(du), av = fabs(dv), aw = fabs(dw);
+    double nu = *u + ax;
+    double nv = *v + ay;
+    double nw = *w;
 
-    if (au <= av && au <= aw) {
-        tx = 1.0;
-    }
-    else if (av <= aw) {
-        ty = 1.0;
-    }
-    else {
-        tz = 1.0;
-    }
-
-    double e1u = dv*tz - dw*ty;
-    double e1v = dw*tx - du*tz;
-    double e1w = du*ty - dv*tx;
-
-    double norm = 1.0/sqrt(e1u*e1u + e1v*e1v + e1w*e1w);
-    e1u *= norm;
-    e1v *= norm;
-    e1w *= norm;
-
-    /* e2 = d x e1, already unit since both are and they are perpendicular */
-    double e2u = dv*e1w - dw*e1v;
-    double e2v = dw*e1u - du*e1w;
-    double e2w = du*e1v - dv*e1u;
-
-    double nu = du + a*e1u + b*e2u;
-    double nv = dv + a*e1v + b*e2v;
-    double nw = dw + a*e1w + b*e2w;
-
-    norm = 1.0/sqrt(nu*nu + nv*nv + nw*nw);
+    double norm = 1.0/sqrt(nu*nu + nv*nv + nw*nw);
 
     *u = nu*norm;
     *v = nv*norm;
@@ -140,6 +117,13 @@ static void pencilCheck(const struct OmcSource *self) {
         omcFail("ompMC:pencil:badDivergenceSigma",
             "The beam has a divergence of %g rad. Give a positive one, or 0 "
             "for a beam that does not diverge.", pencil->divergenceSigma);
+    }
+
+    if (!(pencil->correlation >= -1.0 && pencil->correlation <= 1.0)) {
+        omcFail("ompMC:pencil:badCorrelation",
+            "The beam has a position to angle correlation of %g. It is a "
+            "correlation coefficient, so it lies between -1 and 1.",
+            pencil->correlation);
     }
 
     if (pencil->kind == OMC_PENCIL_SSD) {
@@ -213,12 +197,16 @@ static int pencilSample(const struct OmcSource *self, uint64_t ihist,
      between the two beams, because what the position MEANS differs: a
      parallel pencil is specified where it meets the phantom, a point source
      by where the source is. So this is the width of the beam on the front
-     face in the first case, and the size of the focal spot in the second. */
+     face in the first case, and the size of the focal spot in the second.
+
+     The deviates are kept, because the divergence below may be correlated
+     with them. */
     double spotX = 0.0;
     double spotY = 0.0;
+    double offset[2] = {0.0, 0.0};
+    int hasSpot = pencil->spotSigma > 0.0;
 
-    if (pencil->spotSigma > 0.0) {
-        double offset[2];
+    if (hasSpot) {
         boxMuller(offset);
 
         spotX = pencil->spotSigma*offset[0];
@@ -247,12 +235,33 @@ static int pencilSample(const struct OmcSource *self, uint64_t ihist,
 
     /* A finite divergence, about whatever direction the beam already had. */
     if (pencil->divergenceSigma > 0.0) {
-        double angle[2];
-        boxMuller(angle);
+        double independent[2];
+        boxMuller(independent);
 
-        turnDirection(&particle->u, &particle->v, &particle->w,
-                      pencil->divergenceSigma*angle[0],
-                      pencil->divergenceSigma*angle[1]);
+        double ax = independent[0];
+        double ay = independent[1];
+
+        /* Correlated with where the particle started, if it was asked for and
+         there is a width for it to relate to. The Cholesky factor of the two
+         by two covariance: one part of the angle is the position's own
+         deviate, the rest is fresh. Same correlation in both planes, which is
+         what keeps the beam round.
+
+         Written so that a correlation of 0 leaves ax and ay exactly the
+         deviates they already were, rather than the same numbers arrived at
+         through an arithmetically equivalent detour: an uncorrelated beam
+         gives bit for bit what it gave before this existed. */
+        if (hasSpot && pencil->correlation != 0.0) {
+            double rho = pencil->correlation;
+            double rest = sqrt(1.0 - rho*rho);
+
+            ax = rho*offset[0] + rest*independent[0];
+            ay = rho*offset[1] + rest*independent[1];
+        }
+
+        tiltDirection(&particle->u, &particle->v, &particle->w,
+                      pencil->divergenceSigma*ax,
+                      pencil->divergenceSigma*ay);
     }
 
     particle->x = spotX;
@@ -273,6 +282,29 @@ static int pencilSample(const struct OmcSource *self, uint64_t ihist,
     particle->z = parallel ? zface : zface - pencil->ssd;
 
     return 1;
+}
+
+/******************************************************************************/
+
+void omcPencilWaist(double waistSigma, double divergenceSigma,
+                    double waistDepth,
+                    double *spotSigma, double *correlation) {
+
+    /* var(s) is smallest at s = -rho sigma / sigma', where it equals
+     sigma^2 (1 - rho^2). Solving those two for sigma and rho gives the pair
+     below -- and |rho| < 1 falls out for any positive waist, so there is no
+     combination of a real waist and a real divergence this cannot express. */
+    double drift = waistDepth*divergenceSigma;
+    double sigma = sqrt(waistSigma*waistSigma + drift*drift);
+
+    if (spotSigma != NULL) {
+        *spotSigma = sigma;
+    }
+    if (correlation != NULL) {
+        *correlation = sigma > 0.0 ? -drift/sigma : 0.0;
+    }
+
+    return;
 }
 
 /******************************************************************************/

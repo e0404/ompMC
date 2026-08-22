@@ -579,6 +579,205 @@ static void test_spot_and_divergence_compose(void) {
     CHECK(fabs(sxa/NSAMPLES) < 0.06*spot*divergence);
 }
 
+/*******************************************************************************
+* Correlation, i.e. where the waist is
+*
+* Position and angle drawn independently put the narrowest part of the beam at
+* the phantom surface, which is only one of the beams a machine can make. A
+* correlation between them moves it: the width at distance s downstream is
+*
+*     var(s) = sigma^2 + 2 s rho sigma sigma' + s^2 sigma'^2
+*
+* whose minimum sits at s = -rho sigma / sigma'. So rho < 0 converges onto a
+* waist inside the phantom, rho > 0 has already passed it.
+*******************************************************************************/
+
+/* Everything second order about the beam where it enters the phantom. */
+struct PhaseSpace {
+    double varX, varY;          /* position */
+    double varAx, varAy;        /* angle */
+    double covXAx, covYAy;      /* position with its own angle */
+    double covXAy;              /* position with the other one */
+};
+
+static void gather(const struct OmcSource *source, int n,
+                   struct PhaseSpace *out) {
+
+    double mx = 0, my = 0, max_ = 0, may = 0;
+    double xx = 0, yy = 0, aa = 0, bb = 0, xa = 0, yb = 0, xb = 0;
+
+    for (int i = 0; i < n; i++) {
+        struct OmcSourceParticle particle;
+        memset(&particle, 0, sizeof(particle));
+
+        setRandomHistory((uint64_t)i);
+        source->sample(source, (uint64_t)i, i, &particle);
+
+        double x, y;
+        atEntrance(&particle, &x, &y);
+
+        double ax = particle.u/particle.w;
+        double ay = particle.v/particle.w;
+
+        mx += x; my += y; max_ += ax; may += ay;
+        xx += x*x; yy += y*y; aa += ax*ax; bb += ay*ay;
+        xa += x*ax; yb += y*ay; xb += x*ay;
+    }
+
+    double d = (double)n;
+    mx /= d; my /= d; max_ /= d; may /= d;
+
+    out->varX = xx/d - mx*mx;
+    out->varY = yy/d - my*my;
+    out->varAx = aa/d - max_*max_;
+    out->varAy = bb/d - may*may;
+    out->covXAx = xa/d - mx*max_;
+    out->covYAy = yb/d - my*may;
+    out->covXAy = xb/d - mx*may;
+}
+
+static void test_a_correlation_tilts_the_phase_space(void) {
+
+    setUpCylinder();
+
+    double sigma = 0.5, sigmaPrime = 0.06, rho = -0.6;
+
+    struct OmcPencilSource pencil = pencilGaussian(sigma, sigmaPrime);
+    pencil.correlation = rho;
+
+    struct OmcSource source;
+    omcPencilSourceAsSource(&pencil, &source);
+
+    struct PhaseSpace ps;
+    gather(&source, NSAMPLES, &ps);
+
+    /* The widths are the ones asked for, correlation or not */
+    CHECK_CLOSE(sqrt(ps.varX), sigma, 0.05*sigma);
+    CHECK_CLOSE(sqrt(ps.varAx), sigmaPrime, 0.05*sigmaPrime);
+
+    /* And the correlation is the one asked for, in both planes */
+    double rx = ps.covXAx/sqrt(ps.varX*ps.varAx);
+    double ry = ps.covYAy/sqrt(ps.varY*ps.varAy);
+
+    CHECK_CLOSE(rx, rho, 0.03);
+    CHECK_CLOSE(ry, rho, 0.03);
+
+    /* Each plane is correlated with its OWN angle and no other. A beam that
+     mixed them would not be round any more. */
+    double cross = ps.covXAy/sqrt(ps.varX*ps.varAy);
+    CHECK(fabs(cross) < 0.03);
+
+    CHECK_CLOSE(sqrt(ps.varY), sigma, 0.05*sigma);
+    CHECK_CLOSE(sqrt(ps.varAy), sigmaPrime, 0.05*sigmaPrime);
+}
+
+/* The point of the correlation: the beam is narrowest somewhere other than
+ where it started. */
+static void test_a_converging_beam_is_narrowest_at_its_waist(void) {
+
+    setUpCylinder();
+
+    double sigma = 0.5, sigmaPrime = 0.06, rho = -0.6;
+    double expectedWaist = -rho*sigma/sigmaPrime;      /* 5 cm */
+
+    struct OmcPencilSource pencil = pencilGaussian(sigma, sigmaPrime);
+    pencil.correlation = rho;
+
+    struct OmcSource source;
+    omcPencilSourceAsSource(&pencil, &source);
+
+    struct PhaseSpace ps;
+    gather(&source, NSAMPLES, &ps);
+
+    /* var(s) = varX + 2 s covXAx + s^2 varAx, minimized where its derivative
+     vanishes. Read off the sampled beam rather than assumed. */
+    double waist = -ps.covXAx/ps.varAx;
+    CHECK_CLOSE(waist, expectedWaist, 0.05*expectedWaist);
+
+    /* And it really is narrower there than at either end */
+    double atFace = ps.varX;
+    double atWaist = ps.varX + 2.0*waist*ps.covXAx + waist*waist*ps.varAx;
+    double beyond = ps.varX + 2.0*(2.0*waist)*ps.covXAx
+                    + 4.0*waist*waist*ps.varAx;
+
+    CHECK(atWaist < atFace);
+    CHECK(atWaist < beyond);
+
+    /* A waist of zero width is not what this is: the beam still has the
+     emittance it started with. */
+    CHECK(atWaist > 0.0);
+    CHECK_CLOSE(sqrt(atWaist), sigma*sqrt(1.0 - rho*rho), 0.05*sigma);
+}
+
+/* A correlation of zero has to leave the uncorrelated beam exactly as it was,
+ down to which random number went where. */
+static void test_zero_correlation_changes_nothing(void) {
+
+    setUpCylinder();
+
+    struct OmcPencilSource plain = pencilGaussian(0.3, 0.02);
+    struct OmcPencilSource zeroed = pencilGaussian(0.3, 0.02);
+    zeroed.correlation = 0.0;
+
+    struct OmcSource a, b;
+    omcPencilSourceAsSource(&plain, &a);
+    omcPencilSourceAsSource(&zeroed, &b);
+
+    for (uint64_t ihist = 0; ihist < 64; ihist++) {
+        struct OmcSourceParticle first, again;
+        memset(&first, 0, sizeof(first));
+        memset(&again, 0, sizeof(again));
+
+        setRandomHistory(ihist);
+        a.sample(&a, ihist, 0, &first);
+
+        setRandomHistory(ihist);
+        b.sample(&b, ihist, 0, &again);
+
+        CHECK(memcmp(&first, &again, sizeof(first)) == 0);
+    }
+}
+
+/* Correlating with a width that is not there means nothing, and must not cost
+ a random number either. */
+static void test_correlation_without_both_widths_is_ignored(void) {
+
+    setUpCylinder();
+
+    struct OmcSourceParticle particle;
+
+    struct {
+        double spot, divergence;
+        int draws;
+    } cases[] = {
+        { 0.0, 0.0, 0 },
+        { 0.3, 0.0, 2 },
+        { 0.0, 0.02, 2 },
+    };
+
+    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+
+        struct OmcPencilSource pencil =
+            pencilGaussian(cases[i].spot, cases[i].divergence);
+        pencil.correlation = -0.9;
+
+        struct OmcSource source;
+        omcPencilSourceAsSource(&pencil, &source);
+
+        setRandomHistory(31);
+        for (int d = 0; d < cases[i].draws; d++) {
+            setRandom();
+        }
+        double expected = setRandom();
+
+        setRandomHistory(31);
+        memset(&particle, 0, sizeof(particle));
+        source.sample(&source, 31, 0, &particle);
+
+        CHECK(setRandom() == expected);
+    }
+}
+
 /* A sigma of zero has to be the delta beam exactly -- same particle, and the
  same number of random draws -- so that adding these knobs changes no result
  that never asked for them. */
@@ -879,6 +1078,10 @@ int main(void) {
     RUN(test_a_divergence_sigma_spreads_the_direction);
     RUN(test_divergence_does_not_displace_the_beam);
     RUN(test_spot_and_divergence_compose);
+    RUN(test_a_correlation_tilts_the_phase_space);
+    RUN(test_a_converging_beam_is_narrowest_at_its_waist);
+    RUN(test_zero_correlation_changes_nothing);
+    RUN(test_correlation_without_both_widths_is_ignored);
     RUN(test_zero_sigma_is_the_delta_beam_exactly);
     RUN(test_sampling_depends_only_on_the_history);
     RUN(test_the_draw_count_is_what_it_says);

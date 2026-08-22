@@ -123,7 +123,37 @@ struct OmcPencilSource {
      divergences a pencil beam has is the angle itself. Costs one Box-Muller
      pair, i.e. two random numbers, and none at all when 0. */
     double divergenceSigma;
+
+    /*! How strongly where a particle starts predicts where it is going, from
+     -1 to 1. This is what puts the WAIST somewhere other than the phantom
+     surface: the width at distance s downstream is
+
+         var(s) = sigma^2 + 2 s rho sigma sigma' + s^2 sigma'^2
+
+     which is narrowest at `s = -correlation*spotSigma/divergenceSigma`. So a
+     negative correlation converges onto a waist inside the phantom, a
+     positive one has already passed its waist upstream, and 0 -- the default
+     -- puts the waist exactly on the front face.
+
+     The same correlation applies in both transverse planes, which is what
+     keeps the beam round; see omcPencilWaist() for saying it the other way
+     round. It means nothing without both a width and a divergence to relate,
+     and is ignored when either is 0. It costs no random numbers of its own. */
+    double correlation;
 };
+
+/*! Turn a description of where the beam is narrowest into the
+ struct OmcPencilSource fields that produce it.
+
+ @param waistSigma Width at the waist, in cm. Must be positive.
+ @param divergenceSigma Angular spread, in rad. Must be positive.
+ @param waistDepth How far past the front face the waist sits, in cm.
+ Positive is inside the phantom; 0 puts it on the face.
+ @param spotSigma Set to the width at the front face.
+ @param correlation Set to the correlation that puts the waist there. */
+void omcPencilWaist(double waistSigma, double divergenceSigma,
+                    double waistDepth,
+                    double *spotSigma, double *correlation);
 
 /*! Present the beam to an engine as a source.
 
