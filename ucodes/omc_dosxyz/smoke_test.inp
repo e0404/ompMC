@@ -14,7 +14,7 @@ ssd = 90.0
 # stop source definition
 
 # start MC control
-ncase  = 20000
+ncase  = 4000
 nbatch = 2
 rng seeds = 97 33
 # stop MC control

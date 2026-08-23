@@ -437,13 +437,25 @@ static void initBeam(void) {
 
     if (pencil.correlation != 0.0 && pencil.spotSigma > 0.0 &&
         pencil.divergenceSigma > 0.0) {
-        /* Where that correlation puts the waist, since it is what the deck
-         was after either way and is easier to recognize as wrong. */
-        printf("\t correlation = %f, waist %f cm wide %f cm past the front "
-               "face\n", pencil.correlation,
-               pencil.spotSigma*sqrt(1.0 - pencil.correlation
-                                          *pencil.correlation),
-               -pencil.correlation*pencil.spotSigma/pencil.divergenceSigma);
+
+        if (pencil.kind == OMC_PENCIL_PARALLEL) {
+            /* Where that correlation puts the waist, since it is what the
+             deck was after either way and is easier to recognize as wrong. */
+            printf("\t correlation = %f, waist %f cm wide %f cm past the "
+                   "front face\n", pencil.correlation,
+                   pencil.spotSigma*sqrt(1.0 - pencil.correlation
+                                              *pencil.correlation),
+                   -pencil.correlation*pencil.spotSigma
+                       /pencil.divergenceSigma);
+        }
+        else {
+            /* Not read back as a waist here, for the same reason 'waist
+             sigma' is refused for this beam: the spot is a focal spot and
+             does not set where the beam is on the face, so the depth that
+             arithmetic returns would be a number about nothing. */
+            printf("\t correlation = %f, between the focal spot and the "
+                   "divergence\n", pencil.correlation);
+        }
     }
 
     return;
@@ -714,7 +726,27 @@ int main (int argc, char **argv) {
     requireValue(buffer, "nbatch");
     radialOptions.nbatch = atoi(buffer);
 
-    radialOptions.outputDose = 1;   /* Gy per incident history */
+    /* Gy per incident history, or the deposited energy it is worked out
+     from -- which is what a run comparing rings wants, the annulus volumes
+     not then having to be undone. */
+    radialOptions.outputDose = 1;
+
+    if (getInputValue(buffer, "output quantity") == 1) {
+        char quantity[BUFFER_SIZE];
+        removeSpaces(quantity, buffer);
+
+        if (strcmp(quantity, "dose") == 0) {
+            radialOptions.outputDose = 1;
+        }
+        else if (strcmp(quantity, "energy") == 0) {
+            radialOptions.outputDose = 0;
+        }
+        else {
+            printf("'output quantity' is '%s'; it is 'dose' or 'energy'.\n",
+                   quantity);
+            exit(EXIT_FAILURE);
+        }
+    }
 
     int nregions = geometry.isize*geometry.ksize;
     double *dose = malloc(nregions*sizeof(double));

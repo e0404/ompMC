@@ -880,6 +880,33 @@ if(OMPMC_BUILD_TESTS)
         add_test(NAME dosrz_smoke
             COMMAND omc_dosrz -i ucodes/omc_dosrz/smoke_test -o smoke_rz
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+        # The smoke deck takes one path through the input file: a pencil beam,
+        # uniform bins, one energy, a stated density. These take the others --
+        # a point source, boundaries written out in full, a spectrum file, a
+        # density left to PEGS, a phase space, a waist, the energy output.
+        # They transport a few hundred histories each, so between them they
+        # cost about as much as one more data load; what they are testing is
+        # that the keys parse and reach the engine.
+        foreach(deck point waist phsp)
+            add_test(NAME dosrz_${deck}
+                COMMAND omc_dosrz
+                    -i ucodes/omc_dosrz/coverage_${deck} -o coverage_${deck}
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+        endforeach()
+
+        # And two the user code has to turn down rather than quietly run: a
+        # beam described as a waist and as the spot that waist sets, and a
+        # point source given a waist at all. WILL_FAIL, so accepting either
+        # one is a failing test and not a silently different beam.
+        foreach(deck waist_clash waist_point)
+            add_test(NAME dosrz_refuse_${deck}
+                COMMAND omc_dosrz
+                    -i ucodes/omc_dosrz/refuse_${deck} -o refuse_${deck}
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+            set_tests_properties(dosrz_refuse_${deck}
+                PROPERTIES WILL_FAIL TRUE)
+        endforeach()
     endif()
 
     # Drives the Octave .mex through the same test_omc_matrad_mex.m the MATLAB

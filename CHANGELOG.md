@@ -101,7 +101,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   be given its boundaries in full instead of a uniform count, which is what a
   run wanting fine rings on the beam and coarse ones outside actually needs.
   It writes a `.rzdose` file: the `.3ddose` layout with the axis it does not
-  have taken out.
+  have taken out, or a `.rzenergy` one of the deposited energy the dose is
+  worked out from with `output quantity = energy`. Energy is what comparing
+  rings wants: the annulus volumes grow with radius, so a dose profile across
+  the rings has that division in it already.
 - The r-z calculation is reachable from Python as `ompmc.calc_radial()`, over
   a `CylinderGeometry` and taking either a `PencilBeamSource` or a
   `PhaseSpaceSource`; the result comes back shaped `(n_rings, n_slabs)`.
@@ -120,6 +123,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   noticeably at short SSD.
 
 ### Changed
+
+- The test suite transports about a quarter of the histories it did, without
+  weakening an assertion. Two of the collimator tests were spending twenty
+  thousand histories each on identities that hold exactly — an open mask
+  changes the dose by 0 and a half transmitting one halves it to the last bit,
+  neither of which needs statistics at all — and the ones that are statistical
+  were far past the point where more histories bought anything: the loosest
+  now sits fifty times inside its tolerance and the tightest twenty. The
+  `omc_dosxyz` smoke deck came down to 4000 histories too; what it smokes is
+  that the binary runs and writes a well formed `.3ddose`, which it did not
+  need 20000 for. Between them the CTest stage on the slowest CI runner drops
+  from about 24 minutes to about 8.
 
 - The Python package needs 3.10. nanobind 3.0 dropped 3.9, which itself
   reached end of life in October 2025; nothing in ompMC's own Python needs

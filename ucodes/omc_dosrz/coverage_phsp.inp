@@ -1,0 +1,50 @@
+# A fourth omc_dosrz build test, driving the cylinder from an IAEA phase space
+# rather than from a beam this user code describes itself. Run from the
+# repository root, where the committed dataset lives:
+#
+#   ./build/bin/omc_dosrz -i ucodes/omc_dosrz/coverage_phsp -o coverage_phsp
+#
+# tests/data/small.IAEA* holds only a handful of particles, so 'phsp order =
+# random' rather than replaying them: a replay would run out and stop the run
+# early, which is a different thing to be testing.
+
+# start source definition
+source type = phsp
+phsp file = ./tests/data/small
+phsp order = random
+phsp first = 0
+phsp rotation = 1 0 0  0 1 0  0 0 1
+phsp translation = 0 0 0
+# stop source definition
+
+# start MC control
+ncase  = 200
+nbatch = 2
+rng seeds = 97 33
+# stop MC control
+
+# start geometry
+medium = H2O521ICRU
+medium density = 1.0
+cylinder radius = 5.0
+radial bins = 5
+cylinder depth = 5.0
+depth bins = 5
+# stop geometry
+
+# start MC transport
+global ecut = 0.521
+global pcut = 0.010
+pegs file = ./pegs4/521icru.pegs4dat
+pgs4form file = ./pegs4/pgs4form.dat
+# stop MC transport
+
+# start VRT
+nsplit = 1
+esave = 2.0
+# stop VRT
+
+# start ompMC environment
+data folder = ./data/
+output folder = ./output/
+# stop ompMC environment

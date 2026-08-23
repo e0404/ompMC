@@ -342,7 +342,7 @@ static void test_a_photon_beam_builds_up_and_falls_off(void) {
     struct Made made;
     makeBeam(&made, 16, 6.0, 0);
 
-    struct OmcForwardOptions opt = optionsFor(20000);
+    struct OmcForwardOptions opt = optionsFor(5000);
     struct OmcForwardSummary summary;
 
     double *dose = malloc(GRIDSIZE*sizeof(double));
@@ -355,8 +355,8 @@ static void test_a_photon_beam_builds_up_and_falls_off(void) {
     int finished = omcCalcForward(&opt, &source, NULL, dose, unc, NULL, &summary);
 
     CHECK(finished == 1);
-    CHECK(summary.nhist == 20000);
-    CHECK(summary.started == 20000);        /* all of them are aimed in */
+    CHECK(summary.nhist == 5000);
+    CHECK(summary.started == 5000);        /* all of them are aimed in */
     CHECK(summary.energyFraction > 0.0 && summary.energyFraction < 1.0);
 
     /* The depth dose down the middle of the tank. */
@@ -448,7 +448,7 @@ static void test_histories_that_miss_still_count(void) {
             (unsigned char)((-OMC_PHSP_PHOTON) & 0xFF);
     }
 
-    struct OmcForwardOptions opt = optionsFor(20000);
+    struct OmcForwardOptions opt = optionsFor(5000);
     struct OmcForwardSummary summaryAll;
     struct OmcForwardSummary summaryHalf;
 
@@ -466,8 +466,8 @@ static void test_histories_that_miss_still_count(void) {
     omcCalcForward(&opt, &sourceAll, NULL, doseAll, NULL, NULL, &summaryAll);
     omcCalcForward(&opt, &sourceHalf, NULL, doseHalf, NULL, NULL, &summaryHalf);
 
-    CHECK(summaryAll.started == 20000);
-    CHECK(summaryHalf.started == 10000);
+    CHECK(summaryAll.started == 5000);
+    CHECK(summaryHalf.started == 2500);
 
     double totalAll = 0.0, totalHalf = 0.0;
     for (int i = 0; i < GRIDSIZE; i++) {
@@ -701,7 +701,7 @@ static void test_a_beamlet_source_runs_the_same_engine(void) {
     struct OmcSource source;
     omcBeamletHistoriesAsSource(&histories, &source);
 
-    struct OmcForwardOptions opt = optionsFor(20000);
+    struct OmcForwardOptions opt = optionsFor(5000);
     struct OmcForwardSummary summary;
 
     double *dose = malloc(GRIDSIZE*sizeof(double));
@@ -710,7 +710,7 @@ static void test_a_beamlet_source_runs_the_same_engine(void) {
                                   &summary);
 
     CHECK(finished == 1);
-    CHECK(summary.started == 20000);    /* every one of them is aimed in */
+    CHECK(summary.started == 5000);    /* every one of them is aimed in */
     CHECK(summary.blocked == 0);
 
     /* The engine gave back what prepare() took, so asking again would be a
@@ -757,7 +757,7 @@ static void test_an_open_mask_changes_nothing(void) {
     struct Made made;
     makeBeam(&made, 16, 6.0, 0);
 
-    struct OmcForwardOptions opt = optionsFor(20000);
+    struct OmcForwardOptions opt = optionsFor(2000);
     struct OmcPhspSampler sampler = samplerFor(&made.phsp);
     struct OmcSource source;
     omcPhspSamplerAsSource(&sampler, &source);
@@ -874,7 +874,7 @@ static void test_a_half_transmitting_mask_halves_the_dose(void) {
     struct Made made;
     makeBeam(&made, 16, 6.0, 0);
 
-    struct OmcForwardOptions opt = optionsFor(20000);
+    struct OmcForwardOptions opt = optionsFor(2000);
     struct OmcPhspSampler sampler = samplerFor(&made.phsp);
     struct OmcSource source;
     omcPhspSamplerAsSource(&sampler, &source);
@@ -940,7 +940,7 @@ static void test_roulette_gives_the_same_dose_more_cheaply(void) {
     struct Made made;
     makeBeam(&made, 16, 6.0, 0);
 
-    struct OmcForwardOptions opt = optionsFor(40000);
+    struct OmcForwardOptions opt = optionsFor(20000);
     struct OmcPhspSampler sampler = samplerFor(&made.phsp);
     struct OmcSource source;
     omcPhspSamplerAsSource(&sampler, &source);

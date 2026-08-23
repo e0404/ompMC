@@ -296,7 +296,7 @@ static void test_a_photon_pencil_builds_up_and_falls_off(void) {
     struct OmcSource source;
     omcPencilSourceAsSource(&pencil, &source);
 
-    struct OmcRadialOptions opt = optionsFor(40000);
+    struct OmcRadialOptions opt = optionsFor(15000);
     struct OmcForwardSummary summary;
 
     double *dose = malloc(NREG*sizeof(double));
@@ -306,8 +306,8 @@ static void test_a_photon_pencil_builds_up_and_falls_off(void) {
                                  &summary);
 
     CHECK(finished == 1);
-    CHECK(summary.nhist == 40000);
-    CHECK(summary.started == 40000);        /* all of them are aimed in */
+    CHECK(summary.nhist == 15000);
+    CHECK(summary.started == 15000);        /* all of them are aimed in */
     CHECK(summary.blocked == 0);
     CHECK(summary.energyFraction > 0.0 && summary.energyFraction < 1.0);
 
@@ -387,7 +387,7 @@ static void test_a_density_left_to_pegs_is_not_mistaken_for_air(void) {
         struct OmcSource source;
         omcPencilSourceAsSource(&pencil, &source);
 
-        struct OmcRadialOptions opt = optionsFor(20000);
+        struct OmcRadialOptions opt = optionsFor(5000);
         struct OmcForwardSummary summary;
 
         CHECK(omcCalcRadial(&opt, &source,
@@ -454,7 +454,7 @@ static void test_dose_falls_off_away_from_the_axis(void) {
     struct OmcSource source;
     omcPencilSourceAsSource(&pencil, &source);
 
-    struct OmcRadialOptions opt = optionsFor(40000);
+    struct OmcRadialOptions opt = optionsFor(15000);
     struct OmcForwardSummary summary;
 
     double *dose = malloc(NREG*sizeof(double));
@@ -499,14 +499,14 @@ static void test_an_electron_pencil_stops_near_its_range(void) {
     struct OmcSource source;
     omcPencilSourceAsSource(&pencil, &source);
 
-    struct OmcRadialOptions opt = optionsFor(20000);
+    struct OmcRadialOptions opt = optionsFor(10000);
     struct OmcForwardSummary summary;
 
     double *dose = malloc(NREG*sizeof(double));
     double *unc = malloc(NREG*sizeof(double));
 
     CHECK(omcCalcRadial(&opt, &source, NULL, dose, unc, NULL, &summary) == 1);
-    CHECK(summary.started == 20000);
+    CHECK(summary.started == 10000);
 
     /* An electron beam stopping in the phantom leaves nearly all of its
      energy there. */
@@ -566,14 +566,14 @@ static void test_an_ssd_source_spreads_the_beam(void) {
         struct OmcSource source;
         omcPencilSourceAsSource(&pencil, &source);
 
-        struct OmcRadialOptions opt = optionsFor(20000);
+        struct OmcRadialOptions opt = optionsFor(10000);
         struct OmcForwardSummary summary;
 
         double *dose = malloc(NREG*sizeof(double));
 
         CHECK(omcCalcRadial(&opt, &source, NULL, dose, NULL, NULL,
                             &summary) == 1);
-        CHECK(summary.started == 20000);
+        CHECK(summary.started == 10000);
 
         /* Energy rather than dose, so that the ring volumes do not have to
          be undone: dose is per unit mass and the outer rings are large. */
@@ -628,7 +628,7 @@ static void test_a_gaussian_spot_broadens_the_dose(void) {
         struct OmcSource source;
         omcPencilSourceAsSource(&pencil, &source);
 
-        struct OmcRadialOptions opt = optionsFor(20000);
+        struct OmcRadialOptions opt = optionsFor(10000);
         opt.outputDose = 0;             /* energy, so ring volumes drop out */
         struct OmcForwardSummary summary;
 
@@ -638,7 +638,7 @@ static void test_a_gaussian_spot_broadens_the_dose(void) {
                             &summary) == 1);
 
         if (!widened) {
-            CHECK(summary.started == 20000);
+            CHECK(summary.started == 10000);
         }
         else {
             /* A spot wide enough to matter spills over the edge of the
@@ -647,8 +647,8 @@ static void test_a_gaussian_spot_broadens_the_dose(void) {
              and still count towards the fluence the result is divided by --
              they are beam that missed, not beam that was never there. A
              Gaussian of 1.5 cm against a radius of 5 loses about 0.4%. */
-            CHECK(summary.started < 20000);
-            CHECK(summary.started > 19000);
+            CHECK(summary.started < 10000);
+            CHECK(summary.started > 9500);
         }
 
         double onAxis = 0.0, total = 0.0;
@@ -693,7 +693,7 @@ static void test_a_divergent_beam_widens_with_depth(void) {
     struct OmcSource source;
     omcPencilSourceAsSource(&pencil, &source);
 
-    struct OmcRadialOptions opt = optionsFor(40000);
+    struct OmcRadialOptions opt = optionsFor(15000);
     opt.outputDose = 0;
     struct OmcForwardSummary summary;
 
@@ -767,7 +767,7 @@ static void test_a_converging_beam_focuses_inside_the_phantom(void) {
         struct OmcSource source;
         omcPencilSourceAsSource(&pencil, &source);
 
-        struct OmcRadialOptions opt = optionsFor(40000);
+        struct OmcRadialOptions opt = optionsFor(15000);
         opt.outputDose = 0;             /* energy, so ring volumes drop out */
         struct OmcForwardSummary summary;
 
@@ -886,14 +886,14 @@ static void test_a_phase_space_drives_the_radial_engine(void) {
     struct OmcSource source;
     omcPhspSamplerAsSource(&sampler, &source);
 
-    struct OmcRadialOptions opt = optionsFor(20000);
+    struct OmcRadialOptions opt = optionsFor(10000);
     struct OmcForwardSummary summary;
 
     double *dose = malloc(NREG*sizeof(double));
     double *unc = malloc(NREG*sizeof(double));
 
     CHECK(omcCalcRadial(&opt, &source, NULL, dose, unc, NULL, &summary) == 1);
-    CHECK(summary.started == 20000);
+    CHECK(summary.started == 10000);
     CHECK(summary.energyFraction > 0.0 && summary.energyFraction < 1.0);
 
     double depth[NZR];
@@ -984,7 +984,7 @@ static void test_a_rerun_gives_the_same_answer(void) {
     struct OmcSource source;
     omcPencilSourceAsSource(&pencil, &source);
 
-    struct OmcRadialOptions opt = optionsFor(20000);
+    struct OmcRadialOptions opt = optionsFor(10000);
 
     double *first = malloc(NREG*sizeof(double));
     double *again = malloc(NREG*sizeof(double));

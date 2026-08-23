@@ -107,6 +107,11 @@ esave = 2.0
 # stop VRT
 
 # start ompMC environment
+# 'dose' (the default) writes Gy per incident history to a .rzdose file;
+# 'energy' writes the deposited energy it is worked out from, to .rzenergy.
+# Energy is what a run comparing rings wants: the annulus volumes grow with
+# radius, so a dose profile across the rings has that division in it already.
+# output quantity = dose
 data folder = ../../data/
 output folder = ../../output/
 # stop ompMC environment

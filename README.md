@@ -194,7 +194,9 @@ The `.rzdose` file is the `.3ddose` layout with the axis it does not have remove
 and slab counts, the ring boundaries, the depth boundaries, then the dose and its relative
 uncertainty with the ring running fastest. Dose is in Gy **per incident history** — not the
 dose per unit fluence `omc_dosxyz` reports, there being no field for a pencil beam to have a
-fluence over.
+fluence over. `output quantity = energy` writes the deposited energy it is worked out from
+instead, to a `.rzenergy` file, which is what comparing rings wants: the annulus volumes grow
+with radius, so a dose profile across the rings has that division in it already.
 
 ## Using `omc_matrad` from MATLAB
 
