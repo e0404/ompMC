@@ -157,17 +157,32 @@ what a `v*` tag is cut from.
 1. **Branch.** `rc/<version>` off `develop` — `rc/0.3.0`, not `release/0.3.0`.
    The release candidate is what gets reviewed, so `develop` stays open for
    new work while it is.
-2. **Bump.** The version lives in exactly one place, the `project(ompMC
-   VERSION ...)` call in `CMakeLists.txt`. `pyproject.toml` (through
-   scikit-build-core's regex provider), `docs/conf.py` and the C code's
-   `OMPMC_VERSION_STRING` all read it from there, so nothing else is edited.
-   `CITATION.cff` carries no version field on purpose.
-3. **Changelog.** `CHANGELOG.md` is Keep a Changelog: rename `## [Unreleased]`
-   to `## [<version>] - <date>`, open a fresh empty `Unreleased`, and update
-   the two link references at the bottom of the file.
-4. **Merge, then tag.** PR the `rc/` branch into `master`, and only tag once it
-   is merged. Merge `master` back into `develop` afterwards, so the two do not
-   drift.
+2. **PR, carrying no version at all.** Open it into `master` straight away,
+   with none of the step below in it. What is under review is the content
+   going out, and that reads perfectly well without a version number on it.
+3. **Bump, once that is approved.** One commit, carrying the version and the
+   changelog entry that says what it is: a version without its entry describes
+   nothing, and an entry without its version belongs to no release.
+
+   The version lives in exactly one place, the `project(ompMC VERSION ...)`
+   call in `CMakeLists.txt` — `pyproject.toml` (through scikit-build-core's
+   regex provider), `docs/conf.py` and the C code's `OMPMC_VERSION_STRING` all
+   read it from there, so nothing else is edited, and `CITATION.cff` carries no
+   version field on purpose. `CHANGELOG.md` is Keep a Changelog: rename
+   `## [Unreleased]` to `## [<version>] - <date>`, open a fresh empty
+   `Unreleased`, and update the two link references at the bottom of the file.
+4. **Merge, then tag.** Only tag once the PR is merged. Merge `master` back
+   into `develop` afterwards, so the two do not drift.
+
+**The bump waits for the approval.** Step 3 is mechanical, and it is tempting
+to have it done before anyone looks — but a release branch that carries a
+version before the release is agreed gets two things wrong. The date
+in `## [<version>] - <date>` becomes the day the branch was cut rather than the
+day the release went out, and review and CI are asynchronous enough for those
+to differ by days. And the number itself is a claim ahead of its evidence: if
+the review changes what ships, because something turns out to be breaking or
+because something gets pulled, it can be the wrong number heading the wrong
+list of changes.
 
 **A tag is a publication, not a bookmark.** Pushing `v<version>` triggers two
 irreversible things, so it is the last step rather than a way to mark a

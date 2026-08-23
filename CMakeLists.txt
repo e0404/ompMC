@@ -21,7 +21,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ompMC
-    VERSION 0.3.0
+    VERSION 0.4.0
     DESCRIPTION "An OpenMP parallel implementation for Monte Carlo particle transport simulations"
     HOMEPAGE_URL "https://github.com/e0404/ompMC"
     LANGUAGES C)
