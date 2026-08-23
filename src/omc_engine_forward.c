@@ -22,6 +22,7 @@
 #include "omc_engine_forward.h"
 
 #include "omc_collimator.h"
+#include "omc_engine_batches.h"
 #include "omc_geom.h"
 #include "omc_host.h"
 #include "omc_random.h"
@@ -40,15 +41,17 @@
  when the caller is asked whether to carry on. The random stream is indexed by
  a history number that has to be unique over the whole run for the answer not
  to depend on how OpenMP handed the histories out, so it is worth having in
- one place rather than once per kind of source. */
+ one place rather than once per kind of source.
 
-/*! @return 1 if the progress callback stopped the run. */
-static int runBatches(struct OmcSource *source,
-                      const struct OmcBeamModifier *modifier,
-                      int nbatch, int nperbatch,
-                      const struct OmcForwardCallbacks *callbacks,
-                      unsigned long long *started,
-                      unsigned long long *blocked) {
+ It lives here, and is declared in omc_engine_batches.h, because the radial
+ engine runs the very same loop: the only thing that differs between the two
+ is the shape of the phantom underneath and how the result is written out. */
+int omcEngineRunBatches(struct OmcSource *source,
+                        const struct OmcBeamModifier *modifier,
+                        int nbatch, int nperbatch,
+                        const struct OmcForwardCallbacks *callbacks,
+                        unsigned long long *started,
+                        unsigned long long *blocked) {
 
     unsigned long long nstarted = 0;
     unsigned long long nblocked = 0;
@@ -195,8 +198,8 @@ int omcCalcForward(const struct OmcForwardOptions *opt,
 
     unsigned long long started = 0;
     unsigned long long blocked = 0;
-    int aborted = runBatches(source, modifier, nbatch, nperbatch, callbacks,
-                             &started, &blocked);
+    int aborted = omcEngineRunBatches(source, modifier, nbatch, nperbatch,
+                                      callbacks, &started, &blocked);
 
     if (!aborted && blocked > 0) {
         omcLog(OMC_LOG_DETAIL, "%llu of %d histories were stopped by the "

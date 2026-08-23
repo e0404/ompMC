@@ -1,6 +1,6 @@
 """ompMC - OpenMP parallel Monte Carlo photon and electron transport.
 
-Four calculations are available, sharing the same phantom and physics:
+Five calculations are available, sharing the same physics:
 
 ``calc_dij``
     One sparse column of dose per beamlet, the dose influence matrix a
@@ -13,8 +13,13 @@ Four calculations are available, sharing the same phantom and physics:
     from a spectrum through an aperture.
 ``calc_cube``
     Dose everywhere in the phantom from a single collimated beam.
+``calc_radial``
+    Dose in a cylinder, binned into rings and depth slabs rather than voxels
+    -- what a pencil beam distribution wants, since the dose around a narrow
+    beam is exactly what a rectilinear grid is worst at. Takes a
+    ``CylinderGeometry`` rather than a ``Geometry``.
 
-All take the phantom as numpy arrays::
+The first four take the phantom as numpy arrays::
 
     import numpy as np, ompmc
 
@@ -35,6 +40,7 @@ Material indices count from 1, matching matRad's ``cubeMatIx``; 0 means vacuum.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,9 +52,11 @@ from . import _ompmc
 
 __all__ = [
     "Geometry",
+    "CylinderGeometry",
     "Spectrum",
     "BeamletSource",
     "CollimatedSource",
+    "PencilBeamSource",
     "PhaseSpaceSource",
     "ApertureMask",
     "Physics",
@@ -57,6 +65,7 @@ __all__ = [
     "calc_forward",
     "calc_forward_phsp",
     "calc_cube",
+    "calc_radial",
     "data_path",
     "__version__",
 ]
@@ -225,6 +234,91 @@ class Geometry:
     def n_voxels(self) -> int:
         """Total number of voxels, ``nx * ny * nz``."""
         return int(self.density.size)
+
+
+@dataclass
+class CylinderGeometry:
+    """A homogeneous cylinder, binned into rings and depth slabs.
+
+    The phantom :func:`calc_radial` transports in. It sits about the z axis
+    with its front face at ``z_bounds[0]`` and depth running along +z, which
+    is the direction the beams in :class:`PencilBeamSource` travel.
+
+    Rings rather than voxels because of what a narrow beam does to a
+    rectilinear grid: dose falls by orders of magnitude over the first few
+    millimetres off the axis, so following it needs voxels far finer than the
+    rest of the phantom will ever need. A ring is the natural bin for it, and
+    -- being the transport's own region rather than a sum over voxels
+    afterwards -- comes with an uncertainty the batch statistics can actually
+    speak for.
+
+    Parameters
+    ----------
+    r_bounds : array_like
+        Ring boundaries in cm, ascending, starting at 0. There is no hollow
+        middle: the innermost ring reaches the axis.
+    z_bounds : array_like
+        Depth slab boundaries in cm, ascending.
+    material : str
+        Name of the PEGS medium the cylinder is made of, e.g.
+        ``"H2O700ICRU"``.
+    density : float, optional
+        Mass density in g/cm^3. Left out, the medium's own PEGS density is
+        used.
+
+    Raises
+    ------
+    ValueError
+        If either boundary list does not ascend, if `r_bounds` does not start
+        at the axis, or if `density` is not positive.
+
+    Examples
+    --------
+    Fine rings on the beam and coarse ones out where the dose has gone::
+
+        geometry = ompmc.CylinderGeometry(
+            r_bounds=[0, 0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 5.0],
+            z_bounds=np.linspace(0.0, 20.0, 41),
+            material="H2O700ICRU",
+            density=1.0,
+        )
+    """
+
+    r_bounds: np.ndarray
+    z_bounds: np.ndarray
+    material: str
+    density: float | None = None
+
+    def __post_init__(self) -> None:
+        self.r_bounds = _as_bounds(self.r_bounds, "r_bounds")
+        self.z_bounds = _as_bounds(self.z_bounds, "z_bounds")
+
+        # Region 0 already means "outside the phantom", so there is nothing
+        # left for a hole in the middle to be.
+        if self.r_bounds[0] != 0.0:
+            raise ValueError(
+                f"r_bounds must start at the axis, r = 0, not "
+                f"{self.r_bounds[0]!r}: a cylinder with a hole in it is not "
+                f"something ompMC can transport")
+
+        if not isinstance(self.material, str) or not self.material:
+            raise ValueError("material must be a non-empty PEGS medium name")
+
+        if self.density is not None:
+            self.density = float(self.density)
+            if not self.density > 0.0:
+                raise ValueError(
+                    f"density must be positive, got {self.density!r}")
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        """Rings and depth slabs, as ``(n_rings, n_slabs)``."""
+        return (self.r_bounds.size - 1, self.z_bounds.size - 1)
+
+    @property
+    def n_regions(self) -> int:
+        """Number of scoring regions, i.e. rings times slabs."""
+        return (self.r_bounds.size - 1)*(self.z_bounds.size - 1)
 
 
 @dataclass
@@ -443,6 +537,287 @@ class CollimatedSource:
             raise ValueError(f"ssd is {self.ssd} cm, it must be positive")
         if self.x_max < self.x_min or self.y_max < self.y_min:
             raise ValueError("the collimator opening has negative width")
+
+
+@dataclass
+class PencilBeamSource:
+    """A beam down the axis of a :class:`CylinderGeometry`.
+
+    Two beams, distinguished by whether an `ssd` is given. Without one it is a
+    parallel pencil of no width, every particle entering at r = 0 travelling
+    along +z, which is what a dose kernel is defined for. With one it is a
+    point source that far upstream of the front face, illuminating a disc on
+    it -- what a real machine looks like.
+
+    Either delta a real beam does not have can be widened into a Gaussian,
+    independently of the other: `spot_sigma` gives it a width, and
+    `divergence_sigma` gives it an angular spread. Both default to a delta,
+    and a delta draws no random numbers, so a beam that asks for neither is
+    exactly the beam it would have been without them.
+
+    A beam with both can also be given a `correlation` between the two, which
+    is what moves its waist off the front face. :meth:`focused` says the same
+    thing the way beam data usually comes: where the waist is and how narrow
+    it is there.
+
+    Parameters
+    ----------
+    ssd : float, optional
+        Distance from the point source to the front face, in cm. Left out,
+        the beam is a parallel pencil instead.
+    field_radius : float, optional
+        Radius of the disc illuminated on the front face, in cm. Only
+        meaningful with an `ssd`; left out, the whole face is illuminated.
+    spot_sigma : float, optional
+        Standard deviation of the starting position, in cm, spread as a round
+        two-dimensional Gaussian across the beam. A parallel pencil is defined
+        on the front face and starts its particles there, so this is the width
+        of the beam where it enters; a point source starts its particles on
+        its focal spot, so this is the size of that. Left out, the beam has no
+        width.
+    divergence_sigma : float, optional
+        Standard deviation of the direction, in **radians**, spread as a round
+        two-dimensional Gaussian about the nominal one. Left out, the beam
+        does not diverge.
+    correlation : float, optional
+        How strongly where a particle starts predicts where it is going, from
+        -1 to 1. Negative converges onto a waist inside the phantom, positive
+        has already passed its waist upstream, and the default of 0 puts the
+        waist on the front face. The same correlation applies in both
+        transverse planes, which is what keeps the beam round.
+
+    Raises
+    ------
+    ValueError
+        If `ssd`, `field_radius`, `spot_sigma` or `divergence_sigma` is not
+        positive, if a `field_radius` is given without an `ssd`, or if a
+        `correlation` is outside [-1, 1] or given without both a `spot_sigma`
+        and a `divergence_sigma` for it to relate.
+
+    Warnings
+    --------
+    The point source spreads its particles evenly over the disc it
+    illuminates -- uniform fluence on the entrance plane, the same convention
+    :class:`CollimatedSource` follows. That is not an isotropic point source,
+    whose fluence would fall off with the inverse square across the field, and
+    the difference shows at short SSD.
+
+    See Also
+    --------
+    focused : The same beam, described by where its waist is.
+
+    Notes
+    -----
+    The width at a distance `s` downstream of where the beam is specified is
+
+    .. math::
+
+        \\sigma^2(s) = \\sigma^2 + 2 s \\rho \\sigma \\sigma'
+                       + s^2 \\sigma'^2
+
+    for `spot_sigma` :math:`\\sigma`, `divergence_sigma` :math:`\\sigma'` and
+    `correlation` :math:`\\rho` -- the transport then widens it further, since
+    what a detector at depth sees is that convolved with the scattering
+    kernel. Without a correlation the beam only ever gets wider, which makes
+    it a blurred pencil rather than a beam with emittance.
+
+    A spot wide enough to reach past the edge of the cylinder will put some
+    particles outside it, and a parallel one that starts outside never enters.
+    Those histories still count towards the fluence the result is divided by;
+    :class:`RunSummary` reports how many of them there were.
+
+    Examples
+    --------
+    The kernel case, a 4 cm field at 100 cm, and a beam of finite emittance::
+
+        pencil = ompmc.PencilBeamSource()
+        machine = ompmc.PencilBeamSource(ssd=100.0, field_radius=4.0)
+        real = ompmc.PencilBeamSource(spot_sigma=0.15, divergence_sigma=0.01)
+    """
+
+    ssd: float | None = None
+    field_radius: float | None = None
+    spot_sigma: float | None = None
+    divergence_sigma: float | None = None
+    correlation: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.ssd is not None:
+            self.ssd = float(self.ssd)
+            if not self.ssd > 0.0:
+                raise ValueError(f"ssd must be positive, got {self.ssd!r}")
+
+        if self.field_radius is not None:
+            if self.ssd is None:
+                raise ValueError(
+                    "field_radius only means something for a point source; "
+                    "give an ssd as well, or leave both out for a parallel "
+                    "pencil beam")
+
+            self.field_radius = float(self.field_radius)
+            if not self.field_radius > 0.0:
+                raise ValueError(
+                    f"field_radius must be positive, got "
+                    f"{self.field_radius!r}")
+
+        for name in ("spot_sigma", "divergence_sigma"):
+            value = getattr(self, name)
+            if value is not None:
+                value = float(value)
+                if not value > 0.0:
+                    raise ValueError(
+                        f"{name} must be positive, got {value!r}; leave it "
+                        f"out for a beam with no spread at all")
+                setattr(self, name, value)
+
+        self.correlation = float(self.correlation)
+        if not -1.0 <= self.correlation <= 1.0:
+            raise ValueError(
+                f"correlation must lie between -1 and 1, got "
+                f"{self.correlation!r}")
+
+        # The core ignores a correlation it cannot apply. Refusing it here
+        # instead, because in Python it is far more likely to be a beam that
+        # was meant to have a waist and quietly did not.
+        if self.correlation != 0.0 and (self.spot_sigma is None
+                                        or self.divergence_sigma is None):
+            raise ValueError(
+                "correlation relates where a particle starts to where it is "
+                "going, so it needs both a spot_sigma and a "
+                "divergence_sigma; give both, or leave the correlation out")
+
+    @classmethod
+    def focused(cls, waist_sigma: float, divergence_sigma: float,
+                waist_depth: float, **kwargs) -> "PencilBeamSource":
+        """Build a beam from where it is narrowest.
+
+        The mirror of the constructor: beam data is usually quoted as a waist
+        somewhere and an angular spread, rather than as the width on the
+        phantom surface and a correlation. This converts the one into the
+        other -- the returned beam has exactly `waist_sigma` at
+        `waist_depth`.
+
+        Parameters
+        ----------
+        waist_sigma : float
+            Width at the waist, in cm. Must be positive.
+        divergence_sigma : float
+            Angular spread, in **radians**. Must be positive.
+        waist_depth : float
+            How far past the front face the waist sits, in cm. Positive is
+            inside the phantom, 0 puts it on the face, and negative puts it
+            upstream.
+        **kwargs
+            Passed on to the constructor. Not `ssd`: see below.
+
+        Returns
+        -------
+        PencilBeamSource
+            A parallel pencil with the `spot_sigma` and `correlation` that
+            put the waist there.
+
+        Raises
+        ------
+        ValueError
+            If `waist_sigma` or `divergence_sigma` is not positive, or if an
+            `ssd` is given.
+
+        Examples
+        --------
+        A beam that comes to a 1 mm waist 5 cm into the phantom::
+
+            beam = ompmc.PencilBeamSource.focused(0.1, 0.02, 5.0)
+
+        Notes
+        -----
+        There is no waist a real divergence cannot reach: the correlation
+        this produces always comes out inside [-1, 1].
+
+        This is a parallel-pencil description and refuses an `ssd`, because a
+        point source's spot does not set where its beam is. Each particle
+        leaves the focal spot aimed at a point on the illuminated disc, so it
+        arrives at that point however far across the spot it set off from --
+        the spot cancels over the SSD exactly. What it blurs there is the
+        direction, and the width on the face is the field radius. There is no
+        waist in this sense to place; give `spot_sigma` and `correlation`
+        directly if you want a point source's focal spot correlated with its
+        divergence.
+        """
+        waist_sigma = float(waist_sigma)
+        divergence_sigma = float(divergence_sigma)
+
+        if not waist_sigma > 0.0:
+            raise ValueError(
+                f"waist_sigma must be positive, got {waist_sigma!r}")
+        if not divergence_sigma > 0.0:
+            raise ValueError(
+                f"divergence_sigma must be positive, got "
+                f"{divergence_sigma!r}")
+
+        if kwargs.get("ssd") is not None:
+            raise ValueError(
+                "focused() describes a parallel pencil, whose width on the "
+                "front face is what the waist is measured against. A point "
+                "source's spot does not set where its beam is -- every "
+                "particle arrives at the point on the field it was aimed at, "
+                "whatever the spot did to where it started -- so there is no "
+                "waist here to place. Give spot_sigma and correlation "
+                "directly for a point source.")
+
+        # var(s) is smallest at s = -rho sigma / sigma', where it is
+        # sigma^2 (1 - rho^2); solving both for sigma and rho gives this.
+        drift = float(waist_depth)*divergence_sigma
+        spot_sigma = math.hypot(waist_sigma, drift)
+
+        return cls(spot_sigma=spot_sigma,
+                   divergence_sigma=divergence_sigma,
+                   correlation=-drift/spot_sigma, **kwargs)
+
+    @property
+    def waist(self) -> tuple[float, float]:
+        """Where the beam is narrowest, as ``(sigma, depth)`` in cm.
+
+        The inverse of :meth:`focused`, and 0 depth for any beam that was not
+        given a correlation. Depth is measured from the front face, so a
+        negative one is a beam that is already spreading when it arrives.
+
+        Raises
+        ------
+        ValueError
+            If this is a point source. Its spot is a focal spot rather than a
+            width on the phantom, and does not describe a waist; see
+            :meth:`focused`.
+        """
+        if self.ssd is not None:
+            raise ValueError(
+                "a point source has no waist in this sense: its spot is the "
+                "focal spot, and the width of its beam on the front face is "
+                "the field radius rather than anything the spot sets")
+
+        if not self.spot_sigma or not self.divergence_sigma:
+            return (self.spot_sigma or 0.0, 0.0)
+
+        rho = self.correlation
+
+        return (self.spot_sigma*math.sqrt(1.0 - rho*rho),
+                -rho*self.spot_sigma/self.divergence_sigma)
+
+    @property
+    def _payload(self) -> dict:
+        return {
+            "kind": 1 if self.ssd is not None else 0,
+            "ssd": float(self.ssd) if self.ssd is not None else 0.0,
+            # 0 is how the core spells "the whole front face"
+            "field_radius": (float(self.field_radius)
+                             if self.field_radius is not None else 0.0),
+            # and how it spells "no spread", which draws no random numbers
+            "spot_sigma": (float(self.spot_sigma)
+                           if self.spot_sigma is not None else 0.0),
+            "divergence_sigma": (float(self.divergence_sigma)
+                                 if self.divergence_sigma is not None
+                                 else 0.0),
+            "correlation": float(self.correlation),
+        }
 
 
 @dataclass
@@ -1298,3 +1673,144 @@ def calc_cube(
     shape = geometry.shape
     return (dose.reshape(shape, order="F"),
             uncertainty.reshape(shape, order="F"))
+
+
+def calc_radial(
+    geometry: CylinderGeometry,
+    source: PencilBeamSource | PhaseSpaceSource,
+    spectrum: Spectrum | None = None,
+    physics: Physics | None = None,
+    *,
+    n_histories: int = 10_000,
+    n_batches: int = 10,
+    charge: int = 0,
+    output_dose: bool = True,
+    collimator: ApertureMask | None = None,
+    progress: Callable[[float], bool | None] | None = None,
+    verbosity: int = 0,
+):
+    """Calculate the dose in a cylinder, by radial ring and depth slab.
+
+    The r-z counterpart of :func:`calc_forward`, and what a pencil beam dose
+    distribution wants: the rings are the transport's own regions, so each one
+    gets its uncertainty from the batch statistics directly rather than from
+    summing correlated voxels afterwards.
+
+    Any source will do. :class:`PencilBeamSource` gives the two beams that
+    shine down the axis; :class:`PhaseSpaceSource` replays a file, moved into
+    the phantom's coordinate system by its own transform.
+
+    Parameters
+    ----------
+    geometry : CylinderGeometry
+        The cylinder, its rings and its depth slabs.
+    source : PencilBeamSource or PhaseSpaceSource
+        Where the particles come from.
+    spectrum : Spectrum, optional
+        Energies for a :class:`PencilBeamSource`, defaulting to
+        :meth:`Spectrum.default`. Must not be given with a
+        :class:`PhaseSpaceSource`, which carries its own energies.
+    physics : Physics, optional
+        Transport parameters and data file locations. Defaults to
+        ``Physics()``.
+    n_histories : int, optional
+        Histories simulated. A history whose particle misses the phantom, or
+        which the collimator stops, still counts as one.
+    n_batches : int, optional
+        Statistical batches, at least 2, needed for the uncertainty estimate.
+    charge : int, optional
+        0 for photons, -1 for electrons, +1 for positrons. Ignored for a
+        phase space, which carries its own particle types.
+    output_dose : bool, optional
+        If true, dose per incident history in Gy. If false, the mean
+        deposited energy.
+    collimator : ApertureMask, optional
+        Something in the beam's way.
+    progress : callable, optional
+        Called with the fraction finished, in ``[0, 1]``, once per batch.
+        Returning ``False`` stops the calculation.
+    verbosity : int, optional
+        Log level passed to the engine.
+
+    Returns
+    -------
+    dose : numpy.ndarray
+        Shaped ``(n_rings, n_slabs)``, in Gy per incident history.
+    uncertainty : numpy.ndarray
+        Shaped ``(n_rings, n_slabs)``, the relative uncertainty of `dose`, and
+        0.9999999 where nothing was deposited.
+    summary : RunSummary
+        What became of the histories.
+
+    Raises
+    ------
+    ValueError
+        If `n_batches`, `n_histories` or `charge` are out of range, or if a
+        `spectrum` is given together with a :class:`PhaseSpaceSource`.
+    RuntimeError
+        If the geometry or the source is one the engine cannot run.
+    KeyboardInterrupt
+        If `progress` returned false, or Ctrl-C was pressed, before any result
+        was available.
+
+    Notes
+    -----
+    The result is the dose one incident particle delivers, not the dose per
+    unit fluence :func:`calc_cube` reports -- there is no field for a pencil
+    beam to have a fluence over.
+
+    Examples
+    --------
+    The depth dose on the axis of a 6 MV photon pencil in water::
+
+        geometry = ompmc.CylinderGeometry(
+            r_bounds=np.linspace(0.0, 5.0, 21),
+            z_bounds=np.linspace(0.0, 20.0, 41),
+            material="H2O700ICRU", density=1.0)
+
+        dose, unc, summary = ompmc.calc_radial(
+            geometry, ompmc.PencilBeamSource(), n_histories=1_000_000)
+
+        depth_dose_on_axis = dose[0, :]
+    """
+    from_phsp = isinstance(source, PhaseSpaceSource)
+
+    _check_run(n_histories, n_batches, 0 if from_phsp else charge)
+
+    if from_phsp and spectrum is not None:
+        raise ValueError(
+            "a phase space carries the energy of every particle it holds, so "
+            "it takes no spectrum")
+
+    if not from_phsp:
+        spectrum = spectrum or Spectrum.default()
+
+    physics = physics or Physics()
+
+    options = {
+        "n_histories": int(n_histories),
+        "n_batches": int(n_batches),
+        "charge": int(charge),
+        "output_dose": bool(output_dose),
+    }
+
+    (dose, uncertainty, completed, nhist, started, blocked,
+     fraction) = _ompmc.calc_radial(
+        geometry.r_bounds, geometry.z_bounds, geometry.material,
+        # 0 is how the core spells "whatever the PEGS data says it weighs"
+        float(geometry.density) if geometry.density is not None else 0.0,
+        source._payload, options, physics.input_items(),
+        None if from_phsp else spectrum._payload,
+        collimator._payload if collimator is not None else None,
+        progress, int(verbosity),
+    )
+
+    if not completed:
+        raise KeyboardInterrupt(
+            "the calculation was stopped before any result was available")
+
+    shape = geometry.shape
+    return (dose.reshape(shape, order="F"),
+            uncertainty.reshape(shape, order="F"),
+            RunSummary(int(nhist), int(started), int(blocked),
+                       float(fraction)))

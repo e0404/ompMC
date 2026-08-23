@@ -37,6 +37,7 @@ include(CheckIPOSupported)
 ################################################################################
 
 option(OMPMC_BUILD_DOSXYZ "Build the omc_dosxyz command line user code" ON)
+option(OMPMC_BUILD_DOSRZ "Build the omc_dosrz command line user code" ON)
 option(OMPMC_WITH_OPENMP "Build with OpenMP multi threading support" ON)
 option(OMPMC_NATIVE_TUNING
     "Tune the generated code for the building machine (-mtune=native)" OFF)
@@ -157,15 +158,18 @@ add_library(ompmc_core STATIC
     src/omc_score.c
     src/omc_host.c
     src/omc_geom.c
+    src/omc_geom_cyl.c
     src/omc_spectrum.c
     src/omc_phsp.c
     src/omc_collimator.c
     src/omc_source.c
     src/omc_source_beamlet.c
+    src/omc_source_pencil.c
     src/omc_source_phsp.c
     src/omc_engine_dij.c
     src/omc_engine_cube.c
-    src/omc_engine_forward.c)
+    src/omc_engine_forward.c
+    src/omc_engine_radial.c)
 
 target_include_directories(ompmc_core PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -343,6 +347,22 @@ if(OMPMC_BUILD_DOSXYZ)
         message(STATUS "No system getopt_long(), using the bundled replacement")
         target_sources(omc_dosxyz PRIVATE src/compat/getopt.c)
         target_include_directories(omc_dosxyz PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/compat")
+    endif()
+endif()
+
+################################################################################
+# omc_dosrz - command line user code for r-z dose in a cylinder
+################################################################################
+
+if(OMPMC_BUILD_DOSRZ)
+    add_executable(omc_dosrz ucodes/omc_dosrz/omc_dosrz.c)
+    target_link_libraries(omc_dosrz PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(omc_dosrz)
+
+    if(NOT OMPMC_HAVE_GETOPT_LONG)
+        target_sources(omc_dosrz PRIVATE src/compat/getopt.c)
+        target_include_directories(omc_dosrz PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/src/compat")
     endif()
 endif()
@@ -699,6 +719,51 @@ if(OMPMC_BUILD_TESTS)
 
     add_test(NAME unit COMMAND test_ompmc)
 
+    # Reads nothing but the geometry and the stack, so unlike the engine tests
+    # below it needs no PEGS data and no particular working directory.
+    add_executable(test_omc_geom_cyl tests/test_omc_geom_cyl.c)
+    target_link_libraries(test_omc_geom_cyl
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_geom_cyl)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_geom_cyl PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME geom_cyl COMMAND test_omc_geom_cyl)
+
+    # Samples particles but transports none, so it too runs anywhere.
+    add_executable(test_omc_source_pencil tests/test_omc_source_pencil.c)
+    target_link_libraries(test_omc_source_pencil
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_source_pencil)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_source_pencil PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME pencil_source COMMAND test_omc_source_pencil)
+
+    # Transports for real, so it needs the PEGS and cross section data and
+    # runs from the repository root like the other engine tests.
+    add_executable(test_omc_engine_radial tests/test_omc_engine_radial.c)
+    target_link_libraries(test_omc_engine_radial
+        PRIVATE ompmc_core ${OMPMC_OPENMP_RUNTIME})
+    ompmc_enable_lto(test_omc_engine_radial)
+
+    if(MSVC)
+        target_compile_definitions(test_omc_engine_radial PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _USE_MATH_DEFINES)
+    endif()
+
+    add_test(NAME radial COMMAND test_omc_engine_radial
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
     # Writes most of the phase space files it reads, next to itself, but the
     # small committed one it also reads stays in the source tree.
     add_executable(test_omc_phsp tests/test_omc_phsp.c)
@@ -810,6 +875,40 @@ if(OMPMC_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     endif()
 
+    # The same for the r-z user code, and for the same reason.
+    if(OMPMC_BUILD_DOSRZ)
+        add_test(NAME dosrz_smoke
+            COMMAND omc_dosrz -i ucodes/omc_dosrz/smoke_test -o smoke_rz
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+        # The smoke deck takes one path through the input file: a pencil beam,
+        # uniform bins, one energy, a stated density. These take the others --
+        # a point source, boundaries written out in full, a spectrum file, a
+        # density left to PEGS, a phase space, a waist, the energy output.
+        # They transport a few hundred histories each, so between them they
+        # cost about as much as one more data load; what they are testing is
+        # that the keys parse and reach the engine.
+        foreach(deck point waist phsp)
+            add_test(NAME dosrz_${deck}
+                COMMAND omc_dosrz
+                    -i ucodes/omc_dosrz/coverage_${deck} -o coverage_${deck}
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+        endforeach()
+
+        # And two the user code has to turn down rather than quietly run: a
+        # beam described as a waist and as the spot that waist sets, and a
+        # point source given a waist at all. WILL_FAIL, so accepting either
+        # one is a failing test and not a silently different beam.
+        foreach(deck waist_clash waist_point)
+            add_test(NAME dosrz_refuse_${deck}
+                COMMAND omc_dosrz
+                    -i ucodes/omc_dosrz/refuse_${deck} -o refuse_${deck}
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+            set_tests_properties(dosrz_refuse_${deck}
+                PROPERTIES WILL_FAIL TRUE)
+        endforeach()
+    endif()
+
     # Drives the Octave .mex through the same test_omc_matrad_mex.m the MATLAB
     # build uses: loading the file, a real dose calculation, the progress
     # callback and releasing the file afterwards. Octave exits nonzero when
@@ -853,6 +952,10 @@ if(OMPMC_BUILD_DOSXYZ)
     install(TARGETS omc_dosxyz RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 endif()
 
+if(OMPMC_BUILD_DOSRZ)
+    install(TARGETS omc_dosrz RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
+
 if(OMPMC_MEX_ENABLED)
     install(TARGETS omc_matrad
         LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}"
@@ -878,6 +981,7 @@ message(STATUS "  openlibm         : ${OMPMC_WITH_OPENLIBM}")
 message(STATUS "  Tests            : ${OMPMC_BUILD_TESTS}")
 message(STATUS "  Coverage         : ${OMPMC_COVERAGE}")
 message(STATUS "  omc_dosxyz       : ${OMPMC_BUILD_DOSXYZ}")
+message(STATUS "  omc_dosrz        : ${OMPMC_BUILD_DOSRZ}")
 message(STATUS "  omc_matrad (mex) : ${OMPMC_MEX_ENABLED}")
 if(OMPMC_MEX_ENABLED AND OMPMC_OPENMP_ENABLED)
     message(STATUS "    OpenMP runtime : ${OMPMC_MEX_OPENMP_SOURCE}")

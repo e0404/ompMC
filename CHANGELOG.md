@@ -7,6 +7,156 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A cylindrical r-z geometry, `omc_geom_cyl`, beside the rectilinear voxel
+  grid: concentric rings about the beam axis, stacked in depth slabs. It is
+  the shape a pencil beam wants. Dose around a narrow beam falls by orders of
+  magnitude over the first few millimetres off the axis, so a voxel grid fine
+  enough to follow it there is far finer than the rest of the phantom will
+  ever need — and rebinning the cube into rings afterwards costs the
+  uncertainty, the voxels summed into a ring being correlated in a way the
+  batch statistics cannot then speak for. Scoring the rings directly avoids
+  both: they are the transport's own regions, so each gets its batch variance
+  from exactly the machinery every other ompMC geometry uses. There is no
+  azimuthal binning and no hole in the middle — region 0 already means
+  "outside the phantom", so the innermost ring reaches the axis.
+  `howfar()`, `hownear()` and `regionIndex()` now ask `struct Geom::mode`
+  which shape they are answering for, rather than one geometry or the other
+  being linked in, because a single `ompmc_core` has to serve a host that
+  does both — sometimes in the same process. The mode is set by
+  `omcGeomCylInit()` or by `omcGeomDetectSpacing()`, which every loader of a
+  voxel grid already calls, so no host has to remember to reset it. The
+  rectilinear geometry is otherwise untouched: `omc_dosxyz`'s smoke dose file
+  is byte for byte what it was.
+- `omc_engine_radial`, which is to a cylinder what `omc_engine_forward` is to
+  a voxel cube: one run over a whole source, one dense `nr` by `nz` result,
+  indexed `ir + iz*nr` with the ring running fastest. It runs the same history
+  loop as the forward engine — extracted into `omcEngineRunBatches()` rather
+  than copied, since which random stream a history gets is the last thing that
+  should exist in two versions. `omcScoreToRadial()` keeps every convention
+  `omcScoreToCube()` has, including the `0.9999999` relative uncertainty an
+  empty region carries; the annulus mass is the only thing that differs.
+- `omc_source_pencil`, the two beams that shine down the axis: a parallel
+  pencil of no width, which is what a dose kernel is defined for, and a point
+  source at a given SSD illuminating a disc on the front face. A phase space
+  (`omc_source_phsp`) drives the radial engine too, with no changes of its
+  own — carrying a particle into the phantom is `omcSourcePlace()`'s job, and
+  it now knows about cylinders.
+
+  Either delta a real beam does not have can be widened into a Gaussian,
+  independently of the other: `spotSigma` gives the beam a width and
+  `divergenceSigma` an angular spread (`spot sigma` and `divergence sigma` in
+  an input file, `spot_sigma=` and `divergence_sigma=` in Python). Both are
+  round two-dimensional Gaussians, which matters because the rings have no
+  azimuthal binning and an asymmetric source would be averaged away silently
+  rather than showing up in the result.
+
+  Two things about them are worth knowing. The position means what it should
+  for each beam rather than the same thing for both: a parallel pencil is
+  defined on the front face and starts its particles there, having no source
+  point to be upstream of, so the spot is the width of the beam where it
+  enters; a point source starts its particles on its focal spot, an SSD away,
+  so the spot is the size of that. And a zero draws no random numbers at all,
+  exactly as a monoenergetic spectrum does not, so a beam that asks for
+  neither spread gives bit for bit the result it gave before either existed.
+
+  A beam with both can also relate them, with `correlation` (`correlation` in
+  an input file, `correlation=` in Python) — how strongly where a particle
+  starts predicts where it is going, from -1 to 1. It is the difference
+  between a blurred pencil and a beam with emittance: uncorrelated, the width
+
+      var(s) = sigma^2 + 2 s rho sigma sigma' + s^2 sigma'^2
+
+  can only grow with depth, so the beam is at its narrowest where it starts
+  and the waist sits on the phantom surface whether that was intended or not.
+  A negative correlation converges onto a waist inside the phantom instead, a
+  positive one has already passed its waist upstream. The same correlation
+  applies in both transverse planes, which is what keeps the beam round — the
+  rings have no azimuthal binning to record anything else.
+
+  Since beam data is more often quoted as a waist than as a correlation,
+  `omcPencilWaist()` converts: give it how narrow the beam gets, how much it
+  diverges and how far in the waist is, and it returns the width on the face
+  and the correlation that produce it. `PencilBeamSource.focused(waist_sigma,
+  divergence_sigma, waist_depth)` is the Python spelling and
+  `PencilBeamSource.waist` reads it back; an input file says `waist sigma` and
+  `waist depth` instead of `spot sigma` and `correlation`. A correlation of 0
+  leaves the sampled deviates exactly the deviates they were, so a beam
+  without one is still bit for bit the beam it was.
+
+  All three spellings of the waist are refused for a point source rather than
+  quietly answered, because its spot is not the width the waist is measured
+  against. A particle leaves the focal spot aimed at a point on the
+  illuminated disc and arrives there whatever the spot did to where it set off
+  — the spot cancels over the SSD exactly — so what sets the width on the face
+  is the field radius, and there is no waist in this sense to place. A focal
+  spot correlated with the divergence is still something that beam can have;
+  it is `spot sigma` and `correlation` directly, and means what it says
+  there.
+- `omc_dosrz`, the command line user code, named after DOSRZnrc for the same
+  reason it exists. The cylinder is described by a few keys in the input file
+  rather than read from a phantom file — there is no file format for a
+  cylinder, and a radius and a depth are the whole geometry. Either axis can
+  be given its boundaries in full instead of a uniform count, which is what a
+  run wanting fine rings on the beam and coarse ones outside actually needs.
+  It writes a `.rzdose` file: the `.3ddose` layout with the axis it does not
+  have taken out, or a `.rzenergy` one of the deposited energy the dose is
+  worked out from with `output quantity = energy`. Energy is what comparing
+  rings wants: the annulus volumes grow with radius, so a dose profile across
+  the rings has that division in it already.
+- The r-z calculation is reachable from Python as `ompmc.calc_radial()`, over
+  a `CylinderGeometry` and taking either a `PencilBeamSource` or a
+  `PhaseSpaceSource`; the result comes back shaped `(n_rings, n_slabs)`.
+  MATLAB does not have it yet. Nothing in the design blocks it: the geometry
+  is pure data — ring bounds, depth bounds, one medium — so a fourth
+  `mcOpt.mode` would need no more of the core than is already there.
+
+  Two things about the result are worth knowing, because both differ from the
+  nearest thing already in ompMC. It is the dose **one incident history**
+  delivers, not the dose per unit fluence `omc_dosxyz` reports — there is no
+  field for a pencil beam to have a fluence over. And the point source spreads
+  its particles evenly over the disc it illuminates, i.e. uniform fluence on
+  the entrance plane, which is the convention `omc_dosxyz`'s rectangular
+  source follows as well; it is *not* an isotropic point source, whose fluence
+  would fall off with the inverse square across the field, and the two differ
+  noticeably at short SSD.
+
+### Changed
+
+- The test suite transports about a quarter of the histories it did, without
+  weakening an assertion. Two of the collimator tests were spending twenty
+  thousand histories each on identities that hold exactly — an open mask
+  changes the dose by 0 and a half transmitting one halves it to the last bit,
+  neither of which needs statistics at all — and the ones that are statistical
+  were far past the point where more histories bought anything: the loosest
+  now sits fifty times inside its tolerance and the tightest twenty. The
+  `omc_dosxyz` smoke deck came down to 4000 histories too; what it smokes is
+  that the binary runs and writes a well formed `.3ddose`, which it did not
+  need 20000 for. Between them the CTest stage on the slowest CI runner drops
+  from about 24 minutes to about 8.
+
+- The Python package needs 3.10. nanobind 3.0 dropped 3.9, which itself
+  reached end of life in October 2025; nothing in ompMC's own Python needs
+  anything newer than 3.9, so this is only following the binding library.
+
+### Fixed
+
+- A region whose density is left for the PEGS file to supply is no longer
+  scored as air. Storing 0 there is how a host says it has no density of its
+  own to impose — `initRegions()` reads it as "whatever the PEGS file says
+  this medium weighs" and sets `rhof` to 1 — but both scorers took the
+  sentinel literally, found it below the air threshold, and returned zero dose
+  with the empty-region uncertainty for every such region. A whole phantom of
+  zeros out of a run whose transport had gone perfectly well. Both now resolve
+  the density the transport actually used.
+
+  It is the r-z hosts that make this easy to hit, both of them letting the
+  density be left out, but the fault was in the shared scoring and is fixed
+  there. A stored density that is not the sentinel is used exactly as it is
+  rather than reconstructed, so no phantom that states its densities moves by
+  even an ulp.
+
 ## [0.3.0] - 2026-08-13
 
 ### Added

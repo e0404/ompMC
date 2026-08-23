@@ -39,6 +39,33 @@ why.
   that history from the RNG stream and silently changes the computed dose.
   This has happened once already during the Python-interface work.
 
+- **The pencil source's Gaussian spreads draw no random numbers when their
+  sigma is zero**, for exactly the reason `omcSpectrumSample()` above draws
+  none for a monoenergetic source: the stream is indexed per history, so
+  drawing a Box-Muller pair and multiplying it by zero would shift every later
+  draw in that history and silently change the dose of every beam that never
+  asked for a spread. `tests/test_omc_source_pencil.c` pins the draw count of
+  each combination; if you add a third blur, add its count there too.
+
+- **A round beam cannot tell you which transverse frame you perturbed it in.**
+  The pencil source's divergence is applied in the phantom's own x-y plane
+  (`tiltDirection()`), not in a basis built perpendicular to the direction:
+  for a beam along +z the obvious construction comes out as (y, -x), which
+  pairs the x position with the y angle. Rotating a round, uncorrelated
+  distribution changes nothing, so that bug passed every spot and divergence
+  test and was only exposed by a `correlation`, which is stated per axis and
+  so makes the frame observable. If you add anything else per-axis to a
+  source, test it with something that is not round.
+
+- **A measured dose profile is wider than the `spotSigma` that produced it,
+  and that is not a bug.** Deposition is the incident fluence convolved with
+  however far the radiation carries the energy, and convolution adds second
+  moments: `sigma_dep^2 = sigma_src^2 + K`. K is large at low photon energies
+  — about 8.8 cm² for 100 keV in water, the diffuse scattered-photon halo —
+  so a 1 cm spot can deposit like a 3 cm one. Verified by fitting sigma_dep^2
+  against sigma_src^2 over a range of widths: the slope is 1, which is what
+  says the source width itself is right. Don't "correct" the source for it.
+
 - **Electron range rejection and electron Russian roulette
   (`vrt.esave`/`e_rr`/`f_rr`) are off by default**, not because they're
   unvalidated but because they were measured unbiased-but-inefficient at
@@ -59,6 +86,44 @@ why.
   (little-endian) and refuses big-endian files cleanly. This is a known,
   deliberate scope limit, not an oversight — don't ask for silent best-effort
   handling of the untested path.
+
+- **`howfar()`, `hownear()` and `regionIndex()` branch on a global,
+  `struct Geom::mode`, on every call** rather than dispatching through a
+  function pointer set once at initialization. On the face of it a table of
+  pointers is the tidier answer, and it is the wrong one here: these are
+  called once per electron step, and link time optimization — which
+  `CMakeLists.txt` turns on largely for their sake — can inline a direct call
+  and cannot inline an indirect one. A pointer table would therefore tax the
+  rectilinear geometry, which is every existing user code, to buy the cylinder
+  something it does not need. The mode cannot change during a run, so the
+  branch predicts perfectly after the first call.
+
+- **The cylindrical geometry has no struct of its own.** It borrows
+  `struct Geom`, carrying rings in `isize` and depth slabs in `ksize` with
+  `jsize` pinned to 1, so that the region numbering `1 + ir + iz*nr` is
+  literally the rectilinear `1 + ix + iy*isize + iz*isize*jsize` with the y
+  index held at zero. That is what lets `initRegions()`, `struct Score`,
+  `ausgab()` and the region memo in `omc_utilities.h` serve a cylinder without
+  a line of change or a second code path. Giving it its own struct would mean
+  a second version of each of those. `omcGeomCylInit()` sets `jsize` itself
+  rather than asking the host for it, because no host should have to know
+  about the rectilinear grid it is borrowed from.
+
+- **`omcGeomDetectSpacing()` sets `geometry.mode = OMC_GEOM_CARTESIAN` as a
+  side effect**, which looks unrelated to detecting spacing. It is where the
+  reset belongs: every loader of a voxel grid already calls it, so no host can
+  forget, and a resident host (a MEX file, a Python module) that ran a
+  cylinder and then a cube would otherwise transport the cube through the
+  cylinder. The Python test suite runs both orders in one process for exactly
+  this reason.
+
+- **The radial scorer reports relative sigma with the `0.9999999` sentinel,
+  like the cube engine and unlike the Dij engine.** That is the same
+  deliberate split noted above, and `omcScoreToRadial()` is a near-copy of
+  `omcScoreToCube()` on purpose: everything but the mass of a region — an
+  annulus rather than a box — has to stay identical, so that a reader
+  comparing an r-z result against a cube one never has to wonder which
+  convention is in play.
 
 - **The collimator's transmission mask attenuates by weight by default and
   draws no random numbers**, keeping a collimated run comparable

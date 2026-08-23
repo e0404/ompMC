@@ -59,8 +59,7 @@ void omcPhspSourceCheck(const struct OmcPhspSampler *sampler) {
             (int)sampler->order, (int)OMC_PHSP_REPLAY, (int)OMC_PHSP_RANDOM);
     }
 
-    if (geometry.xbounds == NULL || geometry.ybounds == NULL ||
-        geometry.zbounds == NULL) {
+    if (!omcGeomIsSetUp()) {
         omcFail("ompMC:phspSource:noGeometry",
             "The phase space source needs the phantom set up before it can "
             "work out where its particles enter one.");

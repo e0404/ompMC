@@ -22,6 +22,7 @@
 #include "omc_source.h"
 
 #include "omc_geom.h"
+#include "omc_geom_cyl.h"
 #include "omc_utilities.h"
 #include "ompmc.h"
 
@@ -80,7 +81,88 @@ static int clipSlab(double p, double d, double lo, double hi,
     return *tenter < *texit;
 }
 
+/* Put the particle on the (thread local) stack, once its position and region
+ are settled. Everything here is the same whatever shape the phantom is, and
+ is written once so that a second shape cannot get the rest mass, the weight
+ or the stack pointer subtly different. */
+static void pushParticle(const struct OmcSourceParticle *particle,
+                         double x, double y, double z, int irl) {
+
+    stack.np = 0;
+    stack.p[stack.np].iq = particle->charge;
+
+    /* A charged particle carries its rest mass on top of the kinetic energy
+     the source spoke in. */
+    stack.p[stack.np].e = particle->charge != 0 ?
+        particle->energy + RM : particle->energy;
+
+    stack.p[stack.np].x = x;
+    stack.p[stack.np].y = y;
+    stack.p[stack.np].z = z;
+
+    stack.p[stack.np].u = particle->u;
+    stack.p[stack.np].v = particle->v;
+    stack.p[stack.np].w = particle->w;
+
+    stack.p[stack.np].wt = particle->weight;
+    stack.p[stack.np].dnear = 0.0;
+
+    stack.p[stack.np].ir = irl;
+
+    return;
+}
+
+/* The cylinder (omc_geom_cyl.h). Same shape of job as the rectilinear case
+ below: find where the ray meets the phantom, make sure rounding has not left
+ the particle just outside it, and work out which region that is. */
+static int placeInCylinder(const struct OmcSourceParticle *particle) {
+
+    double tenter;
+
+    if (!omcCylClipRay(particle->x, particle->y, particle->z,
+                       particle->u, particle->v, particle->w, &tenter)) {
+        return 0;
+    }
+
+    double x = particle->x + tenter*particle->u;
+    double y = particle->y + tenter*particle->v;
+    double z = particle->z + tenter*particle->w;
+
+    if (z < geometry.zbounds[0]) {
+        z = nextafter(geometry.zbounds[0], geometry.zbounds[geometry.ksize]);
+    }
+    if (z > geometry.zbounds[geometry.ksize]) {
+        z = nextafter(geometry.zbounds[geometry.ksize], geometry.zbounds[0]);
+    }
+
+    /* Radially the nudge has to move the pair: stepping x and y one
+     representable value each says nothing about where their hypotenuse
+     lands, and it is the hypotenuse that has to be inside the barrel. */
+    double radius = geometry.rbounds[geometry.isize];
+    double r2 = x*x + y*y;
+
+    if (r2 > radius*radius) {
+        double scale = radius*(1.0 - 8.0*DBL_EPSILON)/sqrt(r2);
+        x *= scale;
+        y *= scale;
+        r2 = x*x + y*y;
+    }
+
+    int ir = omcVoxelIndexFast(geometry.rbounds, geometry.isize, geometry.dri,
+                               sqrt(r2));
+    int iz = omcVoxelIndexFast(geometry.zbounds, geometry.ksize, geometry.dzi,
+                               z);
+
+    pushParticle(particle, x, y, z, 1 + ir + iz*geometry.isize);
+
+    return 1;
+}
+
 int omcSourcePlace(const struct OmcSourceParticle *particle) {
+
+    if (geometry.mode == OMC_GEOM_CYLINDRICAL) {
+        return placeInCylinder(particle);
+    }
 
     double x = particle->x;
     double y = particle->y;
@@ -132,33 +214,15 @@ int omcSourcePlace(const struct OmcSourceParticle *particle) {
         z = nextafter(geometry.zbounds[geometry.ksize], geometry.zbounds[0]);
     }
 
-    /* Initialize first particle of the stack from the source data */
-    stack.np = 0;
-    stack.p[stack.np].iq = particle->charge;
-
-    /* A charged particle carries its rest mass on top of the kinetic energy
-     the source spoke in. */
-    stack.p[stack.np].e = particle->charge != 0 ?
-        particle->energy + RM : particle->energy;
-
-    stack.p[stack.np].x = x;
-    stack.p[stack.np].y = y;
-    stack.p[stack.np].z = z;
-
-    stack.p[stack.np].u = particle->u;
-    stack.p[stack.np].v = particle->v;
-    stack.p[stack.np].w = particle->w;
-
-    stack.p[stack.np].wt = particle->weight;
-    stack.p[stack.np].dnear = 0.0;
-
     /* Determine region index of source particle */
     int ix = omcFindVoxelIndex(geometry.xbounds, geometry.isize, x);
     int iy = omcFindVoxelIndex(geometry.ybounds, geometry.jsize, y);
     int iz = omcFindVoxelIndex(geometry.zbounds, geometry.ksize, z);
 
-    stack.p[stack.np].ir = 1 + ix + iy*geometry.isize
-                             + iz*geometry.isize*geometry.jsize;
+    /* Initialize first particle of the stack from the source data */
+    pushParticle(particle, x, y, z,
+                 1 + ix + iy*geometry.isize
+                   + iz*geometry.isize*geometry.jsize);
 
     return 1;
 }

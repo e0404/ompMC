@@ -1,0 +1,54 @@
+# A deck omc_dosrz has to refuse: a point source given a waist. Registered as
+# a ctest with WILL_FAIL.
+#
+#   ./build/bin/omc_dosrz -i ucodes/omc_dosrz/refuse_waist_point -o x
+
+# start source definition
+source type = point
+spectrum file = ./spectra/mohan6.spectrum
+charge = 0
+ssd = 100.0
+field radius = 2.0
+# A focal spot correlated with the divergence. Said this way rather than as a
+# waist, which is a parallel-pencil description and is refused here.
+divergence sigma = 0.01
+# A waist is a parallel-pencil description: a point source's spot is its focal
+# spot and does not set where its beam is on the face. omc_dosrz has to turn
+# this down; ctest expects this run to fail.
+waist sigma = 0.1
+waist depth = 5.0
+# stop source definition
+
+# start MC control
+ncase  = 500
+nbatch = 2
+rng seeds = 97 33
+# stop MC control
+
+# start geometry
+medium = H2O521ICRU
+# No 'medium density': 0 is the sentinel for "whatever PEGS says water
+# weighs", and the scorer has to resolve it rather than read it as air.
+# Fine rings on the axis and coarse ones outside, which is the whole reason
+# the explicit form exists.
+radial bin edges = 0.0 0.1 0.2 0.4 0.7 1.2 2.0 3.5 5.0
+depth bin edges = 0.0 0.2 0.5 1.0 2.0 4.0 7.0 10.0
+# stop geometry
+
+# start MC transport
+global ecut = 0.521
+global pcut = 0.010
+pegs file = ./pegs4/521icru.pegs4dat
+pgs4form file = ./pegs4/pgs4form.dat
+# stop MC transport
+
+# start VRT
+nsplit = 1
+esave = 2.0
+# stop VRT
+
+# start ompMC environment
+output quantity = energy
+data folder = ./data/
+output folder = ./output/
+# stop ompMC environment

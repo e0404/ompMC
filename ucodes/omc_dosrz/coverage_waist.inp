@@ -1,0 +1,50 @@
+# A third omc_dosrz build test, for the one description of a beam the other
+# two decks do not use: a waist. 'waist sigma' and 'waist depth' set the width
+# on the front face and the correlation between them, which is the arithmetic
+# omcPencilWaist() does. Run from the repository root:
+#
+#   ./build/bin/omc_dosrz -i ucodes/omc_dosrz/coverage_waist -o coverage_waist
+#
+# It transports almost nothing on purpose; the run banner reporting the waist
+# back where it was asked for is the thing worth reading.
+
+# start source definition
+source type = pencil
+mono energy = 6.0
+charge = 0
+divergence sigma = 0.02
+waist sigma = 0.1
+waist depth = 5.0
+# stop source definition
+
+# start MC control
+ncase  = 500
+nbatch = 2
+rng seeds = 97 33
+# stop MC control
+
+# start geometry
+medium = H2O521ICRU
+medium density = 1.0
+cylinder radius = 3.0
+radial bins = 6
+cylinder depth = 10.0
+depth bins = 10
+# stop geometry
+
+# start MC transport
+global ecut = 0.521
+global pcut = 0.010
+pegs file = ./pegs4/521icru.pegs4dat
+pgs4form file = ./pegs4/pgs4form.dat
+# stop MC transport
+
+# start VRT
+nsplit = 1
+esave = 2.0
+# stop VRT
+
+# start ompMC environment
+data folder = ./data/
+output folder = ./output/
+# stop ompMC environment
