@@ -1,8 +1,8 @@
 # Python API
 
 The `ompmc` package wraps the compiled `_ompmc` extension: dataclasses
-describe the phantom, source and physics, and four functions run a
-calculation against them, sharing the same phantom and physics.
+describe the phantom, source and physics, and five functions run a
+calculation against them, sharing the same physics.
 
 ```{list-table}
 :header-rows: 1
@@ -20,6 +20,11 @@ calculation against them, sharing the same phantom and physics.
     a spectrum through an aperture.
 * - {py:func}`ompmc.calc_cube`
   - Dose everywhere in the phantom from a single collimated beam.
+* - {py:func}`ompmc.calc_radial`
+  - Dose in a cylinder, binned into rings and depth slabs rather than voxels
+    -- what a pencil beam distribution wants. Takes a
+    {py:class}`~ompmc.CylinderGeometry` rather than a
+    {py:class}`~ompmc.Geometry`.
 ```
 
 ## Quickstart
@@ -44,6 +49,9 @@ silently copied.
 .. autoclass:: ompmc.Geometry
    :members:
 
+.. autoclass:: ompmc.CylinderGeometry
+   :members:
+
 .. autoclass:: ompmc.Spectrum
    :members:
 
@@ -51,6 +59,9 @@ silently copied.
    :members:
 
 .. autoclass:: ompmc.CollimatedSource
+   :members:
+
+.. autoclass:: ompmc.PencilBeamSource
    :members:
 
 .. autoclass:: ompmc.PhaseSpaceSource
@@ -126,6 +137,8 @@ behaves identically under both.
 .. autoclass:: ompmc.RunSummary
 
 .. autofunction:: ompmc.calc_cube
+
+.. autofunction:: ompmc.calc_radial
 ```
 
 ## Utilities

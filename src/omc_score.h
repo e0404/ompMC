@@ -125,4 +125,25 @@ void resetBeamScore(void);
 void omcScoreToCube(int nbatch, double incFluence, int outputDose,
                     double *dose, double *uncertainty);
 
+/*! The same, for the cylindrical geometry (omc_geom_cyl.h): one entry per
+ ring and depth slab, indexed `ir + iz*nr` with the ring running fastest.
+ Walks the whole grid, so that regions nothing reached come out with the same
+ 0.9999999 omcScoreToCube() gives an empty voxel. Call outside any parallel
+ region.
+
+ The uncertainty is the RELATIVE one, as the cube's is -- deliberately not the
+ variance of the mean the Dij engine reports, which is a different quantity
+ for a different purpose.
+
+ @param nbatch Number of batches accumulated.
+ @param incFluence What the accumulated energy is divided by; the histories
+ per batch for the sources that report per history.
+ @param outputDose Selects Gy (1) or mean deposited energy (0).
+ @param dose Caller-supplied array of `isize*ksize` entries.
+ @param uncertainty Caller-supplied array of the same size, or `NULL`.
+
+ @pre The geometry is a cylinder, i.e. omcGeomCylInit() has been called. */
+void omcScoreToRadial(int nbatch, double incFluence, int outputDose,
+                      double *dose, double *uncertainty);
+
 #endif  // OMC_SCORE_H

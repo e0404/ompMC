@@ -1,0 +1,51 @@
+# A deck omc_dosrz has to refuse: a beam given as a waist AND as the spot the
+# waist would set. Registered as a ctest with WILL_FAIL, so a build that
+# quietly accepted one of the two and ran anyway is a failing test rather than
+# a silently different beam.
+#
+#   ./build/bin/omc_dosrz -i ucodes/omc_dosrz/refuse_waist_clash -o x
+
+# start source definition
+source type = pencil
+mono energy = 6.0
+charge = 0
+divergence sigma = 0.02
+# Both descriptions of the same thing at once, which is a deck that
+# contradicts itself rather than one to reconcile. omc_dosrz has to turn it
+# down; ctest expects this run to fail.
+spot sigma = 0.5
+waist sigma = 0.1
+waist depth = 5.0
+# stop source definition
+
+# start MC control
+ncase  = 500
+nbatch = 2
+rng seeds = 97 33
+# stop MC control
+
+# start geometry
+medium = H2O521ICRU
+medium density = 1.0
+cylinder radius = 3.0
+radial bins = 6
+cylinder depth = 10.0
+depth bins = 10
+# stop geometry
+
+# start MC transport
+global ecut = 0.521
+global pcut = 0.010
+pegs file = ./pegs4/521icru.pegs4dat
+pgs4form file = ./pegs4/pgs4form.dat
+# stop MC transport
+
+# start VRT
+nsplit = 1
+esave = 2.0
+# stop VRT
+
+# start ompMC environment
+data folder = ./data/
+output folder = ./output/
+# stop ompMC environment

@@ -6,7 +6,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 [![C](https://img.shields.io/badge/C-A8B9CC?logo=c&logoColor=white)](src/)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MATLAB](https://img.shields.io/badge/MATLAB-0076A8?logo=mathworks&logoColor=white)](ucodes/omc_matrad/)
 
 [![Windows](https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white)](.github/workflows/build.yml)
@@ -56,9 +56,10 @@ If you use this code, please cite the work it is based on:
 | Target       | Kind                | What it does |
 |--------------|---------------------|--------------|
 | `omc_dosxyz` | command line binary | DOSXYZnrc-style standalone dose calculation on an `.egsphant` phantom, driven by a plain-text input file. Writes a `.3ddose` file. |
+| `omc_dosrz` | command line binary | DOSRZnrc-style dose in a homogeneous cylinder, scored by radial ring and depth slab — the shape a pencil-beam dose distribution wants. Takes a parallel pencil beam, a point source at an SSD, or an IAEA phase-space file. Writes a `.rzdose` file. |
 | `omc_matrad` | MATLAB / Octave MEX file | Dose for matRad. Takes density and material cubes, geometry, source and option structs, and returns either a sparse beamlet dose-influence matrix `dij` or, with `mcOpt.mode = 'forward_beamlet'` or `'forward_phsp'`, a dense dose cube — of one weighted field, or of the particles of an IAEA phase-space file. The same source builds against MATLAB (`.mexw64`/`.mexa64`/…) and GNU Octave (`.mex`); see [BUILDING.md](BUILDING.md#gnu-octave). |
 
-Both link against `ompmc_core`, the transport library built from [src/](src/):
+All link against `ompmc_core`, the transport library built from [src/](src/):
 
 - [src/ompmc.c](src/ompmc.c) — physics: media and PEGS4 data, photon and electron transport,
   Compton, Rayleigh, pair/triplet, photoelectric, Møller, Bhabha, bremsstrahlung, annihilation,
@@ -134,6 +135,68 @@ data folder = ./../../data/
 output folder = ./../../output/
 # stop ompMC environment
 ```
+
+## Running `omc_dosrz`
+
+Same command line, same input-file syntax, a different phantom: one homogeneous cylinder
+about the beam axis, scored into radial rings and depth slabs rather than voxels. From the
+repository root:
+
+```sh
+./build/bin/omc_dosrz -i ucodes/omc_dosrz/smoke_test -o smoke_rz
+```
+
+writes `output/smoke_rz.rzdose`. [ucodes/omc_dosrz/input_file.inp](ucodes/omc_dosrz/input_file.inp)
+is the fuller example, meant to be run from `ucodes/omc_dosrz/`.
+
+The cylinder is described in the input file — there is no phantom file for it — and the
+source is one of three:
+
+```
+# start source definition
+# 'pencil' : a parallel beam of no width on the axis
+# 'point'  : a point source at 'ssd', illuminating a disc of 'field radius'
+# 'phsp'   : an IAEA phase space file
+source type = pencil
+mono energy = 6.0
+charge = 0
+# Optional: widen either delta into a Gaussian. 'spot sigma' (cm) is the beam
+# width where it meets the front face, 'divergence sigma' (rad) its angular
+# spread. Left out, both are 0 -- the delta itself, drawing no random numbers.
+# spot sigma = 0.15
+# divergence sigma = 0.01
+# With both, 'correlation' (-1 to 1) relates them, which is what puts the
+# beam's waist somewhere other than the front face: negative converges onto a
+# waist inside the phantom, positive has already passed one upstream. Or say
+# it as a waist directly -- 'waist sigma' (cm) and 'waist depth' (cm, past the
+# face) set 'spot sigma' and 'correlation' between them. Pencil beams only: a
+# point source's spot is a focal spot, and does not set where its beam is.
+# correlation = -0.6
+# waist sigma = 0.1
+# waist depth = 5.0
+# stop source definition
+
+# start geometry
+medium = H2O521ICRU
+medium density = 1.0
+cylinder radius = 5.0
+radial bins = 10
+cylinder depth = 10.0
+depth bins = 20
+# stop geometry
+```
+
+Either axis can be given its boundaries in full instead — `radial bin edges` and
+`depth bin edges`, ascending, the radial list starting at 0 — which is how to put fine rings
+on the beam and coarse ones out where the dose has gone.
+
+The `.rzdose` file is the `.3ddose` layout with the axis it does not have removed: the ring
+and slab counts, the ring boundaries, the depth boundaries, then the dose and its relative
+uncertainty with the ring running fastest. Dose is in Gy **per incident history** — not the
+dose per unit fluence `omc_dosxyz` reports, there being no field for a pencil beam to have a
+fluence over. `output quantity = energy` writes the deposited energy it is worked out from
+instead, to a `.rzenergy` file, which is what comparing rings wants: the annulus volumes grow
+with radius, so a dose profile across the rings has that division in it already.
 
 ## Using `omc_matrad` from MATLAB
 
@@ -361,6 +424,22 @@ dose, uncertainty, summary = ompmc.calc_forward_phsp(
 )
 ```
 
+and the r-z dose of a pencil beam, which takes a cylinder rather than a voxel phantom:
+
+```python
+cylinder = ompmc.CylinderGeometry(
+    r_bounds=np.linspace(0.0, 5.0, 21),
+    z_bounds=np.linspace(0.0, 20.0, 41),
+    material="H2O700ICRU",
+    density=1.0,
+)
+
+dose, uncertainty, summary = ompmc.calc_radial(
+    cylinder, ompmc.PencilBeamSource(), n_histories=1_000_000)
+
+depth_dose_on_axis = dose[0, :]
+```
+
 - **Cubes must be Fortran ordered.** The transport indexes voxels with the first axis varying
   fastest, so a C ordered cube would be a silently transposed phantom; it is rejected instead.
 - Material indices count from 1, matching matRad's `cubeMatIx`; 0 means vacuum.
@@ -374,6 +453,17 @@ dose, uncertainty, summary = ompmc.calc_forward_phsp(
   recorded wherever the original simulation scored it, not aimed at your phantom. It returns a
   third value, a `RunSummary` of `n_histories`, `n_started`, `n_blocked` and `energy_fraction`,
   which is what tells that apart from a transform that is wrong.
+- `calc_radial` is the Python side of `omc_dosrz`, and the only one that does not take a
+  `Geometry`: rings and depth slabs are its regions, and `dose` comes back shaped
+  `(n_rings, n_slabs)`. It takes a `PencilBeamSource` — parallel, or a point source with
+  `ssd=` — or a `PhaseSpaceSource`. Its dose is per incident history rather than per unit
+  fluence; there is no field for a pencil beam to have a fluence over.
+- `PencilBeamSource(spot_sigma=..., divergence_sigma=...)` widens the beam from a delta into
+  a Gaussian in position, in angle, or both. Either left out draws no random numbers, so a
+  plain pencil is unaffected by their existence. Adding `correlation=` relates the two, which
+  is what moves the beam's waist off the phantom surface — without one the beam only ever
+  widens with depth. `PencilBeamSource.focused(waist_sigma, divergence_sigma, waist_depth)`
+  builds the same beam from where it is narrowest, and `.waist` reads it back.
 - `ompmc.ApertureMask` is something in the beam's way, applied by back projection so it composes
   with either source. `roulette=True` spends a partly transmitting cell as a survival probability
   at full weight rather than as a weight multiplier — cheaper behind thick leaves, noisier, and
@@ -412,9 +502,9 @@ Unit tests are built by default (`OMPMC_BUILD_TESTS=ON`) and registered with CTe
 ctest --test-dir build --output-on-failure
 ```
 
-This covers the transport helpers and media data ([tests/](tests/)) plus a short `omc_dosxyz`
-smoke run. When the Octave MEX file was built, `ctest` also drives it through the MEX-side test
-below. The same test runs unchanged in MATLAB, which needs a MATLAB session:
+This covers the transport helpers, the two geometries and media data ([tests/](tests/)) plus
+short `omc_dosxyz` and `omc_dosrz` smoke runs. When the Octave MEX file was built, `ctest` also
+drives it through the MEX-side test below. The same test runs unchanged in MATLAB, which needs a MATLAB session:
 
 ```matlab
 addpath('build/bin'); addpath('ucodes/omc_matrad');
